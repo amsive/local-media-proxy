@@ -190,6 +190,23 @@ test('rejects sensitive content inside an otherwise allowed release entry', () =
 	);
 });
 
+test('package content safety rejects embedded placeholder words and accepts whole placeholders', () => {
+	const credentialField = ['pass', 'word'].join('');
+	const embeddedValue = ['prod', 'example', 'A7k9Q2m4Z8x6'].join('_');
+	assert.throws(
+		() => verifyArchiveContentSafety([{
+			name: `${PACKAGE_ROOT}README.md`,
+			data: Buffer.from(`${credentialField}=${embeddedValue}`),
+		}]),
+		/SECRET_GENERIC_LITERAL/,
+	);
+
+	assert.doesNotThrow(() => verifyArchiveContentSafety([{
+		name: `${PACKAGE_ROOT}README.md`,
+		data: Buffer.from(`${credentialField}="placeholder-value"`),
+	}]));
+});
+
 function releaseEntries() {
 	return EXPECTED_ARCHIVE_ENTRIES.map((name) => ({
 		name,

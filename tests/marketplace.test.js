@@ -58,12 +58,12 @@ test('builds complete Amsive detail and release metadata', () => {
 		['Mark Davoli', 'Boris Hegedis'],
 	);
 	assert.equal(addon.details.license, 'Apache-2.0');
-	assert.equal(release.version, '0.1.0');
+	assert.equal(release.version, '0.1.1');
 	assert.equal(release.testedUpTo, '10.1.1');
 	assert.equal(release.localRequirement, '>=10.1.1');
 	assert.equal(
 		release.downloadUrl,
-		'https://github.com/amsive/local-media-proxy/releases/download/v0.1.0/local-media-proxy-v0.1.0.tgz',
+		'https://github.com/amsive/local-media-proxy/releases/download/v0.1.1/local-media-proxy-v0.1.1.tgz',
 	);
 	assert.match(addon.avatar.original, /^file:\/\/\/tmp\/Local%20Media%20Proxy\/icon\.svg$/);
 	assert.match(addon.details.overview, /detail-hero\.svg/);
@@ -90,15 +90,12 @@ test('builds complete Amsive detail and release metadata', () => {
 	assert.equal(releases.length, 1);
 	assert.deepEqual(
 		releases.map(({ version }) => version),
-		['0.1.0'],
+		['0.1.1'],
 	);
-	assert.match(releases[0].changelog, /Initial public release/);
+	assert.match(releases[0].changelog, /Version 0\.1\.1 maintenance release/);
 	assert.match(releases[0].changelog, /standard `package\/` root/);
-	assert.match(releases[0].changelog, /Apache License 2\.0/);
-	assert.match(releases[0].changelog, /DCO sign-off/);
-	assert.match(releases[0].changelog, /WP Engine/);
-	assert.match(releases[0].changelog, /stale-master-PID recovery/);
-	assert.match(releases[0].changelog, /reviewed-asset validation/);
+	assert.match(releases[0].changelog, /exact SemVer tag/);
+	assert.match(releases[0].changelog, /whole-value forms/);
 });
 
 test('uses packaged detail metadata only when the marketplace has no listing', async () => {
@@ -136,9 +133,9 @@ test('supplies packaged release notes for the native Release notes tab', async (
 	const [currentRelease] = payload.data.addon.releases;
 
 	assert.equal(payload.data.addon.releases.length, 1);
-	assert.equal(currentRelease.version, '0.1.0');
+	assert.equal(currentRelease.version, '0.1.1');
 	assert.equal(currentRelease.date, '2026-07-21T00:00:00.000Z');
-	assert.match(currentRelease.changelog, /Initial public release/);
+	assert.match(currentRelease.changelog, /Version 0\.1\.1 maintenance release/);
 });
 
 test('supports a single named target operation without operationName', async () => {

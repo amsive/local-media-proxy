@@ -10,6 +10,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 - Nothing yet.
 
+## [0.1.1] - 2026-07-21
+
+### Security
+
+- Kept build-job output out of the write-capable release job's shell source, revalidated exact SemVer from the tag, and bound the packaged version to that trusted release identity.
+- Restricted public-release credential placeholders to explicit whole-value forms so embedded placeholder words cannot suppress source or installer findings.
+
 ## [0.1.0] - 2026-07-21
 
 ### Added
@@ -35,5 +42,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Prevented slow or cancelled connection probes from hanging the UI and replaced low-level timeout errors with actionable messages.
 - Preserved correct TLS verification when switching between direct WP Engine origins and compatible proxy, CDN, or load-balancer endpoints.
 
-[Unreleased]: https://github.com/amsive/local-media-proxy/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/amsive/local-media-proxy/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/amsive/local-media-proxy/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/amsive/local-media-proxy/releases/tag/v0.1.0

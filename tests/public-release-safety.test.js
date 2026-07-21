@@ -78,6 +78,51 @@ test('rejects common secret patterns, URL credentials, and personal paths', (t) 
 	assert.equal(scanFixture(fixture).findings.filter(({ rule }) => rule === 'SECRET_GENERIC_LITERAL').length, 3);
 });
 
+test('accepts only constrained whole-value placeholders for credential fields', (t) => {
+	const fixture = createFixture(t);
+	const credentialField = ['pass', 'word'].join('');
+	const embeddedPlaceholderValues = [
+		'change-me',
+		'example',
+		'placeholder',
+		'not-a-secret',
+		'test-only',
+		'dummy',
+	].map((word) => ['prod', word, 'A7k9Q2m4Z8x6'].join('_'));
+	const wholePlaceholderValues = [
+		'change-me',
+		'example-value',
+		'placeholder-value',
+		'not-a-secret',
+		'test-only',
+		'dummy-value',
+		'$' + '{LOCAL_MEDIA_PROXY_PASSWORD}',
+		'{' + '{ local_media_proxy.password }}',
+		'$' + '{{ secrets.LOCAL_MEDIA_PROXY_PASSWORD }}',
+	];
+	writeFixture(
+		fixture,
+		'embedded-placeholder-values.txt',
+		embeddedPlaceholderValues.map((value) => `${credentialField}=${value}`).join('\n'),
+	);
+	writeFixture(
+		fixture,
+		'whole-placeholder-values.txt',
+		wholePlaceholderValues.map((value) => `${credentialField}=${JSON.stringify(value)}`).join('\n'),
+	);
+
+	const findings = scanFixture(fixture).findings;
+	assert.equal(
+		findings.filter(({ path: findingPath, rule }) =>
+			findingPath === 'embedded-placeholder-values.txt' && rule === 'SECRET_GENERIC_LITERAL').length,
+		embeddedPlaceholderValues.length,
+	);
+	assert.equal(
+		findings.filter(({ path: findingPath }) => findingPath === 'whole-placeholder-values.txt').length,
+		0,
+	);
+});
+
 test('rejects external hostnames and public IP addresses unless exactly approved', (t) => {
 	const fixture = createFixture(t);
 	const clientHostname = ['client-project', 'invalid-public-host', 'com'].join('.');

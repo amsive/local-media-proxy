@@ -113,26 +113,36 @@ jobs:
 
       - name: Create GitHub release and attach installer
         env:
+          BUILD_VERSION: ${{ needs.build.outputs.version }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_ARCHIVE: dist/local-media-proxy-v${{ needs.build.outputs.version }}.tgz
-          RELEASE_CHECKSUM: dist/local-media-proxy-v${{ needs.build.outputs.version }}.tgz.sha256
         shell: bash
         run: |
           set -euo pipefail
-          archive_name="$(basename "${RELEASE_ARCHIVE}")"
-          checksum_name="$(basename "${RELEASE_CHECKSUM}")"
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Release tag ${GITHUB_REF_NAME} must be exact SemVer vX.Y.Z." >&2
+            exit 1
+          fi
+          release_version="${GITHUB_REF_NAME#v}"
+          if [[ "${BUILD_VERSION}" != "${release_version}" ]]; then
+            echo "Verified build version ${BUILD_VERSION} does not match tag ${GITHUB_REF_NAME}." >&2
+            exit 1
+          fi
+          release_archive="dist/local-media-proxy-v${release_version}.tgz"
+          release_checksum="${release_archive}.sha256"
+          archive_name="$(basename "${release_archive}")"
+          checksum_name="$(basename "${release_checksum}")"
           args=(
             release create "${GITHUB_REF_NAME}"
-            "${RELEASE_ARCHIVE}#${archive_name}"
-            "${RELEASE_CHECKSUM}#${checksum_name}"
+            "${release_archive}#${archive_name}"
+            "${release_checksum}#${checksum_name}"
             --verify-tag
             --generate-notes
             --fail-on-no-commits
             --draft
             --prerelease
             --latest=false
-            --title "Local Media Proxy v${{ needs.build.outputs.version }}"
+            --title "Local Media Proxy v${release_version}"
           )
 
           gh "${args[@]}"

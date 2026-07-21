@@ -109,18 +109,13 @@ To disable the fallback, turn off **Enable for this site** and select **Save & a
 ${ADDON_NAME} is maintained by Amsive LLC and developed by Mark Davoli and Boris Hegedis. It is community-supported software distributed under the [Apache License 2.0](https://github.com/amsive/local-media-proxy/blob/main/LICENSE) without a support SLA. See the [support policy](https://github.com/amsive/local-media-proxy/blob/main/SUPPORT.md) and [trademark policy](https://github.com/amsive/local-media-proxy/blob/main/TRADEMARKS.md).`;
 }
 
-function createInitialReleaseNotes(): string {
-	return `Initial public release.
+function createCurrentReleaseNotes(): string {
+	return `Version 0.1.1 maintenance release.
 
-- Added per-site, local-first fallback for missing WordPress upload images.
-- Added manual, WP Engine, and public-DNS-assisted origin discovery with explicit review before applying suggestions.
-- Added cancellable connection testing with bounded timeouts and strict hostname, certificate, and provider identity validation.
-- Added privacy-preserving, read-only image requests that strip visitor credentials and headers.
-- Added reversible managed configuration, rollback, and a narrow stale-master-PID recovery that restarts only the affected Local Nginx service after configuration validation.
-- Added light and dark Local UI, packaged help, and fictional public screenshots.
-- Released the project under Apache License 2.0 with Amsive LLC attribution, DCO sign-off, support, security, and trademark policies.
-- Added blocking source, archive, secret, network-value, and reviewed-asset validation plus draft-first release automation with human promotion approval.
-- Added a deterministic Local-installable TGZ with npm's standard \`package/\` root, an exact minimal runtime manifest, and blocking release-structure validation.
+- Kept build-job output as validated data across the draft-release permission boundary.
+- Bound the publisher's version, installer filename, checksum filename, and visible release title to the exact SemVer tag.
+- Restricted credential placeholders to explicit whole-value forms in both source and installer checks.
+- Preserved the Local-installable TGZ format, npm's standard \`package/\` root, and exact minimal runtime manifest.
 
 [View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
 }
@@ -128,7 +123,7 @@ function createInitialReleaseNotes(): string {
 function createPackagedReleaseHistory(): PackagedRelease[] {
 	return [
 		{
-			changelog: createInitialReleaseNotes(),
+			changelog: createCurrentReleaseNotes(),
 			date: '2026-07-21T00:00:00.000Z',
 			id: `${ADDON_ID}-${ADDON_VERSION}`,
 			version: ADDON_VERSION,

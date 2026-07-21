@@ -28,18 +28,40 @@ test('creates ordinary SemVer tags as draft prerelease candidates', () => {
 	assert.match(workflow, /\.isPrerelease[^\n]+!= "true"/);
 	assert.match(workflow, /git merge-base --is-ancestor "\$\{GITHUB_SHA\}\^\{commit\}" origin\/main/);
 	assert.match(workflow, /archive="dist\/local-media-proxy-v\$\{version\}\.tgz"/);
-	assert.match(workflow, /RELEASE_ARCHIVE: dist\/local-media-proxy-v\$\{\{ needs\.build\.outputs\.version \}\}\.tgz/);
-	assert.match(workflow, /RELEASE_CHECKSUM: dist\/local-media-proxy-v\$\{\{ needs\.build\.outputs\.version \}\}\.tgz\.sha256/);
+	assert.match(workflow, /BUILD_VERSION: \$\{\{ needs\.build\.outputs\.version \}\}/);
+	assert.match(workflow, /release_archive="dist\/local-media-proxy-v\$\{release_version\}\.tgz"/);
+	assert.match(workflow, /release_checksum="\$\{release_archive\}\.sha256"/);
+});
+
+test('keeps build outputs as data in the write-capable release job', () => {
+	const workflow = readWorkflow('release.yml');
+	const releaseStepStart = workflow.indexOf('      - name: Create GitHub release and attach installer');
+	assert.notEqual(releaseStepStart, -1);
+	const nextStepStart = workflow.indexOf('\n      - name:', releaseStepStart + 1);
+	const releaseStep = workflow.slice(
+		releaseStepStart,
+		nextStepStart === -1 ? workflow.length : nextStepStart,
+	);
+	const runBlockStart = releaseStep.indexOf('        run: |');
+	assert.notEqual(runBlockStart, -1);
+	const runBlock = releaseStep.slice(runBlockStart);
+
+	assert.match(releaseStep, /BUILD_VERSION: \$\{\{ needs\.build\.outputs\.version \}\}/);
+	assert.doesNotMatch(runBlock, /\$\{\{ needs\.build\.outputs\.version \}\}/);
+	assert.ok(runBlock.includes('[[ ! "${GITHUB_REF_NAME}" =~ ^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$ ]]'));
+	assert.ok(runBlock.includes('release_version="${GITHUB_REF_NAME#v}"'));
+	assert.ok(runBlock.includes('[[ "${BUILD_VERSION}" != "${release_version}" ]]'));
+	assert.ok(runBlock.includes('--title "Local Media Proxy v${release_version}"'));
 });
 
 test('uses exact release filenames as their visible GitHub asset labels', () => {
 	const releaseWorkflow = readWorkflow('release.yml');
 	const promotionWorkflow = readWorkflow('promote-release.yml');
 
-	assert.ok(releaseWorkflow.includes('archive_name="$(basename "${RELEASE_ARCHIVE}")"'));
-	assert.ok(releaseWorkflow.includes('checksum_name="$(basename "${RELEASE_CHECKSUM}")"'));
-	assert.ok(releaseWorkflow.includes('"${RELEASE_ARCHIVE}#${archive_name}"'));
-	assert.ok(releaseWorkflow.includes('"${RELEASE_CHECKSUM}#${checksum_name}"'));
+	assert.ok(releaseWorkflow.includes('archive_name="$(basename "${release_archive}")"'));
+	assert.ok(releaseWorkflow.includes('checksum_name="$(basename "${release_checksum}")"'));
+	assert.ok(releaseWorkflow.includes('"${release_archive}#${archive_name}"'));
+	assert.ok(releaseWorkflow.includes('"${release_checksum}#${checksum_name}"'));
 	assert.doesNotMatch(releaseWorkflow, /#Local Media Proxy .* installable add-on/);
 	assert.doesNotMatch(releaseWorkflow, /#SHA-256 checksum/);
 	assert.match(releaseWorkflow, /--json assets,isDraft,isPrerelease,tagName/);

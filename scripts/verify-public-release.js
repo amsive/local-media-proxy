@@ -94,6 +94,29 @@ const SECRET_PATTERNS = [
 	},
 ];
 const GENERIC_SECRET_PATTERN = /\b(api[_-]?key|aws[_-]?secret[_-]?access[_-]?key|client[_-]?secret|access[_-]?token|auth[_-]?token|password|passwd|private[_-]?key|secret)\b["']?\s*[:=]\s*(?:["']([^"'\r\n]{8,})["']|([A-Za-z0-9_./+=-]{12,}))/gi;
+const PLACEHOLDER_SECRET_VALUES = new Set([
+	'change-me',
+	'change_me',
+	'changeme',
+	'example',
+	'example-value',
+	'example_value',
+	'placeholder',
+	'placeholder-value',
+	'placeholder_value',
+	'not-a-secret',
+	'not_a_secret',
+	'test-only',
+	'test_only',
+	'dummy',
+	'dummy-value',
+	'dummy_value',
+]);
+const PLACEHOLDER_SECRET_TEMPLATES = [
+	/^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/,
+	/^\$\{\{\s*[A-Za-z_][A-Za-z0-9_.-]*\s*\}\}$/,
+	/^\{\{\s*[A-Za-z_][A-Za-z0-9_.-]*\s*\}\}$/,
+];
 const MAGIC_KINDS = [
 	{ kind: 'png', signature: PNG_SIGNATURE },
 	{ kind: 'zip', signature: Buffer.from([0x50, 0x4b, 0x03, 0x04]) },
@@ -926,10 +949,9 @@ function isSafeExampleIpv6(address) {
 }
 
 function isPlaceholderSecret(value) {
-	const normalized = value.toLowerCase();
-	return value.includes('${') ||
-		value.includes('{{') ||
-		/(?:change[-_]?me|example|placeholder|not[-_]?a[-_]?secret|test[-_]?only|dummy)/.test(normalized);
+	const trimmed = value.trim();
+	return PLACEHOLDER_SECRET_VALUES.has(trimmed.toLowerCase()) ||
+		PLACEHOLDER_SECRET_TEMPLATES.some((pattern) => pattern.test(trimmed));
 }
 
 function isHighConfidenceBareHostname(relativePath, text, index, value) {
