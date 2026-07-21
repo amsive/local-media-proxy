@@ -8,7 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
-- Release automation now uses the exact versioned TGZ and checksum filenames as their visible GitHub labels, and promotion rejects any asset-name or label drift.
+- Nothing yet.
 
 ## [0.1.0] - 2026-07-21
 
@@ -24,6 +24,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Blocking public-release validation for secrets, client identifiers, workstation paths, network values, unsafe files, source archives, installer contents, and exact reviewed asset hashes.
 - Draft-first GitHub release automation with tagged-source verification, SHA-256 checksums, immutable asset identity checks, and explicit human promotion approval.
 - Deterministic, Local-installable npm package releases named `local-media-proxy-v<version>.tgz`, with the standard `package/` root and an exact minimal runtime manifest enforced by continuous integration and release promotion checks.
+
+### Changed
+
+- Release automation now uses the exact versioned TGZ and checksum filenames as their visible GitHub labels, and promotion rejects any asset-name or label drift.
 
 ### Fixed
 
