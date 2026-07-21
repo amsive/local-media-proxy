@@ -16,7 +16,7 @@ const workflows = ['ci.yml', 'promote-release.yml', 'release.yml']
 
 test('pins the consolidated GitHub Actions upgrades to immutable revisions', () => {
 	for (const [action, revision, version, expectedUses] of [
-		['actions/checkout', '9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0', '7.0.0', 3],
+		['actions/checkout', '3d3c42e5aac5ba805825da76410c181273ba90b1', '7.0.1', 3],
 		['actions/setup-node', '820762786026740c76f36085b0efc47a31fe5020', '7.0.0', 3],
 		['actions/upload-artifact', '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a', '7.0.1', 2],
 		['actions/download-artifact', '3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c', '8.0.1', 2],
@@ -39,7 +39,11 @@ test('validates an upload and download artifact round trip on pull requests', ()
 	assert.match(workflow, /artifact-round-trip:/);
 	assert.match(workflow, /needs: validate/);
 	assert.equal((workflow.match(/github\.run_attempt/g) ?? []).length, 2);
-	assert.match(workflow, /sha256sum --check \.\/\*\.tgz\.sha256/);
+	assert.match(workflow, /find dist -maxdepth 1 -type f \| wc -l/);
+	assert.match(workflow, /find dist -maxdepth 1 -type f -name '\*\.zip'/);
+	assert.match(workflow, /find dist -maxdepth 1 -type f -name '\*\.zip\.sha256'/);
+	assert.match(workflow, /sha256sum --check \.\/\*\.zip\.sha256/);
+	assert.doesNotMatch(workflow, /\.tgz/);
 });
 
 test('blocks sensitive content in validation, release, and promotion workflows', () => {

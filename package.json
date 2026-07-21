@@ -58,7 +58,7 @@
   "scripts": {
     "build": "npm run clean && tsc",
     "clean": "node scripts/clean.js",
-    "package:addon": "npm pack --cache .npm-cache --pack-destination dist",
+    "package:addon": "node scripts/package-addon.js",
     "package:check": "npm pack --cache .npm-cache --dry-run",
     "prepackage:addon": "node scripts/prepare-dist.js",
     "prepack": "npm run build",

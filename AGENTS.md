@@ -11,7 +11,7 @@ Runtime TypeScript lives in `src/`. `main.ts` owns Local IPC and lifecycle work;
 - `npm test`: build and run Node unit/integration tests.
 - `npm run typecheck`: check TypeScript without output.
 - `npm run validate`: run type checks, tests, and package dry run.
-- `npm run package:addon`: create the installable `.tgz` in `dist/`.
+- `npm run package:addon`: create the installable `local-media-proxy-<version>.zip` in `dist/`; release workflows attach its checksum.
 - `npm run watch`: recompile during development.
 
 Symlink the repository into Local’s add-ons directory for live development, then restart Local.
@@ -22,7 +22,7 @@ Use tabs in TypeScript, JavaScript, and CSS; use two spaces in JSON. Follow stri
 
 ## Testing Guidelines
 
-Use `node:test` and `node:assert/strict`; name files `*.test.js`. Add regressions for validation, generated Nginx, marker idempotency, rollback, and security headers. Before release, test the packed artifact in Local: existing uploads remain local, a missing image returns `200` with `X-Local-Media-Proxy: origin`, and disabling restores the prior `404`.
+Use `node:test` and `node:assert/strict`; name files `*.test.js`. Add regressions for validation, generated Nginx, marker idempotency, rollback, and security headers. Release installers use the exact name `local-media-proxy-<version>.zip`, with a matching `.zip.sha256`, and contain exactly one top-level `local-media-proxy/` folder without a version number. CI and promotion verification must enforce this contract. Before release, select the ZIP directly in Local without extracting it: existing uploads remain local, a missing image returns `200` with `X-Local-Media-Proxy: origin`, and disabling restores the prior `404`.
 
 Every pull request and release must pass `npm run verify:public-release`. Do not commit client names, domains, infrastructure addresses, workstation paths, credentials, diagnostic configuration, or unreviewed binary assets. Use only `example.com` hostnames and RFC documentation IPs in fixtures. Screenshots must use fictional data, show only the minimum useful sites, contain no automation overlays, pass local OCR review, and have an exact reviewed hash in `public-release-assets.json`. See `PUBLIC_RELEASE_SAFETY.md` for the complete process and its human-review limits.
 

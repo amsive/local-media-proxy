@@ -9,8 +9,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { TextDecoder } = require('node:util');
 const { gunzipSync } = require('node:zlib');
 const {
+	crc32,
 	formatFinding,
 	scanPublicRelease,
 } = require('./verify-public-release');
@@ -18,60 +20,74 @@ const {
 const TAR_BLOCK_SIZE = 512;
 const MAX_ARCHIVE_SIZE = 25 * 1024 * 1024;
 const MAX_UNPACKED_SIZE = 50 * 1024 * 1024;
+const LOCAL_FILE_HEADER_SIGNATURE = 0x04034b50;
+const CENTRAL_DIRECTORY_HEADER_SIGNATURE = 0x02014b50;
+const END_OF_CENTRAL_DIRECTORY_SIGNATURE = 0x06054b50;
+const ZIP_VERSION = 20;
+const ZIP_VERSION_MADE_BY = (3 << 8) | ZIP_VERSION;
+const ZIP_UTF8_FLAG = 1 << 11;
+const ZIP_STORE_METHOD = 0;
+const ZIP_DOS_TIME = 0;
+const ZIP_DOS_DATE = 0x0021;
+const ZIP_REGULAR_FILE_MODE = 0o100644;
+const PACKAGE_ROOT = 'local-media-proxy/';
 
 // This is intentionally an exact allowlist. Adding a distributable file requires
-// a deliberate verifier update so npm configuration changes cannot silently
+// a deliberate verifier update so package configuration changes cannot silently
 // expand the contents of a GitHub release asset.
-const EXPECTED_ARCHIVE_ENTRIES = Object.freeze([
-	'package/AGENTS.md',
-	'package/CHANGELOG.md',
-	'package/CONTRIBUTING.md',
-	'package/DCO',
-	'package/LICENSE',
-	'package/NOTICE',
-	'package/PUBLIC_RELEASE_SAFETY.md',
-	'package/README.md',
-	'package/RELEASING.md',
-	'package/SECURITY.md',
-	'package/SUPPORT.md',
-	'package/TRADEMARKS.md',
-	'package/icon.svg',
-	'package/lib/constants.js',
-	'package/lib/constants.js.map',
-	'package/lib/dns.js',
-	'package/lib/dns.js.map',
-	'package/lib/hosting.js',
-	'package/lib/hosting.js.map',
-	'package/lib/main.js',
-	'package/lib/main.js.map',
-	'package/lib/marketplace.js',
-	'package/lib/marketplace.js.map',
-	'package/lib/nginx.js',
-	'package/lib/nginx.js.map',
-	'package/lib/origin.js',
-	'package/lib/origin.js.map',
-	'package/lib/renderer.js',
-	'package/lib/renderer.js.map',
-	'package/lib/settings.js',
-	'package/lib/settings.js.map',
-	'package/lib/site-config.js',
-	'package/lib/site-config.js.map',
-	'package/lib/types.js',
-	'package/lib/types.js.map',
-	'package/lib/validation.js',
-	'package/lib/validation.js.map',
-	'package/package.json',
-	'package/resources/README.md',
-	'package/resources/amsive-avatar.svg',
-	'package/resources/boris-hegedis-avatar.svg',
-	'package/resources/cloudflare-origin-ca.pem',
-	'package/resources/detail-hero.svg',
-	'package/resources/mark-davoli-avatar.svg',
-	'package/style.css',
+const EXPECTED_SOURCE_FILES = Object.freeze([
+	'AGENTS.md',
+	'CHANGELOG.md',
+	'CONTRIBUTING.md',
+	'DCO',
+	'LICENSE',
+	'NOTICE',
+	'PUBLIC_RELEASE_SAFETY.md',
+	'README.md',
+	'RELEASING.md',
+	'SECURITY.md',
+	'SUPPORT.md',
+	'TRADEMARKS.md',
+	'icon.svg',
+	'lib/constants.js',
+	'lib/constants.js.map',
+	'lib/dns.js',
+	'lib/dns.js.map',
+	'lib/hosting.js',
+	'lib/hosting.js.map',
+	'lib/main.js',
+	'lib/main.js.map',
+	'lib/marketplace.js',
+	'lib/marketplace.js.map',
+	'lib/nginx.js',
+	'lib/nginx.js.map',
+	'lib/origin.js',
+	'lib/origin.js.map',
+	'lib/renderer.js',
+	'lib/renderer.js.map',
+	'lib/settings.js',
+	'lib/settings.js.map',
+	'lib/site-config.js',
+	'lib/site-config.js.map',
+	'lib/types.js',
+	'lib/types.js.map',
+	'lib/validation.js',
+	'lib/validation.js.map',
+	'package.json',
+	'resources/README.md',
+	'resources/amsive-avatar.svg',
+	'resources/boris-hegedis-avatar.svg',
+	'resources/cloudflare-origin-ca.pem',
+	'resources/detail-hero.svg',
+	'resources/mark-davoli-avatar.svg',
+	'style.css',
 ]);
+const EXPECTED_ARCHIVE_ENTRIES = Object.freeze(
+	EXPECTED_SOURCE_FILES.map((name) => `${PACKAGE_ROOT}${name}`),
+);
 
 function verifyReleasePackage(tag, archiveArgument) {
-	assert(tag, 'Usage: node scripts/verify-release-package.js <vX.Y.Z> <archive.tgz>');
+	assert(tag, 'Usage: node scripts/verify-release-package.js <vX.Y.Z> <archive.zip>');
 	assert(archiveArgument, 'The installable archive path is required.');
 
 	const repositoryRoot = path.join(__dirname, '..');
@@ -87,7 +103,7 @@ function verifyReleasePackage(tag, archiveArgument) {
 	);
 	const archivePath = path.resolve(repositoryRoot, archiveArgument);
 	const expectedTag = `v${packageJson.version}`;
-	const expectedArchiveName = `${packageJson.name}-${packageJson.version}.tgz`;
+	const expectedArchiveName = `${packageJson.name}-${packageJson.version}.zip`;
 
 	assert.equal(tag, expectedTag, `Tag ${tag} must exactly match package version ${expectedTag}.`);
 	assert.equal(
@@ -115,10 +131,10 @@ function verifyReleasePackage(tag, archiveArgument) {
 	assert(archiveStat.isFile(), `Archive path must be a regular file: ${archivePath}`);
 	assert(
 		archiveStat.size <= MAX_ARCHIVE_SIZE,
-		`Archive exceeds the ${MAX_ARCHIVE_SIZE}-byte compressed-size limit.`,
+		`Archive exceeds the ${MAX_ARCHIVE_SIZE}-byte size limit.`,
 	);
 
-	const entries = parseTarGzip(fs.readFileSync(archivePath));
+	const entries = parseZip(fs.readFileSync(archivePath));
 	assert(entries.length > 0, 'Archive is empty.');
 
 	const actualNames = entries.map((entry) => entry.name);
@@ -145,7 +161,7 @@ function verifyReleasePackage(tag, archiveArgument) {
 	for (const entry of entries) {
 		const sourcePath = path.join(
 			repositoryRoot,
-			entry.name.slice('package/'.length),
+			entry.name.slice(PACKAGE_ROOT.length),
 		);
 		assert(
 			fs.existsSync(sourcePath) && fs.statSync(sourcePath).isFile(),
@@ -159,8 +175,10 @@ function verifyReleasePackage(tag, archiveArgument) {
 
 	verifyArchiveContentSafety(entries);
 
-	const packedPackageEntry = entries.find((entry) => entry.name === 'package/package.json');
-	assert(packedPackageEntry, 'Archive is missing expected entry: package/package.json');
+	const packedPackageEntry = entries.find(
+		(entry) => entry.name === `${PACKAGE_ROOT}package.json`,
+	);
+	assert(packedPackageEntry, `Archive is missing expected entry: ${PACKAGE_ROOT}package.json`);
 	const packedPackageJson = JSON.parse(packedPackageEntry.data.toString('utf8'));
 
 	assert.equal(packedPackageJson.name, packageJson.name, 'Packed package name does not match.');
@@ -185,7 +203,11 @@ function verifyArchiveContentSafety(entries) {
 	);
 	try {
 		for (const entry of entries) {
-			const destination = path.join(temporaryDirectory, entry.name);
+			validateArchivePath(entry.name);
+			const relativePath = entry.name.slice(PACKAGE_ROOT.length);
+			// Preserve the package/ scan namespace used by the byte-pinned safety
+			// exceptions while the published ZIP itself uses local-media-proxy/.
+			const destination = path.join(temporaryDirectory, 'package', relativePath);
 			fs.mkdirSync(path.dirname(destination), { recursive: true });
 			fs.writeFileSync(destination, entry.data, { flag: 'wx' });
 		}
@@ -205,23 +227,256 @@ function verifyArchiveContentSafety(entries) {
 	}
 }
 
+function parseZip(archive) {
+	assert(Buffer.isBuffer(archive), 'ZIP archive must be provided as a Buffer.');
+	assert(archive.length >= 22, 'Archive is too short to be a ZIP file.');
+	assert(
+		archive.length <= MAX_ARCHIVE_SIZE,
+		`Archive exceeds the ${MAX_ARCHIVE_SIZE}-byte size limit.`,
+	);
+
+	const endOffset = findEndOfCentralDirectory(archive);
+	const diskNumber = archive.readUInt16LE(endOffset + 4);
+	const centralDirectoryDisk = archive.readUInt16LE(endOffset + 6);
+	const entriesOnDisk = archive.readUInt16LE(endOffset + 8);
+	const entryCount = archive.readUInt16LE(endOffset + 10);
+	const centralDirectorySize = archive.readUInt32LE(endOffset + 12);
+	const centralDirectoryOffset = archive.readUInt32LE(endOffset + 16);
+	const commentLength = archive.readUInt16LE(endOffset + 20);
+
+	assert.equal(commentLength, 0, 'ZIP archive comments are not supported.');
+	assert.equal(
+		endOffset + 22,
+		archive.length,
+		'Archive contains trailing bytes after its ZIP end record.',
+	);
+	assert.equal(diskNumber, 0, 'Multi-disk ZIP archives are not supported.');
+	assert.equal(centralDirectoryDisk, 0, 'Multi-disk ZIP archives are not supported.');
+	assert.equal(entriesOnDisk, entryCount, 'Multi-disk ZIP archives are not supported.');
+	assert(
+		entryCount !== 0xffff &&
+			centralDirectorySize !== 0xffffffff &&
+			centralDirectoryOffset !== 0xffffffff,
+		'ZIP64 archives are not supported.',
+	);
+	assert.equal(
+		centralDirectoryOffset + centralDirectorySize,
+		endOffset,
+		'ZIP central directory has an invalid boundary.',
+	);
+
+	const centralEntries = [];
+	let centralOffset = centralDirectoryOffset;
+	let unpackedSize = 0;
+	for (let index = 0; index < entryCount; index += 1) {
+		assertRange(archive, centralOffset, 46, `central directory entry ${index + 1}`);
+		assert.equal(
+			archive.readUInt32LE(centralOffset),
+			CENTRAL_DIRECTORY_HEADER_SIGNATURE,
+			`ZIP central directory entry ${index + 1} has an invalid signature.`,
+		);
+
+		const versionMadeBy = archive.readUInt16LE(centralOffset + 4);
+		const versionNeeded = archive.readUInt16LE(centralOffset + 6);
+		const flags = archive.readUInt16LE(centralOffset + 8);
+		const method = archive.readUInt16LE(centralOffset + 10);
+		const modifiedTime = archive.readUInt16LE(centralOffset + 12);
+		const modifiedDate = archive.readUInt16LE(centralOffset + 14);
+		const checksum = archive.readUInt32LE(centralOffset + 16);
+		const compressedSize = archive.readUInt32LE(centralOffset + 20);
+		const uncompressedSize = archive.readUInt32LE(centralOffset + 24);
+		const nameLength = archive.readUInt16LE(centralOffset + 28);
+		const extraLength = archive.readUInt16LE(centralOffset + 30);
+		const entryCommentLength = archive.readUInt16LE(centralOffset + 32);
+		const diskStart = archive.readUInt16LE(centralOffset + 34);
+		const internalAttributes = archive.readUInt16LE(centralOffset + 36);
+		const externalAttributes = archive.readUInt32LE(centralOffset + 38);
+		const localHeaderOffset = archive.readUInt32LE(centralOffset + 42);
+		const variableLength = nameLength + extraLength + entryCommentLength;
+		assertRange(archive, centralOffset + 46, variableLength, `central directory entry ${index + 1}`);
+
+		assert.equal(versionMadeBy, ZIP_VERSION_MADE_BY, 'ZIP creator platform or version is unsupported.');
+		assert.equal(versionNeeded, ZIP_VERSION, 'ZIP extraction version is unsupported.');
+		assert.equal(flags, ZIP_UTF8_FLAG, 'ZIP encryption, data descriptors, or optional flags are unsupported.');
+		assert.equal(method, ZIP_STORE_METHOD, 'ZIP compression methods are unsupported.');
+		assert.equal(modifiedTime, ZIP_DOS_TIME, 'ZIP entry timestamp is not deterministic.');
+		assert.equal(modifiedDate, ZIP_DOS_DATE, 'ZIP entry timestamp is not deterministic.');
+		assert.equal(compressedSize, uncompressedSize, 'Stored ZIP entry sizes must match.');
+		assert(compressedSize !== 0xffffffff, 'ZIP64 entries are not supported.');
+		assert(nameLength > 0, `ZIP central directory entry ${index + 1} has an empty path.`);
+		assert.equal(extraLength, 0, 'ZIP extra fields are not supported.');
+		assert.equal(entryCommentLength, 0, 'ZIP entry comments are not supported.');
+		assert.equal(diskStart, 0, 'Multi-disk ZIP archives are not supported.');
+		assert.equal(internalAttributes, 0, 'ZIP internal attributes are unsupported.');
+		assert.equal(
+			externalAttributes,
+			(ZIP_REGULAR_FILE_MODE * 0x10000) >>> 0,
+			'ZIP entry must be a portable regular file with mode 0644.',
+		);
+
+		const nameBytes = archive.subarray(
+			centralOffset + 46,
+			centralOffset + 46 + nameLength,
+		);
+		const name = decodeZipName(nameBytes, index);
+		validateArchivePath(name);
+		unpackedSize += uncompressedSize;
+		assert(
+			unpackedSize <= MAX_UNPACKED_SIZE,
+			`Archive exceeds the ${MAX_UNPACKED_SIZE}-byte uncompressed-size limit.`,
+		);
+
+		centralEntries.push({
+			checksum,
+			compressedSize,
+			flags,
+			localHeaderOffset,
+			method,
+			modifiedDate,
+			modifiedTime,
+			name,
+			nameBytes: Buffer.from(nameBytes),
+			uncompressedSize,
+			versionNeeded,
+		});
+		centralOffset += 46 + variableLength;
+	}
+	assert.equal(
+		centralOffset,
+		endOffset,
+		'ZIP central directory entry count or size is invalid.',
+	);
+
+	const names = centralEntries.map((entry) => entry.name);
+	assert.equal(
+		new Set(names).size,
+		names.length,
+		`Archive contains duplicate entry: ${findDuplicate(names)}`,
+	);
+	const sortedNames = [...names].sort();
+	assert.deepEqual(names, sortedNames, 'ZIP entries must be sorted by path.');
+
+	const entries = [];
+	let expectedLocalOffset = 0;
+	for (const [index, centralEntry] of centralEntries.entries()) {
+		assert.equal(
+			centralEntry.localHeaderOffset,
+			expectedLocalOffset,
+			'ZIP local entries are overlapping, reordered, or separated by unsupported data.',
+		);
+		assertRange(archive, expectedLocalOffset, 30, `local entry ${index + 1}`);
+		assert.equal(
+			archive.readUInt32LE(expectedLocalOffset),
+			LOCAL_FILE_HEADER_SIGNATURE,
+			`ZIP local entry ${index + 1} has an invalid signature.`,
+		);
+
+		const localVersion = archive.readUInt16LE(expectedLocalOffset + 4);
+		const localFlags = archive.readUInt16LE(expectedLocalOffset + 6);
+		const localMethod = archive.readUInt16LE(expectedLocalOffset + 8);
+		const localTime = archive.readUInt16LE(expectedLocalOffset + 10);
+		const localDate = archive.readUInt16LE(expectedLocalOffset + 12);
+		const localChecksum = archive.readUInt32LE(expectedLocalOffset + 14);
+		const localCompressedSize = archive.readUInt32LE(expectedLocalOffset + 18);
+		const localUncompressedSize = archive.readUInt32LE(expectedLocalOffset + 22);
+		const localNameLength = archive.readUInt16LE(expectedLocalOffset + 26);
+		const localExtraLength = archive.readUInt16LE(expectedLocalOffset + 28);
+
+		assert.equal(localVersion, centralEntry.versionNeeded, 'ZIP local and central versions differ.');
+		assert.equal(localFlags, centralEntry.flags, 'ZIP local and central flags differ.');
+		assert.equal(localMethod, centralEntry.method, 'ZIP local and central methods differ.');
+		assert.equal(localTime, centralEntry.modifiedTime, 'ZIP local and central timestamps differ.');
+		assert.equal(localDate, centralEntry.modifiedDate, 'ZIP local and central timestamps differ.');
+		assert.equal(localChecksum, centralEntry.checksum, 'ZIP local and central CRC-32 values differ.');
+		assert.equal(localCompressedSize, centralEntry.compressedSize, 'ZIP local and central sizes differ.');
+		assert.equal(localUncompressedSize, centralEntry.uncompressedSize, 'ZIP local and central sizes differ.');
+		assert.equal(localNameLength, centralEntry.nameBytes.length, 'ZIP local and central path lengths differ.');
+		assert.equal(localExtraLength, 0, 'ZIP local extra fields are not supported.');
+
+		const localNameStart = expectedLocalOffset + 30;
+		assertRange(archive, localNameStart, localNameLength, `local entry ${index + 1} path`);
+		assert(
+			archive.subarray(localNameStart, localNameStart + localNameLength).equals(centralEntry.nameBytes),
+			'ZIP local and central paths differ.',
+		);
+		const dataStart = localNameStart + localNameLength;
+		assertRange(archive, dataStart, centralEntry.compressedSize, `data for ${centralEntry.name}`);
+		const data = Buffer.from(
+			archive.subarray(dataStart, dataStart + centralEntry.compressedSize),
+		);
+		assert.equal(data.length, centralEntry.uncompressedSize, `ZIP entry size is invalid: ${centralEntry.name}`);
+		assert.equal(crc32(data), centralEntry.checksum, `ZIP entry has an invalid CRC-32: ${centralEntry.name}`);
+		entries.push({ name: centralEntry.name, data });
+		expectedLocalOffset = dataStart + centralEntry.compressedSize;
+	}
+	assert.equal(
+		expectedLocalOffset,
+		centralDirectoryOffset,
+		'ZIP contains unsupported data before its central directory.',
+	);
+
+	return entries;
+}
+
+function findEndOfCentralDirectory(archive) {
+	const minimumOffset = Math.max(0, archive.length - 22 - 0xffff);
+	for (let offset = archive.length - 22; offset >= minimumOffset; offset -= 1) {
+		if (archive.readUInt32LE(offset) === END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
+			return offset;
+		}
+	}
+	assert.fail('Archive is missing its ZIP end record.');
+}
+
+function validateArchivePath(name) {
+	assert(name.startsWith(PACKAGE_ROOT), `Archive entry is outside ${PACKAGE_ROOT}: ${name}`);
+	assert(!name.includes('\\'), `Archive entry uses a backslash path separator: ${name}`);
+	assert(!name.includes('\0'), `Archive entry contains a NUL byte: ${name}`);
+	assert(!name.endsWith('/'), `Archive entry must be a regular file: ${name}`);
+	const segments = name.split('/');
+	assert(
+		segments.every((segment) => segment && segment !== '.' && segment !== '..'),
+		`Archive entry contains traversal or an empty segment: ${name}`,
+	);
+}
+
+function decodeZipName(nameBytes, entryIndex) {
+	try {
+		return new TextDecoder('utf-8', { fatal: true }).decode(nameBytes);
+	} catch {
+		assert.fail(`ZIP central directory entry ${entryIndex + 1} has an invalid UTF-8 path.`);
+	}
+}
+
+function assertRange(buffer, offset, length, label) {
+	assert(
+		Number.isSafeInteger(offset) &&
+			Number.isSafeInteger(length) &&
+			offset >= 0 &&
+			length >= 0 &&
+			offset + length <= buffer.length,
+		`Archive contains truncated ${label}.`,
+	);
+}
+
+// The builder consumes npm pack's tarball, so this deliberately small parser
+// remains strict even though the published installer is a ZIP archive.
 function parseTarGzip(compressedArchive) {
 	let archive;
 	try {
 		archive = gunzipSync(compressedArchive, { maxOutputLength: MAX_UNPACKED_SIZE });
 	} catch (error) {
-		assert.fail(`Archive must be a readable gzip-compressed tar file: ${error.message}`);
+		assert.fail(`Input must be a readable gzip-compressed tar file: ${error.message}`);
 	}
 
 	assert(
 		archive.length <= MAX_UNPACKED_SIZE,
-		`Archive exceeds the ${MAX_UNPACKED_SIZE}-byte uncompressed-size limit.`,
+		`Input exceeds the ${MAX_UNPACKED_SIZE}-byte uncompressed-size limit.`,
 	);
 
 	const entries = [];
 	let offset = 0;
 	let reachedEndMarker = false;
-
 	while (offset + TAR_BLOCK_SIZE <= archive.length) {
 		const header = archive.subarray(offset, offset + TAR_BLOCK_SIZE);
 		if (isZeroBlock(header)) {
@@ -231,44 +486,33 @@ function parseTarGzip(compressedArchive) {
 		}
 
 		validateTarChecksum(header, entries.length);
-
 		const name = readTarPath(header);
-		assert(name, `Archive entry ${entries.length + 1} has an empty path.`);
-		assert(name.startsWith('package/'), `Archive entry is outside package/: ${name}`);
-		assert(!name.split('/').includes('..'), `Archive entry contains traversal: ${name}`);
-
+		assert(name, `Input entry ${entries.length + 1} has an empty path.`);
+		assert(name.startsWith('package/'), `Input entry is outside package/: ${name}`);
+		assert(!name.split('/').includes('..'), `Input entry contains traversal: ${name}`);
 		const typeFlag = header[156];
 		assert(
 			typeFlag === 0 || typeFlag === 48,
-			`Archive entry must be a regular file: ${name} (type ${describeTarType(typeFlag)}).`,
+			`Input entry must be a regular file: ${name} (type ${describeTarType(typeFlag)}).`,
 		);
 
 		const size = readTarOctal(header.subarray(124, 136), `size for ${name}`);
 		const dataStart = offset + TAR_BLOCK_SIZE;
 		const dataEnd = dataStart + size;
-		assert(dataEnd <= archive.length, `Archive entry data is truncated: ${name}`);
-
-		entries.push({
-			name,
-			data: Buffer.from(archive.subarray(dataStart, dataEnd)),
-		});
-
+		assert(dataEnd <= archive.length, `Input entry data is truncated: ${name}`);
+		entries.push({ name, data: Buffer.from(archive.subarray(dataStart, dataEnd)) });
 		offset = dataStart + Math.ceil(size / TAR_BLOCK_SIZE) * TAR_BLOCK_SIZE;
 	}
 
-	assert(reachedEndMarker, 'Archive is missing its tar end marker.');
-	assert(
-		isAllZero(archive.subarray(offset)),
-		'Archive contains data after its tar end marker.',
-	);
-
+	assert(reachedEndMarker, 'Input archive is missing its tar end marker.');
+	assert(isAllZero(archive.subarray(offset)), 'Input archive contains data after its tar end marker.');
 	return entries;
 }
 
 function validateTarChecksum(header, entryIndex) {
 	const storedChecksum = readTarOctal(
 		header.subarray(148, 156),
-		`checksum for archive entry ${entryIndex + 1}`,
+		`checksum for input entry ${entryIndex + 1}`,
 	);
 	let calculatedChecksum = 0;
 	for (let index = 0; index < header.length; index += 1) {
@@ -277,7 +521,7 @@ function validateTarChecksum(header, entryIndex) {
 	assert.equal(
 		storedChecksum,
 		calculatedChecksum,
-		`Archive entry ${entryIndex + 1} has an invalid tar checksum.`,
+		`Input entry ${entryIndex + 1} has an invalid tar checksum.`,
 	);
 }
 
@@ -293,11 +537,11 @@ function readTarString(field) {
 }
 
 function readTarOctal(field, label) {
-	assert.equal(field[0] & 0x80, 0, `Archive uses unsupported binary ${label}.`);
+	assert.equal(field[0] & 0x80, 0, `Input uses unsupported binary ${label}.`);
 	const value = field.toString('ascii').replace(/\0.*$/s, '').trim();
-	assert(/^[0-7]+$/.test(value), `Archive contains invalid ${label}.`);
+	assert(/^[0-7]+$/.test(value), `Input contains invalid ${label}.`);
 	const result = Number.parseInt(value, 8);
-	assert(Number.isSafeInteger(result), `Archive contains unsafe ${label}.`);
+	assert(Number.isSafeInteger(result), `Input contains unsafe ${label}.`);
 	return result;
 }
 
@@ -350,7 +594,9 @@ if (require.main === module) {
 
 module.exports = {
 	EXPECTED_ARCHIVE_ENTRIES,
+	PACKAGE_ROOT,
 	parseTarGzip,
+	parseZip,
 	verifyArchiveContentSafety,
 	verifyReleasePackage,
 };

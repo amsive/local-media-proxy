@@ -61,7 +61,10 @@ test('builds complete Amsive detail and release metadata', () => {
 	assert.equal(release.version, '0.1.0');
 	assert.equal(release.testedUpTo, '10.1.1');
 	assert.equal(release.localRequirement, '>=10.1.1');
-	assert.match(release.downloadUrl, /releases\/download\/v0\.1\.0\//);
+	assert.equal(
+		release.downloadUrl,
+		'https://github.com/amsive/local-media-proxy/releases/download/v0.1.0/local-media-proxy-0.1.0.zip',
+	);
 	assert.match(addon.avatar.original, /^file:\/\/\/tmp\/Local%20Media%20Proxy\/icon\.svg$/);
 	assert.match(addon.details.overview, /detail-hero\.svg/);
 	assert.match(addon.details.overview, /## Install and configure/);
@@ -78,6 +81,7 @@ test('builds complete Amsive detail and release metadata', () => {
 	assert.match(addon.details.overview, /Flywheel-connected sites retain the manual/);
 	assert.match(addon.details.overview, /fixed add-on User-Agent/);
 	assert.match(addon.details.overview, /does not overwrite the same add-on slug/);
+	assert.match(addon.details.overview, /Select the ZIP directly in Local; do not extract it first/);
 	assert.match(addon.details.overview, /Apache License 2\.0/);
 	assert.match(addon.details.overview, /without a support SLA/);
 	assert.match(addon.details.overview, /trademark policy/);
@@ -89,6 +93,7 @@ test('builds complete Amsive detail and release metadata', () => {
 		['0.1.0'],
 	);
 	assert.match(releases[0].changelog, /Initial public release/);
+	assert.match(releases[0].changelog, /local-media-proxy\//);
 	assert.match(releases[0].changelog, /Apache License 2\.0/);
 	assert.match(releases[0].changelog, /DCO sign-off/);
 	assert.match(releases[0].changelog, /WP Engine/);
@@ -132,7 +137,7 @@ test('supplies packaged release notes for the native Release notes tab', async (
 
 	assert.equal(payload.data.addon.releases.length, 1);
 	assert.equal(currentRelease.version, '0.1.0');
-	assert.equal(currentRelease.date, '2026-07-20T00:00:00.000Z');
+	assert.equal(currentRelease.date, '2026-07-21T00:00:00.000Z');
 	assert.match(currentRelease.changelog, /Initial public release/);
 });
 

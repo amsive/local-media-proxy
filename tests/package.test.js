@@ -27,6 +27,7 @@ test('declares the installed add-on card metadata expected by Local', () => {
 	assert.equal(packageJson.bgColor, '#6E187A');
 	assert.equal(packageJson.icon, 'icon.svg');
 	assert.equal(ADDON_VERSION, packageJson.version);
+	assert.equal(packageJson.scripts['package:addon'], 'node scripts/package-addon.js');
 	for (const document of [
 		'AGENTS.md',
 		'CONTRIBUTING.md',

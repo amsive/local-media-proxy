@@ -27,6 +27,10 @@ test('creates ordinary SemVer tags as draft prerelease candidates', () => {
 	assert.match(workflow, /\.isDraft[^\n]+!= "true"/);
 	assert.match(workflow, /\.isPrerelease[^\n]+!= "true"/);
 	assert.match(workflow, /git merge-base --is-ancestor "\$\{GITHUB_SHA\}\^\{commit\}" origin\/main/);
+	assert.match(workflow, /archive="dist\/local-media-proxy-\$\{version\}\.zip"/);
+	assert.match(workflow, /RELEASE_ARCHIVE: dist\/local-media-proxy-\$\{\{ needs\.build\.outputs\.version \}\}\.zip/);
+	assert.match(workflow, /RELEASE_CHECKSUM: dist\/local-media-proxy-\$\{\{ needs\.build\.outputs\.version \}\}\.zip\.sha256/);
+	assert.doesNotMatch(workflow, /\.tgz/);
 });
 
 test('requires an explicit human promotion with candidate identity binding', () => {
@@ -51,6 +55,13 @@ test('requires an explicit human promotion with candidate identity binding', () 
 		2,
 	);
 	assert.equal((workflow.match(/version="\$\{TAG#v\}"/g) ?? []).length, 2);
+	assert.equal(
+		(workflow.match(/archive="local-media-proxy-\$\{version\}\.zip"/g) ?? []).length,
+		2,
+	);
+	assert.equal((workflow.match(/checksum="\$\{archive\}\.sha256"/g) ?? []).length, 2);
+	assert.match(workflow, /node scripts\/verify-release-package\.js "\$\{TAG\}" "\$\{assets_dir\}\/\$\{archive\}"/);
+	assert.doesNotMatch(workflow, /\.tgz/);
 	assert.doesNotMatch(workflow, /version="\$\{version%-release\}"/);
 	assert.match(workflow, /git merge-base --is-ancestor "\$\{TAG\}\^\{commit\}" origin\/main/);
 	assert.match(workflow, /npm run build/);
