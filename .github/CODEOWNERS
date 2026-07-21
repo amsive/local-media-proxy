@@ -1,0 +1,15 @@
+# Default project review
+* @mdavoli @amsive/amsive-web-developers
+
+# Public-release and supply-chain controls
+/.github/workflows/ @mdavoli @amsive/amsive-web-developers
+/.github/CODEOWNERS @mdavoli @amsive/amsive-web-developers
+/public-release-policy.json @mdavoli @amsive/amsive-web-developers
+/public-release-assets.json @mdavoli @amsive/amsive-web-developers
+/scripts/verify-public-release.js @mdavoli @amsive/amsive-web-developers
+/scripts/verify-release-package.js @mdavoli @amsive/amsive-web-developers
+/resources/ @mdavoli @amsive/amsive-web-developers
+/docs/screenshots/ @mdavoli @amsive/amsive-web-developers
+/LICENSE @mdavoli @amsive/amsive-web-developers
+/NOTICE @mdavoli @amsive/amsive-web-developers
+/TRADEMARKS.md @mdavoli @amsive/amsive-web-developers

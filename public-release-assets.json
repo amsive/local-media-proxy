@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "assets": [
+    {
+      "path": "docs/screenshots/origin-discovery-dark.png",
+      "sha256": "eae01b3ec023ce9d21cfe41debe56a3cc810f401a151b3d7be5b4792220bd8e0",
+      "kind": "png",
+      "reviewedForPublicRelease": "Generated dark-theme placeholder screenshot uses only Example hostnames, documentation IPs, and fictional site data."
+    },
+    {
+      "path": "docs/screenshots/origin-discovery-light.png",
+      "sha256": "79a5462a18ee769f7e7e2bf075d5949da41146eb73aa7eb63db19d6dc1735b8e",
+      "kind": "png",
+      "reviewedForPublicRelease": "Generated light-theme placeholder screenshot uses only Example hostnames, documentation IPs, and fictional site data."
+    },
+    {
+      "path": "docs/screenshots/connection-test-stop-dark.png",
+      "sha256": "c89684ad528e32a3f8a338b2afb9beb3ef13a1c18b2d024ef00b4a22cfff9df7",
+      "kind": "png",
+      "reviewedForPublicRelease": "Generated dark-theme placeholder screenshot shows three fictional sites and contains no automation overlay or client data."
+    },
+    {
+      "path": "docs/screenshots/connection-test-stop-light.png",
+      "sha256": "7fbb9ad9491fe0fa1339aae1c80abee2040ca14e92366ce39e729df3dc2a2e78",
+      "kind": "png",
+      "reviewedForPublicRelease": "Generated light-theme placeholder screenshot shows three fictional sites and contains no automation overlay or client data."
+    },
+    {
+      "path": "docs/screenshots/remote-ip-guidance-dark.png",
+      "sha256": "2eb0e6839c40165a9093bde1bdb253c348d7a0bc8e0edf1968e85d7fb2cab4dd",
+      "kind": "png",
+      "reviewedForPublicRelease": "Generated dark-theme placeholder screenshot uses a documentation IP, fictional sites, and a synthetic timestamp."
+    },
+    {
+      "path": "docs/screenshots/remote-ip-guidance-light.png",
+      "sha256": "bf8c4bf59a44088392c17f33e90a12cc1751ded41ec63f19b02d6b7f6a31a343",
+      "kind": "png",
+      "reviewedForPublicRelease": "Generated light-theme placeholder screenshot uses a documentation IP, fictional sites, and a synthetic timestamp."
+    },
+    {
+      "path": "icon.svg",
+      "sha256": "f8d6607f96206707efce3c1aff0ac2f4be0b68395360d47dc2d0fd596f1b5924",
+      "kind": "svg",
+      "reviewedForPublicRelease": "Product icon contains only Amsive-authored vector artwork."
+    },
+    {
+      "path": "resources/amsive-avatar.svg",
+      "sha256": "188366db3cfb48e1f1a7895e80c3cfc996bf1c58dc818b6405bc8e3562584a89",
+      "kind": "svg",
+      "reviewedForPublicRelease": "Amsive project avatar approved for public project attribution."
+    },
+    {
+      "path": "resources/boris-hegedis-avatar.svg",
+      "sha256": "106531d9bbc84c8ff978b51566eea958d5654680a1e6a1a20be895840ed1c681",
+      "kind": "svg",
+      "reviewedForPublicRelease": "Maintainer avatar approved for public project attribution."
+    },
+    {
+      "path": "resources/cloudflare-origin-ca.pem",
+      "sha256": "01d12a7c938de82b3b264458a24dd2cda139814393a920d8b5b9d0aa6a54d8f3",
+      "kind": "public-certificate",
+      "reviewedForPublicRelease": "Third-party public certificate roots are byte-pinned to official upstream copies; redistribution clearance remains a launch requirement."
+    },
+    {
+      "path": "resources/detail-hero.svg",
+      "sha256": "9094c14d8534bcc964ad30a320073ed132dfc70c389fd22a4b0bfb34cf446529",
+      "kind": "svg",
+      "reviewedForPublicRelease": "Product detail artwork uses only synthetic example host and address data."
+    },
+    {
+      "path": "resources/mark-davoli-avatar.svg",
+      "sha256": "07f683f561be1884644b8fd85b49a9391b31975bd42a832cb82e81db6938bd5e",
+      "kind": "svg",
+      "reviewedForPublicRelease": "Maintainer avatar approved for public project attribution."
+    }
+  ]
+}

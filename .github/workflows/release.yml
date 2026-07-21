@@ -1,0 +1,144 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Validate and build installer
+    if: github.repository == 'amsive/local-media-proxy'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.package.outputs.version }}
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Confirm tagged commit is merged to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}^{commit}" origin/main; then
+            echo "Release tags must point to commits already merged into main." >&2
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Block sensitive tagged source and generated archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/verify-public-release.js
+          archive_root="${RUNNER_TEMP}/source-archives"
+          tar_root="${archive_root}/tar"
+          zip_root="${archive_root}/zip"
+          mkdir -p "${tar_root}" "${zip_root}"
+          git archive --format=tar HEAD | tar -xf - -C "${tar_root}"
+          git archive --format=zip --output="${archive_root}/source.zip" HEAD
+          unzip -q "${archive_root}/source.zip" -d "${zip_root}"
+          node scripts/verify-public-release.js --root "${tar_root}" --require-manifest-completeness
+          node scripts/verify-public-release.js --root "${zip_root}" --require-manifest-completeness
+
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Validate add-on
+        run: npm run validate
+
+      - name: Build installable archive
+        run: npm run package:addon
+
+      - name: Verify release metadata and archive
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          archive="dist/local-media-proxy-${version}.tgz"
+          checksum="${archive}.sha256"
+
+          node scripts/verify-release-package.js "${GITHUB_REF_NAME}" "${archive}"
+          (
+            cd dist
+            sha256sum "$(basename "${archive}")" > "$(basename "${checksum}")"
+            sha256sum --check "$(basename "${checksum}")"
+          )
+
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "archive=${archive}" >> "${GITHUB_OUTPUT}"
+          echo "checksum=${checksum}" >> "${GITHUB_OUTPUT}"
+
+      - name: Preserve verified release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          if-no-files-found: error
+          name: local-media-proxy-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.checksum }}
+          retention-days: 14
+
+  release:
+    name: Create GitHub draft candidate
+    if: github.repository == 'amsive/local-media-proxy'
+    needs: build
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download verified release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: local-media-proxy-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist
+
+      - name: Create GitHub release and attach installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_ARCHIVE: dist/local-media-proxy-${{ needs.build.outputs.version }}.tgz
+          RELEASE_CHECKSUM: dist/local-media-proxy-${{ needs.build.outputs.version }}.tgz.sha256
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(
+            release create "${GITHUB_REF_NAME}"
+            "${RELEASE_ARCHIVE}#Local Media Proxy ${GITHUB_REF_NAME} installable add-on"
+            "${RELEASE_CHECKSUM}#SHA-256 checksum"
+            --verify-tag
+            --generate-notes
+            --fail-on-no-commits
+            --draft
+            --prerelease
+            --latest=false
+            --title "Local Media Proxy v${{ needs.build.outputs.version }}"
+          )
+
+          gh "${args[@]}"
+
+          release_json="$(gh release view "${GITHUB_REF_NAME}" --json isDraft,isPrerelease,tagName)"
+          if [[ "$(jq -r '.tagName' <<< "${release_json}")" != "${GITHUB_REF_NAME}" \
+            || "$(jq -r '.isDraft' <<< "${release_json}")" != "true" \
+            || "$(jq -r '.isPrerelease' <<< "${release_json}")" != "true" ]]; then
+            echo "GitHub did not preserve ${GITHUB_REF_NAME} as a draft prerelease candidate." >&2
+            exit 1
+          fi

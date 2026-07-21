@@ -1,0 +1,300 @@
+name: Promote release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Draft release tag to approve, such as v0.1.0
+        required: true
+        type: string
+      confirmation:
+        description: Type PROMOTE followed by the tag, such as PROMOTE v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: promote-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify draft candidate assets
+    if: github.repository == 'amsive/local-media-proxy' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      archive_asset_id: ${{ steps.candidate.outputs.archive_asset_id }}
+      archive_sha256: ${{ steps.candidate.outputs.archive_sha256 }}
+      checksum_asset_id: ${{ steps.candidate.outputs.checksum_asset_id }}
+      checksum_sha256: ${{ steps.candidate.outputs.checksum_sha256 }}
+      release_id: ${{ steps.candidate.outputs.release_id }}
+      tag_object_sha: ${{ steps.candidate.outputs.tag_object_sha }}
+      tag_object_type: ${{ steps.candidate.outputs.tag_object_type }}
+      tag_commit_sha: ${{ steps.candidate.outputs.tag_commit_sha }}
+    steps:
+      - name: Validate explicit promotion approval
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Promotion requires a release tag such as v0.1.0." >&2
+            exit 1
+          fi
+          if [[ "${CONFIRMATION}" != "PROMOTE ${TAG}" ]]; then
+            echo "Confirmation must exactly match: PROMOTE ${TAG}" >&2
+            exit 1
+          fi
+
+      - name: Check out tagged source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.tag }}
+
+      - name: Confirm tagged commit is merged to main
+        env:
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git merge-base --is-ancestor "${TAG}^{commit}" origin/main; then
+            echo "Release tags must point to commits already merged into main." >&2
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Reverify tagged public source
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/verify-public-release.js
+          source_root="${RUNNER_TEMP}/source-archive"
+          mkdir -p "${source_root}"
+          git archive --format=tar HEAD | tar -xf - -C "${source_root}"
+          node scripts/verify-public-release.js --root "${source_root}" --require-manifest-completeness
+
+      - name: Rebuild distributable files from tagged source
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+
+      - name: Verify draft prerelease and assets
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_json="$(gh release view "${TAG}" --json assets,databaseId,isDraft,isPrerelease,tagName)"
+          if [[ "$(jq -r '.tagName' <<< "${release_json}")" != "${TAG}" \
+            || "$(jq -r '.isDraft' <<< "${release_json}")" != "true" \
+            || "$(jq -r '.isPrerelease' <<< "${release_json}")" != "true" ]]; then
+            echo "${TAG} must remain a draft prerelease awaiting approval." >&2
+            exit 1
+          fi
+
+          version="${TAG#v}"
+          archive="local-media-proxy-${version}.tgz"
+          checksum="${archive}.sha256"
+          assets_dir="${RUNNER_TEMP}/release-assets"
+          mkdir -p "${assets_dir}"
+
+          release_id="$(jq -r '.databaseId' <<< "${release_json}")"
+          archive_asset_id="$(jq -r --arg name "${archive}" '.assets[] | select(.name == $name) | .id' <<< "${release_json}")"
+          checksum_asset_id="$(jq -r --arg name "${checksum}" '.assets[] | select(.name == $name) | .id' <<< "${release_json}")"
+          if [[ -z "${archive_asset_id}" || -z "${checksum_asset_id}" ]]; then
+            echo "The prerelease is missing its expected installer or checksum asset." >&2
+            exit 1
+          fi
+
+          tag_object_sha="$(gh api "repos/${GH_REPO}/git/ref/tags/${TAG}" --jq '.object.sha')"
+          tag_object_type="$(gh api "repos/${GH_REPO}/git/ref/tags/${TAG}" --jq '.object.type')"
+          if [[ "${tag_object_type}" != "tag" ]]; then
+            echo "Release tags must be annotated tags." >&2
+            exit 1
+          fi
+          tag_commit_json="$(gh api "repos/${GH_REPO}/git/tags/${tag_object_sha}")"
+          tag_commit_sha="$(jq -r '.object.sha' <<< "${tag_commit_json}")"
+          tag_commit_type="$(jq -r '.object.type' <<< "${tag_commit_json}")"
+          local_tag_object_sha="$(git rev-parse "${TAG}^{tag}")"
+          local_tag_commit_sha="$(git rev-parse "${TAG}^{commit}")"
+          local_head_sha="$(git rev-parse HEAD)"
+          if [[ "${tag_commit_type}" != "commit" \
+            || "${tag_object_sha}" != "${local_tag_object_sha}" \
+            || "${tag_commit_sha}" != "${local_tag_commit_sha}" \
+            || "${tag_commit_sha}" != "${local_head_sha}" ]]; then
+            echo "The live annotated tag does not identify the checked-out commit." >&2
+            exit 1
+          fi
+
+          gh release download "${TAG}" \
+            --pattern "${archive}" \
+            --pattern "${checksum}" \
+            --dir "${assets_dir}"
+
+          test -s "${assets_dir}/${archive}"
+          test -s "${assets_dir}/${checksum}"
+          if [[ "$(wc -l < "${assets_dir}/${checksum}")" -ne 1 ]]; then
+            echo "The release checksum must contain exactly one entry." >&2
+            exit 1
+          fi
+          read -r digest filename extra < "${assets_dir}/${checksum}"
+          if [[ ! "${digest}" =~ ^[0-9a-f]{64}$ || "${filename}" != "${archive}" || -n "${extra:-}" ]]; then
+            echo "The release checksum has an unexpected format or filename." >&2
+            exit 1
+          fi
+          (
+            cd "${assets_dir}"
+            sha256sum --check "${checksum}"
+          )
+          node scripts/verify-release-package.js "${TAG}" "${assets_dir}/${archive}"
+
+          read -r archive_sha256 _ < <(sha256sum "${assets_dir}/${archive}")
+          read -r checksum_sha256 _ < <(sha256sum "${assets_dir}/${checksum}")
+          {
+            echo "archive_asset_id=${archive_asset_id}"
+            echo "archive_sha256=${archive_sha256}"
+            echo "checksum_asset_id=${checksum_asset_id}"
+            echo "checksum_sha256=${checksum_sha256}"
+            echo "release_id=${release_id}"
+            echo "tag_object_sha=${tag_object_sha}"
+            echo "tag_object_type=${tag_object_type}"
+            echo "tag_commit_sha=${tag_commit_sha}"
+          } >> "${GITHUB_OUTPUT}"
+
+  promote:
+    name: Approve stable release
+    if: github.repository == 'amsive/local-media-proxy' && github.ref == 'refs/heads/main'
+    needs: verify
+    permissions:
+      contents: write
+    environment:
+      name: release-approval
+      url: https://github.com/${{ github.repository }}/releases/tag/${{ inputs.tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Reverify assets and promote release
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+          EXPECTED_ARCHIVE_ASSET_ID: ${{ needs.verify.outputs.archive_asset_id }}
+          EXPECTED_ARCHIVE_SHA256: ${{ needs.verify.outputs.archive_sha256 }}
+          EXPECTED_CHECKSUM_ASSET_ID: ${{ needs.verify.outputs.checksum_asset_id }}
+          EXPECTED_CHECKSUM_SHA256: ${{ needs.verify.outputs.checksum_sha256 }}
+          EXPECTED_RELEASE_ID: ${{ needs.verify.outputs.release_id }}
+          EXPECTED_TAG_OBJECT_SHA: ${{ needs.verify.outputs.tag_object_sha }}
+          EXPECTED_TAG_OBJECT_TYPE: ${{ needs.verify.outputs.tag_object_type }}
+          EXPECTED_TAG_COMMIT_SHA: ${{ needs.verify.outputs.tag_commit_sha }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Promotion requires a release tag such as v0.1.0." >&2
+            exit 1
+          fi
+          if [[ "${CONFIRMATION}" != "PROMOTE ${TAG}" ]]; then
+            echo "Confirmation must exactly match: PROMOTE ${TAG}" >&2
+            exit 1
+          fi
+          release_json="$(gh release view "${TAG}" --json assets,databaseId,isDraft,isPrerelease,tagName)"
+          if [[ "$(jq -r '.tagName' <<< "${release_json}")" != "${TAG}" \
+            || "$(jq -r '.isDraft' <<< "${release_json}")" != "true" \
+            || "$(jq -r '.isPrerelease' <<< "${release_json}")" != "true" ]]; then
+            echo "${TAG} is no longer the draft prerelease that was approved." >&2
+            exit 1
+          fi
+
+          version="${TAG#v}"
+          archive="local-media-proxy-${version}.tgz"
+          checksum="${archive}.sha256"
+          assets_dir="${RUNNER_TEMP}/release-assets"
+          mkdir -p "${assets_dir}"
+          gh release download "${TAG}" \
+            --pattern "${archive}" \
+            --pattern "${checksum}" \
+            --dir "${assets_dir}"
+
+          test -s "${assets_dir}/${archive}"
+          test -s "${assets_dir}/${checksum}"
+          if [[ "$(wc -l < "${assets_dir}/${checksum}")" -ne 1 ]]; then
+            echo "The release checksum must contain exactly one entry." >&2
+            exit 1
+          fi
+          read -r digest filename extra < "${assets_dir}/${checksum}"
+          if [[ ! "${digest}" =~ ^[0-9a-f]{64}$ || "${filename}" != "${archive}" || -n "${extra:-}" ]]; then
+            echo "The release checksum has an unexpected format or filename." >&2
+            exit 1
+          fi
+          (
+            cd "${assets_dir}"
+            sha256sum --check "${checksum}"
+          )
+
+          read -r archive_sha256 _ < <(sha256sum "${assets_dir}/${archive}")
+          read -r checksum_sha256 _ < <(sha256sum "${assets_dir}/${checksum}")
+          if [[ "${archive_sha256}" != "${EXPECTED_ARCHIVE_SHA256}" || "${checksum_sha256}" != "${EXPECTED_CHECKSUM_SHA256}" ]]; then
+            echo "Release assets changed after approval verification; refusing promotion." >&2
+            exit 1
+          fi
+
+          release_json="$(gh release view "${TAG}" --json assets,databaseId,isDraft,isPrerelease,tagName)"
+          if [[ "$(jq -r '.tagName' <<< "${release_json}")" != "${TAG}" \
+            || "$(jq -r '.isDraft' <<< "${release_json}")" != "true" \
+            || "$(jq -r '.isPrerelease' <<< "${release_json}")" != "true" ]]; then
+            echo "${TAG} changed state during approval; refusing promotion." >&2
+            exit 1
+          fi
+          release_id="$(jq -r '.databaseId' <<< "${release_json}")"
+          archive_asset_id="$(jq -r --arg name "${archive}" '.assets[] | select(.name == $name) | .id' <<< "${release_json}")"
+          checksum_asset_id="$(jq -r --arg name "${checksum}" '.assets[] | select(.name == $name) | .id' <<< "${release_json}")"
+          tag_object_sha="$(gh api "repos/${GH_REPO}/git/ref/tags/${TAG}" --jq '.object.sha')"
+          tag_object_type="$(gh api "repos/${GH_REPO}/git/ref/tags/${TAG}" --jq '.object.type')"
+          if [[ "${tag_object_type}" != "tag" ]]; then
+            echo "Release tags must remain annotated tags." >&2
+            exit 1
+          fi
+          tag_commit_json="$(gh api "repos/${GH_REPO}/git/tags/${tag_object_sha}")"
+          tag_commit_sha="$(jq -r '.object.sha' <<< "${tag_commit_json}")"
+          tag_commit_type="$(jq -r '.object.type' <<< "${tag_commit_json}")"
+          if [[ "${release_id}" != "${EXPECTED_RELEASE_ID}" || "${archive_asset_id}" != "${EXPECTED_ARCHIVE_ASSET_ID}" || "${checksum_asset_id}" != "${EXPECTED_CHECKSUM_ASSET_ID}" ]]; then
+            echo "The release or its asset identities changed after verification; refusing promotion." >&2
+            exit 1
+          fi
+          if [[ "${tag_object_sha}" != "${EXPECTED_TAG_OBJECT_SHA}" \
+            || "${tag_object_type}" != "${EXPECTED_TAG_OBJECT_TYPE}" \
+            || "${tag_commit_type}" != "commit" \
+            || "${tag_commit_sha}" != "${EXPECTED_TAG_COMMIT_SHA}" ]]; then
+            echo "The release tag moved after verification; refusing promotion." >&2
+            exit 1
+          fi
+
+          gh release edit "${TAG}" --verify-tag --draft=false --prerelease=false --latest
+
+          release_json="$(gh release view "${TAG}" --json isDraft,isPrerelease,tagName)"
+          if [[ "$(jq -r '.tagName' <<< "${release_json}")" != "${TAG}" \
+            || "$(jq -r '.isDraft' <<< "${release_json}")" != "false" \
+            || "$(jq -r '.isPrerelease' <<< "${release_json}")" != "false" ]]; then
+            echo "GitHub did not publish ${TAG} as stable." >&2
+            exit 1
+          fi
+          if [[ "$(gh api "repos/${GH_REPO}/releases/latest" --jq '.tag_name')" != "${TAG}" ]]; then
+            echo "GitHub did not mark ${TAG} as Latest." >&2
+            exit 1
+          fi

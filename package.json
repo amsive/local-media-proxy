@@ -1,0 +1,103 @@
+{
+  "name": "local-media-proxy",
+  "productName": "Local Media Proxy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Load missing WordPress upload images from a remote site while keeping existing media local.",
+  "author": {
+    "name": "Amsive",
+    "url": "https://www.amsive.com/"
+  },
+  "contributors": [
+    {
+      "name": "Mark Davoli"
+    },
+    {
+      "name": "Boris Hegedis"
+    }
+  ],
+  "keywords": [
+    "local-addon",
+    "wordpress",
+    "media",
+    "proxy",
+    "amsive"
+  ],
+  "bgColor": "#6E187A",
+  "icon": "icon.svg",
+  "slug": "local-media-proxy",
+  "renderer": "lib/renderer.js",
+  "main": "lib/main.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/amsive/local-media-proxy.git"
+  },
+  "homepage": "https://github.com/amsive/local-media-proxy#readme",
+  "bugs": {
+    "url": "https://github.com/amsive/local-media-proxy/issues"
+  },
+  "license": "Apache-2.0",
+  "files": [
+    "lib/**/*",
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "DCO",
+    "LICENSE",
+    "NOTICE",
+    "PUBLIC_RELEASE_SAFETY.md",
+    "README.md",
+    "RELEASING.md",
+    "SECURITY.md",
+    "SUPPORT.md",
+    "TRADEMARKS.md",
+    "icon.svg",
+    "resources/**/*",
+    "style.css"
+  ],
+  "scripts": {
+    "build": "npm run clean && tsc",
+    "clean": "node scripts/clean.js",
+    "package:addon": "npm pack --cache .npm-cache --pack-destination dist",
+    "package:check": "npm pack --cache .npm-cache --dry-run",
+    "prepackage:addon": "node scripts/prepare-dist.js",
+    "prepack": "npm run build",
+    "test": "npm run build && node --test",
+    "typecheck": "tsc --noEmit",
+    "validate": "npm run verify:public-release && npm run typecheck && npm test && npm run package:check",
+    "verify:dco": "node scripts/verify-dco.js",
+    "verify:public-release": "node scripts/verify-public-release.js",
+    "watch": "tsc --watch"
+  },
+  "devDependencies": {
+    "@getflywheel/local": "10.1.1",
+    "@types/node": "^22.15.0",
+    "selfsigned": "^3.0.1",
+    "typescript": "^5.8.3"
+  },
+  "peerDependencies": {
+    "@getflywheel/local": ">=10.1.1",
+    "react": ">=16.14.0 <17",
+    "react-dom": ">=16.14.0 <17"
+  },
+  "peerDependenciesMeta": {
+    "@getflywheel/local": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "local-by-flywheel": ">=10.1.1",
+    "node": ">=20"
+  },
+  "localAddon": {
+    "type": "addon",
+    "category": "developer-tools",
+    "minimumLocalVersion": "10.1.1"
+  }
+}

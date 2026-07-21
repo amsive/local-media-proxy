@@ -1,0 +1,268 @@
+{
+  "version": 1,
+  "allowedHostnames": [
+    "amsive.com",
+    "api.localbyflywheel.com",
+    "creativecommons.org",
+    "developers.cloudflare.com",
+    "example-development.wpengine.com",
+    "example-production.wpengine.com",
+    "example-site.wpengine.com",
+    "example-staging.wpengine.com",
+    "example.wpenginepowered.com",
+    "feross.org",
+    "github.com",
+    "izs.me",
+    "keepachangelog.com",
+    "localwp.com",
+    "origin.wpengine.com",
+    "raw.githubusercontent.com",
+    "registry.npmjs.org",
+    "semver.org",
+    "wpengine.com",
+    "wpenginepowered.com",
+    "wpeproxy.com",
+    "www.amsive.com",
+    "www.apache.org",
+    "www.patreon.com",
+    "www.w3.org"
+  ],
+  "allowedPublicIps": [],
+  "exactFindingAllowlist": [
+    {
+      "path": "src/dns.ts",
+      "rule": "PUBLIC_IP_NOT_ALLOWED",
+      "matchSha256": "b0d56c1d28390f7e4ece0ae355b30ebe8c8618788c2d769736a939a7e0bb4dd4",
+      "reason": "RFC 1918 network boundary is a reviewed implementation constant used to warn about non-public origin addresses."
+    },
+    {
+      "path": "src/dns.ts",
+      "rule": "PUBLIC_IP_NOT_ALLOWED",
+      "matchSha256": "4b2228c26597aecab7d5894eb1ec83d915bc2e1a75d758b3b53471ce6aa2c91c",
+      "reason": "RFC 6598 shared-address boundary is a reviewed implementation constant used to warn about non-public origin addresses."
+    },
+    {
+      "path": "src/dns.ts",
+      "rule": "PUBLIC_IP_NOT_ALLOWED",
+      "matchSha256": "da51cf1afeda313d3202229979d5e0f29437e72637ecc26b4203fe4224ae797c",
+      "reason": "IPv4 link-local boundary is a reviewed implementation constant used to warn about non-public origin addresses."
+    },
+    {
+      "path": "src/dns.ts",
+      "rule": "PUBLIC_IP_NOT_ALLOWED",
+      "matchSha256": "4fb0798e0eb02d5310d95142b51ddadf3d03fcd929382309589f573c0f923264",
+      "reason": "RFC 1918 network boundary is a reviewed implementation constant used to warn about non-public origin addresses."
+    },
+    {
+      "path": "src/dns.ts",
+      "rule": "PUBLIC_IP_NOT_ALLOWED",
+      "matchSha256": "3d0649ff9fac24ea421c9ce8ee6af720a84ceaa1c0a6bbcd6138938f67ff661e",
+      "reason": "IETF special-purpose network boundary is a reviewed implementation constant used to warn about non-public origin addresses."
+    },
+    {
+      "path": "src/dns.ts",
+      "rule": "PUBLIC_IP_NOT_ALLOWED",
+      "matchSha256": "5da4236dba69f926f858153f06d49edc73f54ce8cd226d7239d1948e663610e0",
+      "reason": "RFC 1918 network boundary is a reviewed implementation constant used to warn about non-public origin addresses."
+    },
+    {
+      "path": "src/dns.ts",
+      "rule": "PUBLIC_IP_NOT_ALLOWED",
+      "matchSha256": "ffe6deda608686b5edbe952091ac123bcfe2b4d8f247c76778ce7b05e30a606d",
+      "reason": "Benchmark-testing network boundary is a reviewed implementation constant used to warn about non-public origin addresses."
+    },
+    {
+      "path": "src/dns.ts",
+      "rule": "PUBLIC_IP_NOT_ALLOWED",
+      "matchSha256": "712b9956747edd3e9962e40b363c424f7e4e5125c1559e5bc32abf881bbf2907",
+      "reason": "IPv4 multicast boundary is a reviewed implementation constant used to warn about non-public origin addresses."
+    },
+    {
+      "path": "src/dns.ts",
+      "rule": "PUBLIC_IP_NOT_ALLOWED",
+      "matchSha256": "ef1930c7065c8ac80b2cfae931b057d079e032dc9847731abb8155bcf2d8210c",
+      "reason": "Reserved IPv4 boundary is a reviewed implementation constant used to warn about non-public origin addresses."
+    },
+    {
+      "path": "package/lib/dns.js",
+      "rule": "PUBLIC_IP_NOT_ALLOWED",
+      "matchSha256": "b0d56c1d28390f7e4ece0ae355b30ebe8c8618788c2d769736a939a7e0bb4dd4",
+      "reason": "Compiled RFC 1918 boundary is required by the packaged origin-address warning logic."
+    },
+    {
+      "path": "package/lib/dns.js",
+      "rule": "PUBLIC_IP_NOT_ALLOWED",
+      "matchSha256": "4b2228c26597aecab7d5894eb1ec83d915bc2e1a75d758b3b53471ce6aa2c91c",
+      "reason": "Compiled RFC 6598 boundary is required by the packaged origin-address warning logic."
+    },
+    {
+      "path": "package/lib/dns.js",
+      "rule": "PUBLIC_IP_NOT_ALLOWED",
+      "matchSha256": "da51cf1afeda313d3202229979d5e0f29437e72637ecc26b4203fe4224ae797c",
+      "reason": "Compiled IPv4 link-local boundary is required by the packaged origin-address warning logic."
+    },
+    {
+      "path": "package/lib/dns.js",
+      "rule": "PUBLIC_IP_NOT_ALLOWED",
+      "matchSha256": "4fb0798e0eb02d5310d95142b51ddadf3d03fcd929382309589f573c0f923264",
+      "reason": "Compiled RFC 1918 boundary is required by the packaged origin-address warning logic."
+    },
+    {
+      "path": "package/lib/dns.js",
+      "rule": "PUBLIC_IP_NOT_ALLOWED",
+      "matchSha256": "3d0649ff9fac24ea421c9ce8ee6af720a84ceaa1c0a6bbcd6138938f67ff661e",
+      "reason": "Compiled IETF special-purpose boundary is required by the packaged origin-address warning logic."
+    },
+    {
+      "path": "package/lib/dns.js",
+      "rule": "PUBLIC_IP_NOT_ALLOWED",
+      "matchSha256": "5da4236dba69f926f858153f06d49edc73f54ce8cd226d7239d1948e663610e0",
+      "reason": "Compiled RFC 1918 boundary is required by the packaged origin-address warning logic."
+    },
+    {
+      "path": "package/lib/dns.js",
+      "rule": "PUBLIC_IP_NOT_ALLOWED",
+      "matchSha256": "ffe6deda608686b5edbe952091ac123bcfe2b4d8f247c76778ce7b05e30a606d",
+      "reason": "Compiled benchmark-testing boundary is required by the packaged origin-address warning logic."
+    },
+    {
+      "path": "package/lib/dns.js",
+      "rule": "PUBLIC_IP_NOT_ALLOWED",
+      "matchSha256": "712b9956747edd3e9962e40b363c424f7e4e5125c1559e5bc32abf881bbf2907",
+      "reason": "Compiled IPv4 multicast boundary is required by the packaged origin-address warning logic."
+    },
+    {
+      "path": "package/lib/dns.js",
+      "rule": "PUBLIC_IP_NOT_ALLOWED",
+      "matchSha256": "ef1930c7065c8ac80b2cfae931b057d079e032dc9847731abb8155bcf2d8210c",
+      "reason": "Compiled reserved IPv4 boundary is required by the packaged origin-address warning logic."
+    },
+    {
+      "path": "tests/hosting.test.js",
+      "rule": "PUBLIC_IP_NOT_ALLOWED",
+      "matchSha256": "e14759884124ebda2598c31b6398bac1aa681bec9f10cf3937df021c72e9ea91",
+      "reason": "Example.com public IPv4 fixture is required to verify that provider-supplied routable addresses do not receive reserved-address warnings."
+    },
+    {
+      "path": "tests/dns.test.js",
+      "rule": "PUBLIC_IP_NOT_ALLOWED",
+      "matchSha256": "e14759884124ebda2598c31b6398bac1aa681bec9f10cf3937df021c72e9ea91",
+      "reason": "Example.com public IPv4 fixture is required to verify routable-address behavior and is not client infrastructure."
+    },
+    {
+      "path": "tests/dns.test.js",
+      "rule": "PUBLIC_IP_NOT_ALLOWED",
+      "matchSha256": "84742fccc99fe344216b12aa0a48a6d8313d2613561eb0db2b7ced32b5782c2a",
+      "reason": "Second Example.com public IPv4 fixture verifies multi-address ordering and deduplication."
+    },
+    {
+      "path": "tests/dns.test.js",
+      "rule": "PUBLIC_IP_NOT_ALLOWED",
+      "matchSha256": "fb9d128946a4d8575cf591797ab30dbd7c390d2288d76cacc5e9f953bbafe56e",
+      "reason": "Example.com public IPv6 fixture is required to verify routable IPv6 behavior and is not client infrastructure."
+    },
+    {
+      "path": "tests/renderer.test.js",
+      "rule": "PUBLIC_IP_NOT_ALLOWED",
+      "matchSha256": "e14759884124ebda2598c31b6398bac1aa681bec9f10cf3937df021c72e9ea91",
+      "reason": "Example.com public IPv4 fixture verifies that the renderer ranks routable candidates ahead of reserved addresses."
+    },
+    {
+      "path": "tests/renderer.test.js",
+      "rule": "PUBLIC_IP_NOT_ALLOWED",
+      "matchSha256": "84742fccc99fe344216b12aa0a48a6d8313d2613561eb0db2b7ced32b5782c2a",
+      "reason": "Second Example.com public IPv4 fixture verifies renderer candidate selection."
+    },
+    {
+      "path": "tests/validation.test.js",
+      "rule": "URL_CREDENTIALS",
+      "matchSha256": "1231625e7e70c4e56347672932d37a1c35eff89051483b37cbd09f7b9c58337e",
+      "reason": "Synthetic invalid-credential fixture verifies that application validation rejects credentials in a URL."
+    }
+  ],
+  "manifestedExtensions": [
+    ".7z",
+    ".accdb",
+    ".avi",
+    ".bak",
+    ".csv",
+    ".db",
+    ".der",
+    ".dmg",
+    ".doc",
+    ".docx",
+    ".dump",
+    ".exe",
+    ".gif",
+    ".gz",
+    ".ico",
+    ".iso",
+    ".jpeg",
+    ".jpg",
+    ".key",
+    ".mdb",
+    ".mov",
+    ".mp3",
+    ".mp4",
+    ".ods",
+    ".odt",
+    ".otf",
+    ".pdf",
+    ".pem",
+    ".pfx",
+    ".png",
+    ".ppt",
+    ".pptx",
+    ".rar",
+    ".sqlite",
+    ".sqlite3",
+    ".sql",
+    ".svg",
+    ".tar",
+    ".tgz",
+    ".tsv",
+    ".ttf",
+    ".wav",
+    ".webm",
+    ".webp",
+    ".woff",
+    ".woff2",
+    ".xls",
+    ".xlsx",
+    ".xz",
+    ".zip"
+  ],
+  "dangerousExtensions": [
+    ".7z",
+    ".accdb",
+    ".bak",
+    ".csv",
+    ".db",
+    ".dmg",
+    ".doc",
+    ".docx",
+    ".dump",
+    ".exe",
+    ".gz",
+    ".iso",
+    ".key",
+    ".mdb",
+    ".ods",
+    ".odt",
+    ".pfx",
+    ".ppt",
+    ".pptx",
+    ".rar",
+    ".sqlite",
+    ".sqlite3",
+    ".sql",
+    ".tar",
+    ".tgz",
+    ".tsv",
+    ".xls",
+    ".xlsx",
+    ".xz",
+    ".zip"
+  ],
+  "maxFileSizeBytes": 10485760
+}
