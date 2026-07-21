@@ -32,6 +32,29 @@ test('creates ordinary SemVer tags as draft prerelease candidates', () => {
 	assert.match(workflow, /RELEASE_CHECKSUM: dist\/local-media-proxy-v\$\{\{ needs\.build\.outputs\.version \}\}\.tgz\.sha256/);
 });
 
+test('uses exact release filenames as their visible GitHub asset labels', () => {
+	const releaseWorkflow = readWorkflow('release.yml');
+	const promotionWorkflow = readWorkflow('promote-release.yml');
+
+	assert.ok(releaseWorkflow.includes('archive_name="$(basename "${RELEASE_ARCHIVE}")"'));
+	assert.ok(releaseWorkflow.includes('checksum_name="$(basename "${RELEASE_CHECKSUM}")"'));
+	assert.ok(releaseWorkflow.includes('"${RELEASE_ARCHIVE}#${archive_name}"'));
+	assert.ok(releaseWorkflow.includes('"${RELEASE_CHECKSUM}#${checksum_name}"'));
+	assert.doesNotMatch(releaseWorkflow, /#Local Media Proxy .* installable add-on/);
+	assert.doesNotMatch(releaseWorkflow, /#SHA-256 checksum/);
+	assert.match(releaseWorkflow, /--json assets,isDraft,isPrerelease,tagName/);
+	assert.match(releaseWorkflow, /\[\.assets\[\] \| \{name, label\}\] \| sort_by\(\.name\)/);
+	assert.match(releaseWorkflow, /\{name: \$archive, label: \$archive\}/);
+	assert.match(releaseWorkflow, /\{name: \$checksum, label: \$checksum\}/);
+	assert.match(releaseWorkflow, /"\$\{asset_pairs_json\}" != "\$\{expected_asset_pairs_json\}"/);
+	assert.equal((promotionWorkflow.match(/^\s*asset_pairs_json=/gm) ?? []).length, 2);
+	assert.equal((promotionWorkflow.match(/^\s*expected_asset_pairs_json=/gm) ?? []).length, 2);
+	assert.equal(
+		(promotionWorkflow.match(/"\$\{asset_pairs_json\}" != "\$\{expected_asset_pairs_json\}"/g) ?? []).length,
+		2,
+	);
+});
+
 test('requires an explicit human promotion with candidate identity binding', () => {
 	const workflow = readWorkflow('promote-release.yml');
 
@@ -59,10 +82,10 @@ test('requires an explicit human promotion with candidate identity binding', () 
 		2,
 	);
 	assert.equal((workflow.match(/checksum="\$\{archive\}\.sha256"/g) ?? []).length, 2);
-	assert.equal((workflow.match(/^\s*asset_names_json=/gm) ?? []).length, 2);
-	assert.equal((workflow.match(/^\s*expected_asset_names_json=/gm) ?? []).length, 2);
-	assert.match(workflow, /The prerelease assets must be exactly/);
-	assert.match(workflow, /Release assets changed after verification; refusing promotion/);
+	assert.equal((workflow.match(/^\s*asset_pairs_json=/gm) ?? []).length, 2);
+	assert.equal((workflow.match(/^\s*expected_asset_pairs_json=/gm) ?? []).length, 2);
+	assert.match(workflow, /The prerelease asset labels and download names must be exactly/);
+	assert.match(workflow, /Release asset labels or download names changed after verification; refusing promotion/);
 	assert.match(workflow, /node scripts\/verify-release-package\.js "\$\{TAG\}" "\$\{assets_dir\}\/\$\{archive\}"/);
 	assert.doesNotMatch(workflow, /version="\$\{version%-release\}"/);
 	assert.match(workflow, /git merge-base --is-ancestor "\$\{TAG\}\^\{commit\}" origin\/main/);

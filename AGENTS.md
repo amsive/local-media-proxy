@@ -32,7 +32,7 @@ Never commit directly to `main`. Use `feature/<slug>` for planned work or `issue
 
 For screenshots committed to this repository, embed them in PR descriptions and comments with an absolute, commit-pinned same-host URL: `![alt text](https://github.com/amsive/local-media-proxy/raw/<head-commit-sha>/docs/screenshots/<file>.png)`. Use a commit SHA that contains the image. Do not use repository-relative paths, which GitHub can preserve unresolved in PR HTML, or direct `raw.githubusercontent.com` URLs. After saving the PR, inspect the rendered conversation and confirm the images themselves display; visible alt-text links are not sufficient verification.
 
-Release tags use exact `vX.Y.Z` SemVer names and create draft prereleases. Human approval is required before stable publication.
+Release tags use exact `vX.Y.Z` SemVer names and create draft prereleases. Uploaded assets must use `local-media-proxy-vX.Y.Z.tgz` and `local-media-proxy-vX.Y.Z.tgz.sha256` as both their visible GitHub labels and downloadable filenames. Human approval is required before stable publication.
 
 ## Security & Configuration Tips
 

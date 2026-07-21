@@ -8,7 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
-- Nothing yet.
+- Release automation now uses the exact versioned TGZ and checksum filenames as their visible GitHub labels, and promotion rejects any asset-name or label drift.
 
 ## [0.1.0] - 2026-07-21
 

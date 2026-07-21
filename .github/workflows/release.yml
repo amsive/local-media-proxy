@@ -120,10 +120,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          archive_name="$(basename "${RELEASE_ARCHIVE}")"
+          checksum_name="$(basename "${RELEASE_CHECKSUM}")"
           args=(
             release create "${GITHUB_REF_NAME}"
-            "${RELEASE_ARCHIVE}#Local Media Proxy ${GITHUB_REF_NAME} installable add-on"
-            "${RELEASE_CHECKSUM}#SHA-256 checksum"
+            "${RELEASE_ARCHIVE}#${archive_name}"
+            "${RELEASE_CHECKSUM}#${checksum_name}"
             --verify-tag
             --generate-notes
             --fail-on-no-commits
@@ -135,10 +137,19 @@ jobs:
 
           gh "${args[@]}"
 
-          release_json="$(gh release view "${GITHUB_REF_NAME}" --json isDraft,isPrerelease,tagName)"
+          release_json="$(gh release view "${GITHUB_REF_NAME}" --json assets,isDraft,isPrerelease,tagName)"
+          asset_pairs_json="$(jq -c '[.assets[] | {name, label}] | sort_by(.name)' <<< "${release_json}")"
+          expected_asset_pairs_json="$(jq -cn \
+            --arg archive "${archive_name}" \
+            --arg checksum "${checksum_name}" \
+            '[{name: $archive, label: $archive}, {name: $checksum, label: $checksum}] | sort_by(.name)')"
           if [[ "$(jq -r '.tagName' <<< "${release_json}")" != "${GITHUB_REF_NAME}" \
             || "$(jq -r '.isDraft' <<< "${release_json}")" != "true" \
             || "$(jq -r '.isPrerelease' <<< "${release_json}")" != "true" ]]; then
             echo "GitHub did not preserve ${GITHUB_REF_NAME} as a draft prerelease candidate." >&2
+            exit 1
+          fi
+          if [[ "${asset_pairs_json}" != "${expected_asset_pairs_json}" ]]; then
+            echo "Release asset labels and download names must exactly match ${archive_name} and ${checksum_name}." >&2
             exit 1
           fi

@@ -113,13 +113,13 @@ jobs:
           assets_dir="${RUNNER_TEMP}/release-assets"
           mkdir -p "${assets_dir}"
 
-          asset_names_json="$(jq -c '[.assets[].name] | sort' <<< "${release_json}")"
-          expected_asset_names_json="$(jq -cn \
+          asset_pairs_json="$(jq -c '[.assets[] | {name, label}] | sort_by(.name)' <<< "${release_json}")"
+          expected_asset_pairs_json="$(jq -cn \
             --arg archive "${archive}" \
             --arg checksum "${checksum}" \
-            '[$archive, $checksum] | sort')"
-          if [[ "${asset_names_json}" != "${expected_asset_names_json}" ]]; then
-            echo "The prerelease assets must be exactly ${archive} and ${checksum}." >&2
+            '[{name: $archive, label: $archive}, {name: $checksum, label: $checksum}] | sort_by(.name)')"
+          if [[ "${asset_pairs_json}" != "${expected_asset_pairs_json}" ]]; then
+            echo "The prerelease asset labels and download names must be exactly ${archive} and ${checksum}." >&2
             exit 1
           fi
 
@@ -271,13 +271,13 @@ jobs:
             echo "${TAG} changed state during approval; refusing promotion." >&2
             exit 1
           fi
-          asset_names_json="$(jq -c '[.assets[].name] | sort' <<< "${release_json}")"
-          expected_asset_names_json="$(jq -cn \
+          asset_pairs_json="$(jq -c '[.assets[] | {name, label}] | sort_by(.name)' <<< "${release_json}")"
+          expected_asset_pairs_json="$(jq -cn \
             --arg archive "${archive}" \
             --arg checksum "${checksum}" \
-            '[$archive, $checksum] | sort')"
-          if [[ "${asset_names_json}" != "${expected_asset_names_json}" ]]; then
-            echo "Release assets changed after verification; refusing promotion." >&2
+            '[{name: $archive, label: $archive}, {name: $checksum, label: $checksum}] | sort_by(.name)')"
+          if [[ "${asset_pairs_json}" != "${expected_asset_pairs_json}" ]]; then
+            echo "Release asset labels or download names changed after verification; refusing promotion." >&2
             exit 1
           fi
           release_id="$(jq -r '.databaseId' <<< "${release_json}")"
