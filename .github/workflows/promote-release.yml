@@ -108,10 +108,20 @@ jobs:
           fi
 
           version="${TAG#v}"
-          archive="local-media-proxy-${version}.zip"
+          archive="local-media-proxy-v${version}.tgz"
           checksum="${archive}.sha256"
           assets_dir="${RUNNER_TEMP}/release-assets"
           mkdir -p "${assets_dir}"
+
+          asset_names_json="$(jq -c '[.assets[].name] | sort' <<< "${release_json}")"
+          expected_asset_names_json="$(jq -cn \
+            --arg archive "${archive}" \
+            --arg checksum "${checksum}" \
+            '[$archive, $checksum] | sort')"
+          if [[ "${asset_names_json}" != "${expected_asset_names_json}" ]]; then
+            echo "The prerelease assets must be exactly ${archive} and ${checksum}." >&2
+            exit 1
+          fi
 
           release_id="$(jq -r '.databaseId' <<< "${release_json}")"
           archive_asset_id="$(jq -r --arg name "${archive}" '.assets[] | select(.name == $name) | .id' <<< "${release_json}")"
@@ -222,7 +232,7 @@ jobs:
           fi
 
           version="${TAG#v}"
-          archive="local-media-proxy-${version}.zip"
+          archive="local-media-proxy-v${version}.tgz"
           checksum="${archive}.sha256"
           assets_dir="${RUNNER_TEMP}/release-assets"
           mkdir -p "${assets_dir}"
@@ -259,6 +269,15 @@ jobs:
             || "$(jq -r '.isDraft' <<< "${release_json}")" != "true" \
             || "$(jq -r '.isPrerelease' <<< "${release_json}")" != "true" ]]; then
             echo "${TAG} changed state during approval; refusing promotion." >&2
+            exit 1
+          fi
+          asset_names_json="$(jq -c '[.assets[].name] | sort' <<< "${release_json}")"
+          expected_asset_names_json="$(jq -cn \
+            --arg archive "${archive}" \
+            --arg checksum "${checksum}" \
+            '[$archive, $checksum] | sort')"
+          if [[ "${asset_names_json}" != "${expected_asset_names_json}" ]]; then
+            echo "Release assets changed after verification; refusing promotion." >&2
             exit 1
           fi
           release_id="$(jq -r '.databaseId' <<< "${release_json}")"

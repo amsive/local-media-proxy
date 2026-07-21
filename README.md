@@ -31,12 +31,12 @@ Apache sites are detected and left unchanged. The add-on proxies image files onl
 
 ## Install from a release
 
-1. Download `local-media-proxy-<version>.zip` from the matching [GitHub release](https://github.com/amsive/local-media-proxy/releases). Optionally verify it against the attached `local-media-proxy-<version>.zip.sha256` file.
+1. Download `local-media-proxy-v<version>.tgz` from the matching [GitHub release](https://github.com/amsive/local-media-proxy/releases). Optionally verify it against the attached `local-media-proxy-v<version>.tgz.sha256` file.
 2. Open Local and go to **Add-ons → Installed**.
-3. Choose **Install from disk** and select the `.zip` directly.
+3. Choose **Install from disk** and select the `.tgz` directly.
 4. Enable the add-on and restart Local if prompted.
 
-The ZIP is the installable artifact; do not extract it first. It contains exactly one top-level folder named `local-media-proxy/`, without a version number in the folder name.
+The TGZ is the installable artifact; do not extract it first or select GitHub's automatically generated source archives. It uses npm's standard single top-level `package/` folder and contains only the files required to run and identify the add-on in Local.
 When manually updating an existing installation, first disable and remove the installed Local Media Proxy entry. Local does not overwrite an add-on that already uses the same slug.
 
 ## Installed add-on details
@@ -117,7 +117,7 @@ Platform add-on directories and current API guidance are documented in Local’s
 
 See [AGENTS.md](AGENTS.md) for repository conventions, [CONTRIBUTING.md](CONTRIBUTING.md) for contribution checks, [PUBLIC_RELEASE_SAFETY.md](PUBLIC_RELEASE_SAFETY.md) for the blocking content-safety process, and [RELEASING.md](RELEASING.md) for the release process.
 
-Pushing an exact SemVer release tag such as `v0.1.0` starts the release workflow. It verifies that the tag, package metadata, lockfile, changelog, and archive agree before GitHub creates a draft, attaches the installable `local-media-proxy-<version>.zip` and its SHA-256 checksum, and preselects the prerelease state without marking it Latest. CI and promotion verification require the ZIP to contain exactly one top-level `local-media-proxy/` folder with no version number. A maintainer reviews the draft but does not publish it manually. The manual **Promote release** workflow requires exact tag-specific confirmation, re-verifies the release, tag, asset identities, structure, and digests, then publishes it as stable and Latest. The documented `release-approval` environment adds a second reviewer gate when configured.
+Pushing an exact SemVer release tag such as `v0.1.0` starts the release workflow. It verifies that the tag, package metadata, lockfile, changelog, and archive agree before GitHub creates a draft, attaches the installable `local-media-proxy-v<version>.tgz` and its SHA-256 checksum, and preselects the prerelease state without marking it Latest. CI and promotion verification require npm's standard `package/` root and the exact minimal runtime-file manifest. A maintainer reviews the draft but does not publish it manually. The manual **Promote release** workflow requires exact tag-specific confirmation, re-verifies the release, tag, asset identities, structure, and digests, then publishes it as stable and Latest. The documented `release-approval` environment adds a second reviewer gate when configured.
 
 ## Troubleshooting
 
@@ -130,7 +130,7 @@ Pushing an exact SemVer release tag such as `v0.1.0` starts the release workflow
 - **Certificate error:** For manual endpoints, confirm that the Site URL hostname matches the remote certificate. Manually configured WP Engine origins can use the provider’s verified wildcard identity automatically; other hostname mismatches remain errors. For WP Engine auto-population, refresh discovery so the direct `.wpengine.com` TLS identity matches the selected environment. In every case, the certificate must chain to a public CA or Cloudflare Origin CA; arbitrary self-signed certificates are rejected.
 - **Remote endpoint returns an error:** Test the exact remote upload URL directly. Authentication, hotlink protection, or origin, proxy, or CDN access rules can still block it.
 - **Images fail after a CA change:** Update the add-on’s trusted CA bundle, then test and reapply the settings. Normal leaf-certificate rotation under the same CA does not require reconfiguration.
-- **Local says the add-on already exists:** Disable and remove the installed Local Media Proxy entry before selecting the replacement `.zip` with **Install from disk**.
+- **Local says the add-on already exists:** Disable and remove the installed Local Media Proxy entry before selecting the replacement `.tgz` with **Install from disk**.
 - **Configuration reload fails:** Disable the proxy. The add-on restores its managed files on a failed apply; review Local’s log for the underlying Nginx error.
 
 ## License, support, and trademarks

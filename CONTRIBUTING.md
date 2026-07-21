@@ -18,7 +18,7 @@ Never commit directly to `main`. Create `feature/<slug>` for planned work or `is
 
 1. Install dependencies with `npm install`.
 2. Run `npm run verify:public-release` and `npm run verify:dco`, review exact safety exceptions and asset-manifest changes, then run `npm run validate`.
-3. Build the packed artifact with `npm run package:addon`, verify `dist/local-media-proxy-<version>.zip`, and confirm the ZIP contains exactly one top-level `local-media-proxy/` folder with no version number. Select the ZIP directly in Local’s **Install from disk** flow without extracting it. The release workflow generates and verifies the matching `.zip.sha256` attachment.
+3. Build the packed artifact with `npm run package:addon`, verify `dist/local-media-proxy-v<version>.tgz`, and confirm the TGZ uses npm's single `package/` root and contains only the verified minimal runtime manifest. Select the TGZ directly in Local’s **Install from disk** flow without extracting it. The release workflow generates and verifies the matching `.tgz.sha256` attachment.
 4. Confirm the Installed Add-ons card shows the Amsive icon and purple background, `Local Media Proxy`, `by Amsive`, the expected version, and the one-line summary.
 5. Open the card icon and confirm the native **Overview** and **Release notes** tabs render without an alert, including the packaged artwork and contributor credits. The release tab must show the current version first and no more than five versions total.
 6. For renderer changes, commit readable screenshots from both Local light and dark themes. Use only fictional sites and documentation addresses, show the minimum useful site list, remove automation overlays, run local OCR, and record the reviewed SHA-256 in `public-release-assets.json`.
@@ -28,7 +28,7 @@ Never commit directly to `main`. Create `feature/<slug>` for planned work or `is
 10. Review every changed filename, diff, commit message, PR field, comment, and release note for client or proprietary context that an automated pattern cannot recognize.
 11. Add an entry under `CHANGELOG.md` → `Unreleased` for user-visible changes.
 
-Local cannot overwrite an installed add-on with the same slug. For manual upgrade testing, disable and remove the current Local Media Proxy installation before selecting the replacement ZIP directly.
+Local cannot overwrite an installed add-on with the same slug. For manual upgrade testing, disable and remove the current Local Media Proxy installation before selecting the replacement TGZ directly.
 
 Use short Conventional Commit-style subjects. Prefer one logical change per commit and do not commit `lib/`, `dist/`, `node_modules/`, diagnostic site configuration, client-supplied evidence, certificates, or Local application data. Follow [PUBLIC_RELEASE_SAFETY.md](PUBLIC_RELEASE_SAFETY.md) for the blocking content and asset review process.
 

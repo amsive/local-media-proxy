@@ -13,13 +13,9 @@ const test = require('node:test');
 const { gzipSync } = require('node:zlib');
 
 const {
-	createReleaseZip,
-} = require('../scripts/create-release-zip');
-const { crc32 } = require('../scripts/verify-public-release');
-const {
 	EXPECTED_ARCHIVE_ENTRIES,
 	PACKAGE_ROOT,
-	parseZip,
+	parseTarGzip,
 	verifyArchiveContentSafety,
 	verifyReleasePackage,
 } = require('../scripts/verify-release-package');
@@ -29,76 +25,65 @@ const packageJson = JSON.parse(
 	fs.readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8'),
 );
 const tag = `v${packageJson.version}`;
-const archiveName = `${packageJson.name}-${packageJson.version}.zip`;
-const ZIP_VERSION = 20;
-const ZIP_VERSION_MADE_BY = (3 << 8) | ZIP_VERSION;
-const ZIP_UTF8_FLAG = 1 << 11;
-const ZIP_DOS_DATE = 0x0021;
-const ZIP_REGULAR_FILE_MODE = 0o100644;
+const archiveName = `${packageJson.name}-v${packageJson.version}.tgz`;
 
-test('accepts only the complete 45-file ZIP release manifest', (t) => {
-	assert.equal(EXPECTED_ARCHIVE_ENTRIES.length, 45);
-	const archivePath = writeZip(
-		t,
-		EXPECTED_ARCHIVE_ENTRIES.map((name) => ({
-			name,
-			data: fs.readFileSync(path.join(repositoryRoot, name.slice(PACKAGE_ROOT.length))),
-		})),
-	);
+test('accepts only the complete 22-file npm-style TGZ release manifest', (t) => {
+	assert.equal(EXPECTED_ARCHIVE_ENTRIES.length, 22);
+	const archivePath = writeTarGzip(t, releaseEntries());
 
 	const entries = verifyReleasePackage(tag, archivePath);
 	assert.deepEqual(
 		entries.map((entry) => entry.name),
-		[...EXPECTED_ARCHIVE_ENTRIES].sort(),
+		EXPECTED_ARCHIVE_ENTRIES,
 	);
+	assert(entries.every((entry) => entry.name.startsWith(PACKAGE_ROOT)));
+	assert(entries.every((entry) => !entry.name.endsWith('.map')));
+	assert(!entries.some((entry) => entry.name === `${PACKAGE_ROOT}lib/types.js`));
 });
 
-test('builds a deterministic ZIP from npm pack output with an unversioned root', (t) => {
-	const temporaryDirectory = makeTemporaryDirectory(t);
-	const inputPath = path.join(temporaryDirectory, 'npm-package.tgz');
-	const outputPath = path.join(temporaryDirectory, archiveName);
-	const tarEntries = EXPECTED_ARCHIVE_ENTRIES.map((name) => ({
-		name: `package/${name.slice(PACKAGE_ROOT.length)}`,
-		data: fs.readFileSync(path.join(repositoryRoot, name.slice(PACKAGE_ROOT.length))),
-	}));
-	fs.writeFileSync(inputPath, gzipSync(createTar(tarEntries)));
+test('parses the npm package root without a versioned directory', (t) => {
+	const archivePath = writeTarGzip(t, releaseEntries());
+	const entries = parseTarGzip(fs.readFileSync(archivePath));
 
-	createReleaseZip(inputPath, outputPath);
-	const firstBuild = fs.readFileSync(outputPath);
-	createReleaseZip(inputPath, outputPath);
-	const secondBuild = fs.readFileSync(outputPath);
+	assert(entries.every((entry) => entry.name.startsWith('package/')));
+	assert(entries.every((entry) => !entry.name.startsWith(`package-${packageJson.version}/`)));
+});
 
-	assert(firstBuild.equals(secondBuild));
-	assert.deepEqual(
-		parseZip(firstBuild).map((entry) => entry.name),
-		[...EXPECTED_ARCHIVE_ENTRIES].sort(),
+test('requires the exact v-prefixed installer filename', (t) => {
+	const archivePath = writeTarGzip(
+		t,
+		releaseEntries(),
+		`${packageJson.name}-${packageJson.version}.tgz`,
 	);
-	assert(parseZip(firstBuild).every((entry) => entry.name.startsWith('local-media-proxy/')));
-	assert(parseZip(firstBuild).every((entry) => !entry.name.startsWith(`local-media-proxy-${packageJson.version}/`)));
+
+	assert.throws(
+		() => verifyReleasePackage(tag, archivePath),
+		new RegExp(`Archive must be named ${packageJson.name}-v${packageJson.version}\\.tgz`),
+	);
 });
 
 test('rejects a suffixed package version tag', () => {
 	assert.throws(
-		() => verifyReleasePackage(`v${packageJson.version}-release`, '/tmp/not-used.zip'),
+		() => verifyReleasePackage(`v${packageJson.version}-release`, '/tmp/not-used.tgz'),
 		/must exactly match package version/,
 	);
 });
 
 test('rejects duplicate archive entries', (t) => {
 	const packageData = fs.readFileSync(path.join(repositoryRoot, 'package.json'));
-	const archivePath = writeZip(t, [
+	const archivePath = writeTarGzip(t, [
 		{ name: `${PACKAGE_ROOT}package.json`, data: packageData },
 		{ name: `${PACKAGE_ROOT}package.json`, data: packageData },
 	]);
 
 	assert.throws(
 		() => verifyReleasePackage(tag, archivePath),
-		/Archive contains duplicate entry: local-media-proxy\/package\.json/,
+		/Archive contains duplicate entry: package\/package\.json/,
 	);
 });
 
 test('rejects traversal paths', (t) => {
-	const archivePath = writeZip(t, [
+	const archivePath = writeTarGzip(t, [
 		{ name: `${PACKAGE_ROOT}../outside.txt`, data: Buffer.from('not distributable') },
 	]);
 
@@ -108,96 +93,89 @@ test('rejects traversal paths', (t) => {
 	);
 });
 
+test('rejects files outside the npm package root', (t) => {
+	const archivePath = writeTarGzip(t, [
+		{ name: 'outside/package.json', data: Buffer.from('{}') },
+	]);
+
+	assert.throws(
+		() => verifyReleasePackage(tag, archivePath),
+		/Archive entry is outside package\//,
+	);
+});
+
 test('rejects files outside the exact release manifest', (t) => {
-	const archivePath = writeZip(t, [
+	const archivePath = writeTarGzip(t, [
 		{ name: `${PACKAGE_ROOT}unexpected.txt`, data: Buffer.from('not distributable') },
 	]);
 
 	assert.throws(
 		() => verifyReleasePackage(tag, archivePath),
-		/Archive contains unexpected entry: local-media-proxy\/unexpected\.txt/,
+		/Archive contains unexpected entry: package\/unexpected\.txt/,
 	);
 });
 
-test('rejects non-regular ZIP entries', (t) => {
-	const archivePath = writeZip(t, [{
-		name: `${PACKAGE_ROOT}package.json`,
-		data: Buffer.alloc(0),
-		externalAttributes: (0o120777 * 0x10000) >>> 0,
-	}]);
-
-	assert.throws(
-		() => verifyReleasePackage(tag, archivePath),
-		/ZIP entry must be a portable regular file with mode 0644/,
-	);
-});
-
-test('rejects unsupported ZIP encryption and optional flags', (t) => {
-	const archivePath = writeZip(t, [{
-		name: `${PACKAGE_ROOT}package.json`,
-		data: Buffer.alloc(0),
-		flags: ZIP_UTF8_FLAG | 1,
-	}]);
-
-	assert.throws(
-		() => verifyReleasePackage(tag, archivePath),
-		/ZIP encryption, data descriptors, or optional flags are unsupported/,
-	);
-});
-
-test('rejects unsupported ZIP compression methods', (t) => {
-	const archivePath = writeZip(t, [{
-		name: `${PACKAGE_ROOT}package.json`,
-		data: Buffer.alloc(0),
-		method: 8,
-	}]);
-
-	assert.throws(
-		() => verifyReleasePackage(tag, archivePath),
-		/ZIP compression methods are unsupported/,
-	);
-});
-
-test('rejects unsupported ZIP extra fields', (t) => {
-	const archivePath = writeZip(t, [{
-		name: `${PACKAGE_ROOT}package.json`,
-		data: Buffer.alloc(0),
-		extra: Buffer.from([1, 0, 0, 0]),
-	}]);
-
-	assert.throws(
-		() => verifyReleasePackage(tag, archivePath),
-		/ZIP extra fields are not supported/,
-	);
-});
-
-test('rejects trailing bytes after the ZIP end record', (t) => {
-	const archivePath = writeZip(
+test('rejects a missing release file', (t) => {
+	const missingName = EXPECTED_ARCHIVE_ENTRIES.at(-1);
+	const archivePath = writeTarGzip(
 		t,
-		[{ name: `${PACKAGE_ROOT}package.json`, data: Buffer.alloc(0) }],
-		{ trailingData: Buffer.from('trailing') },
+		releaseEntries().filter((entry) => entry.name !== missingName),
 	);
 
 	assert.throws(
 		() => verifyReleasePackage(tag, archivePath),
-		/Archive contains trailing bytes after its ZIP end record/,
+		new RegExp(`Archive is missing expected entry: ${escapeRegularExpression(missingName)}`),
+	);
+});
+
+test('rejects non-regular tar entries', (t) => {
+	const archivePath = writeTarGzip(t, [{
+		name: `${PACKAGE_ROOT}package.json`,
+		data: Buffer.alloc(0),
+		typeFlag: '2'.charCodeAt(0),
+	}]);
+
+	assert.throws(
+		() => verifyReleasePackage(tag, archivePath),
+		/Archive entry must be a regular file: package\/package\.json \(type symbolic link\)/,
+	);
+});
+
+test('rejects an invalid tar header checksum', (t) => {
+	const archivePath = writeTarGzip(t, [{
+		name: `${PACKAGE_ROOT}package.json`,
+		data: Buffer.from('{}'),
+		invalidChecksum: true,
+	}]);
+
+	assert.throws(
+		() => verifyReleasePackage(tag, archivePath),
+		/Archive entry 1 has an invalid tar checksum/,
+	);
+});
+
+test('rejects data after the tar end marker', (t) => {
+	const archivePath = writeTarGzip(t, releaseEntries(), archiveName, {
+		trailingData: Buffer.from('trailing'),
+	});
+
+	assert.throws(
+		() => verifyReleasePackage(tag, archivePath),
+		/Archive contains data after its tar end marker/,
 	);
 });
 
 test('rejects an allowed file whose bytes differ from tagged source', (t) => {
-	const archivePath = writeZip(
+	const archivePath = writeTarGzip(
 		t,
-		EXPECTED_ARCHIVE_ENTRIES.map((name) => ({
-			name,
-			data: name === `${PACKAGE_ROOT}lib/main.js`
-				? Buffer.from('altered release code')
-				: fs.readFileSync(path.join(repositoryRoot, name.slice(PACKAGE_ROOT.length))),
-		})),
+		releaseEntries().map((entry) => entry.name === `${PACKAGE_ROOT}lib/main.js`
+			? { ...entry, data: Buffer.from('altered release code') }
+			: entry),
 	);
 
 	assert.throws(
 		() => verifyReleasePackage(tag, archivePath),
-		/Archive entry differs from tagged source: local-media-proxy\/lib\/main\.js/,
+		/Archive entry differs from tagged source: package\/lib\/main\.js/,
 	);
 });
 
@@ -212,93 +190,24 @@ test('rejects sensitive content inside an otherwise allowed release entry', () =
 	);
 });
 
-function writeZip(t, entries, options = {}) {
-	const temporaryDirectory = makeTemporaryDirectory(t);
-	const archivePath = path.join(temporaryDirectory, archiveName);
-	fs.writeFileSync(archivePath, createTestZip(entries, options));
+function releaseEntries() {
+	return EXPECTED_ARCHIVE_ENTRIES.map((name) => ({
+		name,
+		data: fs.readFileSync(path.join(repositoryRoot, name.slice(PACKAGE_ROOT.length))),
+	}));
+}
+
+function writeTarGzip(t, entries, filename = archiveName, options = {}) {
+	const temporaryDirectory = fs.mkdtempSync(
+		path.join(os.tmpdir(), 'local-media-proxy-package-test-'),
+	);
+	t.after(() => fs.rmSync(temporaryDirectory, { recursive: true, force: true }));
+	const archivePath = path.join(temporaryDirectory, filename);
+	fs.writeFileSync(archivePath, gzipSync(createTar(entries, options)));
 	return archivePath;
 }
 
-function makeTemporaryDirectory(t) {
-	const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'local-media-proxy-package-test-'));
-	t.after(() => fs.rmSync(temporaryDirectory, { recursive: true, force: true }));
-	return temporaryDirectory;
-}
-
-function createTestZip(entries, options = {}) {
-	const sortedEntries = options.preserveOrder
-		? [...entries]
-		: [...entries].sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
-	const localChunks = [];
-	const centralChunks = [];
-	let localOffset = 0;
-
-	for (const entry of sortedEntries) {
-		const name = Buffer.from(entry.name, 'utf8');
-		const data = Buffer.from(entry.data ?? '');
-		const extra = Buffer.from(entry.extra ?? '');
-		const flags = entry.flags ?? ZIP_UTF8_FLAG;
-		const method = entry.method ?? 0;
-		const checksum = entry.checksum ?? crc32(data);
-
-		const localHeader = Buffer.alloc(30);
-		localHeader.writeUInt32LE(0x04034b50, 0);
-		localHeader.writeUInt16LE(ZIP_VERSION, 4);
-		localHeader.writeUInt16LE(flags, 6);
-		localHeader.writeUInt16LE(method, 8);
-		localHeader.writeUInt16LE(0, 10);
-		localHeader.writeUInt16LE(ZIP_DOS_DATE, 12);
-		localHeader.writeUInt32LE(checksum, 14);
-		localHeader.writeUInt32LE(data.length, 18);
-		localHeader.writeUInt32LE(data.length, 22);
-		localHeader.writeUInt16LE(name.length, 26);
-		localHeader.writeUInt16LE(extra.length, 28);
-		localChunks.push(localHeader, name, extra, data);
-
-		const centralHeader = Buffer.alloc(46);
-		centralHeader.writeUInt32LE(0x02014b50, 0);
-		centralHeader.writeUInt16LE(ZIP_VERSION_MADE_BY, 4);
-		centralHeader.writeUInt16LE(ZIP_VERSION, 6);
-		centralHeader.writeUInt16LE(flags, 8);
-		centralHeader.writeUInt16LE(method, 10);
-		centralHeader.writeUInt16LE(0, 12);
-		centralHeader.writeUInt16LE(ZIP_DOS_DATE, 14);
-		centralHeader.writeUInt32LE(checksum, 16);
-		centralHeader.writeUInt32LE(data.length, 20);
-		centralHeader.writeUInt32LE(data.length, 24);
-		centralHeader.writeUInt16LE(name.length, 28);
-		centralHeader.writeUInt16LE(extra.length, 30);
-		centralHeader.writeUInt16LE(0, 32);
-		centralHeader.writeUInt16LE(0, 34);
-		centralHeader.writeUInt16LE(0, 36);
-		centralHeader.writeUInt32LE(
-			entry.externalAttributes ?? (ZIP_REGULAR_FILE_MODE * 0x10000) >>> 0,
-			38,
-		);
-		centralHeader.writeUInt32LE(localOffset, 42);
-		centralChunks.push(centralHeader, name, extra);
-		localOffset += localHeader.length + name.length + extra.length + data.length;
-	}
-
-	const centralDirectory = Buffer.concat(centralChunks);
-	const endRecord = Buffer.alloc(22);
-	endRecord.writeUInt32LE(0x06054b50, 0);
-	endRecord.writeUInt16LE(0, 4);
-	endRecord.writeUInt16LE(0, 6);
-	endRecord.writeUInt16LE(sortedEntries.length, 8);
-	endRecord.writeUInt16LE(sortedEntries.length, 10);
-	endRecord.writeUInt32LE(centralDirectory.length, 12);
-	endRecord.writeUInt32LE(localOffset, 16);
-	endRecord.writeUInt16LE(0, 20);
-	return Buffer.concat([
-		...localChunks,
-		centralDirectory,
-		endRecord,
-		options.trailingData ?? Buffer.alloc(0),
-	]);
-}
-
-function createTar(entries) {
+function createTar(entries, options = {}) {
 	const chunks = [];
 	for (const entry of entries) {
 		const data = Buffer.from(entry.data ?? '');
@@ -310,7 +219,7 @@ function createTar(entries) {
 		writeOctal(header, 124, 12, data.length);
 		writeOctal(header, 136, 12, 0);
 		header.fill(32, 148, 156);
-		header[156] = '0'.charCodeAt(0);
+		header[156] = entry.typeFlag ?? '0'.charCodeAt(0);
 		writeString(header, 257, 6, 'ustar');
 		writeString(header, 263, 2, '00');
 		writeString(header, 265, 32, 'root');
@@ -321,13 +230,16 @@ function createTar(entries) {
 			checksum += byte;
 		}
 		header.write(`${checksum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'ascii');
+		if (entry.invalidChecksum) {
+			header.write('000000\0 ', 148, 8, 'ascii');
+		}
 		chunks.push(header, data);
 		const paddingLength = (512 - (data.length % 512)) % 512;
 		if (paddingLength > 0) {
 			chunks.push(Buffer.alloc(paddingLength));
 		}
 	}
-	chunks.push(Buffer.alloc(1024));
+	chunks.push(Buffer.alloc(1024), options.trailingData ?? Buffer.alloc(0));
 	return Buffer.concat(chunks);
 }
 
@@ -340,4 +252,8 @@ function writeOctal(buffer, offset, length, value) {
 	const encoded = `${value.toString(8).padStart(length - 1, '0')}\0`;
 	assert.equal(encoded.length, length);
 	buffer.write(encoded, offset, length, 'ascii');
+}
+
+function escapeRegularExpression(value) {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

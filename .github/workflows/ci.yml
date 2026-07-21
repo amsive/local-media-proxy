@@ -48,7 +48,7 @@ jobs:
         run: |
           set -euo pipefail
           version="$(node -p "require('./package.json').version")"
-          archive="dist/local-media-proxy-${version}.zip"
+          archive="dist/local-media-proxy-v${version}.tgz"
           npm run package:addon
           node scripts/verify-release-package.js "v${version}" "${archive}"
           (
@@ -63,8 +63,8 @@ jobs:
           if-no-files-found: error
           name: local-media-proxy-validation-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            dist/local-media-proxy-*.zip
-            dist/local-media-proxy-*.zip.sha256
+            dist/local-media-proxy-v*.tgz
+            dist/local-media-proxy-v*.tgz.sha256
           retention-days: 1
 
   artifact-round-trip:
@@ -83,7 +83,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 2
-          test "$(find dist -maxdepth 1 -type f -name '*.zip' | wc -l)" -eq 1
-          test "$(find dist -maxdepth 1 -type f -name '*.zip.sha256' | wc -l)" -eq 1
+          test "$(find dist -maxdepth 1 -type f -name '*.tgz' | wc -l)" -eq 1
+          test "$(find dist -maxdepth 1 -type f -name '*.tgz.sha256' | wc -l)" -eq 1
           cd dist
-          sha256sum --check ./*.zip.sha256
+          sha256sum --check ./*.tgz.sha256

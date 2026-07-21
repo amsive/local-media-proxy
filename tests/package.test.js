@@ -28,25 +28,30 @@ test('declares the installed add-on card metadata expected by Local', () => {
 	assert.equal(packageJson.icon, 'icon.svg');
 	assert.equal(ADDON_VERSION, packageJson.version);
 	assert.equal(packageJson.scripts['package:addon'], 'node scripts/package-addon.js');
-	for (const document of [
-		'AGENTS.md',
-		'CONTRIBUTING.md',
-		'DCO',
+	assert.equal(packageJson.scripts['package:check'], 'npm run package:addon');
+	assert.deepEqual(packageJson.files, [
+		'lib/constants.js',
+		'lib/dns.js',
+		'lib/hosting.js',
+		'lib/main.js',
+		'lib/marketplace.js',
+		'lib/nginx.js',
+		'lib/origin.js',
+		'lib/renderer.js',
+		'lib/settings.js',
+		'lib/site-config.js',
+		'lib/validation.js',
 		'LICENSE',
 		'NOTICE',
-		'PUBLIC_RELEASE_SAFETY.md',
 		'README.md',
-		'RELEASING.md',
-		'SECURITY.md',
-		'SUPPORT.md',
-		'TRADEMARKS.md',
-	]) {
-		assert.equal(
-			packageJson.files.includes(document),
-			true,
-			`${document} must be included in the installable archive.`,
-		);
-	}
+		'icon.svg',
+		'resources/amsive-avatar.svg',
+		'resources/boris-hegedis-avatar.svg',
+		'resources/cloudflare-origin-ca.pem',
+		'resources/detail-hero.svg',
+		'resources/mark-davoli-avatar.svg',
+		'style.css',
+	]);
 	for (const asset of [
 		'amsive-avatar.svg',
 		'boris-hegedis-avatar.svg',

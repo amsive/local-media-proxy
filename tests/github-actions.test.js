@@ -40,10 +40,10 @@ test('validates an upload and download artifact round trip on pull requests', ()
 	assert.match(workflow, /needs: validate/);
 	assert.equal((workflow.match(/github\.run_attempt/g) ?? []).length, 2);
 	assert.match(workflow, /find dist -maxdepth 1 -type f \| wc -l/);
-	assert.match(workflow, /find dist -maxdepth 1 -type f -name '\*\.zip'/);
-	assert.match(workflow, /find dist -maxdepth 1 -type f -name '\*\.zip\.sha256'/);
-	assert.match(workflow, /sha256sum --check \.\/\*\.zip\.sha256/);
-	assert.doesNotMatch(workflow, /\.tgz/);
+	assert.match(workflow, /find dist -maxdepth 1 -type f -name '\*\.tgz'/);
+	assert.match(workflow, /find dist -maxdepth 1 -type f -name '\*\.tgz\.sha256'/);
+	assert.match(workflow, /sha256sum --check \.\/\*\.tgz\.sha256/);
+	assert.match(workflow, /dist\/local-media-proxy-v\*\.tgz/);
 });
 
 test('blocks sensitive content in validation, release, and promotion workflows', () => {
@@ -63,6 +63,7 @@ test('blocks sensitive content in validation, release, and promotion workflows',
 	);
 	assert.match(releaseWorkflow, /git archive --format=zip/);
 	assert.match(releaseWorkflow, /unzip -q/);
+	assert.match(releaseWorkflow, /dist\/local-media-proxy-v\$\{version\}\.tgz/);
 });
 
 test('enforces DCO sign-offs across the exact pull-request commit range', () => {

@@ -23,7 +23,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Apache License 2.0 distribution with Amsive LLC attribution, NOTICE preservation, trademark boundaries, community support expectations, security guidance, and Developer Certificate of Origin sign-off.
 - Blocking public-release validation for secrets, client identifiers, workstation paths, network values, unsafe files, source archives, installer contents, and exact reviewed asset hashes.
 - Draft-first GitHub release automation with tagged-source verification, SHA-256 checksums, immutable asset identity checks, and explicit human promotion approval.
-- Deterministic installable ZIP releases named `local-media-proxy-<version>.zip` with an exact, version-independent `local-media-proxy/` top-level folder enforced by continuous integration and release promotion checks.
+- Deterministic, Local-installable npm package releases named `local-media-proxy-v<version>.tgz`, with the standard `package/` root and an exact minimal runtime manifest enforced by continuous integration and release promotion checks.
 
 ### Fixed
 

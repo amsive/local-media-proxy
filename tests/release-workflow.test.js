@@ -27,10 +27,9 @@ test('creates ordinary SemVer tags as draft prerelease candidates', () => {
 	assert.match(workflow, /\.isDraft[^\n]+!= "true"/);
 	assert.match(workflow, /\.isPrerelease[^\n]+!= "true"/);
 	assert.match(workflow, /git merge-base --is-ancestor "\$\{GITHUB_SHA\}\^\{commit\}" origin\/main/);
-	assert.match(workflow, /archive="dist\/local-media-proxy-\$\{version\}\.zip"/);
-	assert.match(workflow, /RELEASE_ARCHIVE: dist\/local-media-proxy-\$\{\{ needs\.build\.outputs\.version \}\}\.zip/);
-	assert.match(workflow, /RELEASE_CHECKSUM: dist\/local-media-proxy-\$\{\{ needs\.build\.outputs\.version \}\}\.zip\.sha256/);
-	assert.doesNotMatch(workflow, /\.tgz/);
+	assert.match(workflow, /archive="dist\/local-media-proxy-v\$\{version\}\.tgz"/);
+	assert.match(workflow, /RELEASE_ARCHIVE: dist\/local-media-proxy-v\$\{\{ needs\.build\.outputs\.version \}\}\.tgz/);
+	assert.match(workflow, /RELEASE_CHECKSUM: dist\/local-media-proxy-v\$\{\{ needs\.build\.outputs\.version \}\}\.tgz\.sha256/);
 });
 
 test('requires an explicit human promotion with candidate identity binding', () => {
@@ -56,12 +55,15 @@ test('requires an explicit human promotion with candidate identity binding', () 
 	);
 	assert.equal((workflow.match(/version="\$\{TAG#v\}"/g) ?? []).length, 2);
 	assert.equal(
-		(workflow.match(/archive="local-media-proxy-\$\{version\}\.zip"/g) ?? []).length,
+		(workflow.match(/archive="local-media-proxy-v\$\{version\}\.tgz"/g) ?? []).length,
 		2,
 	);
 	assert.equal((workflow.match(/checksum="\$\{archive\}\.sha256"/g) ?? []).length, 2);
+	assert.equal((workflow.match(/^\s*asset_names_json=/gm) ?? []).length, 2);
+	assert.equal((workflow.match(/^\s*expected_asset_names_json=/gm) ?? []).length, 2);
+	assert.match(workflow, /The prerelease assets must be exactly/);
+	assert.match(workflow, /Release assets changed after verification; refusing promotion/);
 	assert.match(workflow, /node scripts\/verify-release-package\.js "\$\{TAG\}" "\$\{assets_dir\}\/\$\{archive\}"/);
-	assert.doesNotMatch(workflow, /\.tgz/);
 	assert.doesNotMatch(workflow, /version="\$\{version%-release\}"/);
 	assert.match(workflow, /git merge-base --is-ancestor "\$\{TAG\}\^\{commit\}" origin\/main/);
 	assert.match(workflow, /npm run build/);

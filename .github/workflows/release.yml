@@ -72,7 +72,7 @@ jobs:
         run: |
           set -euo pipefail
           version="$(node -p "require('./package.json').version")"
-          archive="dist/local-media-proxy-${version}.zip"
+          archive="dist/local-media-proxy-v${version}.tgz"
           checksum="${archive}.sha256"
 
           node scripts/verify-release-package.js "${GITHUB_REF_NAME}" "${archive}"
@@ -115,8 +115,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_ARCHIVE: dist/local-media-proxy-${{ needs.build.outputs.version }}.zip
-          RELEASE_CHECKSUM: dist/local-media-proxy-${{ needs.build.outputs.version }}.zip.sha256
+          RELEASE_ARCHIVE: dist/local-media-proxy-v${{ needs.build.outputs.version }}.tgz
+          RELEASE_CHECKSUM: dist/local-media-proxy-v${{ needs.build.outputs.version }}.tgz.sha256
         shell: bash
         run: |
           set -euo pipefail

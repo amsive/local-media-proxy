@@ -70,7 +70,7 @@ Configuration is independent for every site. The Site URL supplies the HTTP host
 
 ## Install and configure
 
-1. Download \`local-media-proxy-<version>.zip\` from the matching [GitHub release](https://github.com/amsive/local-media-proxy/releases). Select the ZIP directly in Local; do not extract it first.
+1. Download \`local-media-proxy-v<version>.tgz\` from the matching [GitHub release](https://github.com/amsive/local-media-proxy/releases). Select the TGZ directly in Local; do not extract it first.
 2. When replacing an existing installation, disable and remove its Installed Add-ons entry first; Local does not overwrite the same add-on slug.
 3. In Local, open **Add-ons → Installed** and choose **Install from disk**.
 4. Enable **Local Media Proxy** and relaunch Local if prompted.
@@ -120,7 +120,7 @@ function createInitialReleaseNotes(): string {
 - Added light and dark Local UI, packaged help, and fictional public screenshots.
 - Released the project under Apache License 2.0 with Amsive LLC attribution, DCO sign-off, support, security, and trademark policies.
 - Added blocking source, archive, secret, network-value, and reviewed-asset validation plus draft-first release automation with human promotion approval.
-- Added a deterministic installable ZIP with the exact version-independent top-level folder \`local-media-proxy/\` and blocking release-structure validation.
+- Added a deterministic Local-installable TGZ with npm's standard \`package/\` root, an exact minimal runtime manifest, and blocking release-structure validation.
 
 [View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
 }
@@ -183,7 +183,7 @@ export function createMarketplaceDetailPayload(
 				npmPackageName: ADDON_ID,
 				releases: [
 					{
-						downloadUrl: `https://github.com/amsive/local-media-proxy/releases/download/v${ADDON_VERSION}/local-media-proxy-${ADDON_VERSION}.zip`,
+						downloadUrl: `https://github.com/amsive/local-media-proxy/releases/download/v${ADDON_VERSION}/local-media-proxy-v${ADDON_VERSION}.tgz`,
 						localRequirement: '>=10.1.1',
 						testedUpTo: '10.1.1',
 						version: ADDON_VERSION,
