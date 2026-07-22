@@ -28,12 +28,14 @@ import {
 } from './validation';
 
 export const IPC_READ_DEADLINE_MS = 15_000;
+export const IPC_DISCOVERY_DEADLINE_MS = 30_000;
 export const IPC_MUTATION_DEADLINE_MS = 90_000;
 
 const IPC_DEADLINE_ERROR_NAME = 'LocalMediaProxyIpcDeadlineError';
 const OVERVIEW_STATE_TIMEOUT_MESSAGE = 'Media Proxy status could not be confirmed within 15 seconds. Its status is unconfirmed.';
 const TOOLS_STATE_TIMEOUT_MESSAGE = 'Media Proxy settings could not be confirmed within 15 seconds. Their current state is unconfirmed.';
-const DISCOVERY_TIMEOUT_MESSAGE = 'Local hosting connection details could not be confirmed within 15 seconds.';
+const DISCOVERY_OPTIONS_TIMEOUT_MESSAGE = 'Local hosting connection details could not be confirmed within 15 seconds.';
+const ORIGIN_DISCOVERY_TIMEOUT_MESSAGE = 'Origin discovery did not finish within 30 seconds. Try again, or enter the connection details manually.';
 const TOGGLE_TIMEOUT_MESSAGE = 'The Media Proxy status change did not finish within 90 seconds. Its outcome is unconfirmed. Reopen this view to refresh the status before trying again.';
 const APPLY_TIMEOUT_MESSAGE = 'Save & apply did not finish within 90 seconds. Its outcome is unconfirmed. Reopen Media Proxy to refresh the settings before trying again.';
 const RECOVERY_TIMEOUT_MESSAGE = 'Media Proxy status recovery could not be confirmed within 15 seconds.';
@@ -914,7 +916,7 @@ export default function renderer(context: RendererContext): void {
 			withIpcDeadline(
 				ipcRenderer.invoke(IPC_CHANNELS.getOriginDiscoveryOptions, site.id),
 				IPC_READ_DEADLINE_MS,
-				DISCOVERY_TIMEOUT_MESSAGE,
+				DISCOVERY_OPTIONS_TIMEOUT_MESSAGE,
 			)
 				.then((value: unknown) => {
 					if (siteEpoch.current !== epoch) {
@@ -1069,11 +1071,15 @@ export default function renderer(context: RendererContext): void {
 				const request = mode === 'wpengine'
 					? { environment: selectedEnvironment, mode: 'wpengine' as const }
 					: { mode: 'dns' as const, siteUrl };
-				const result = await ipcRenderer.invoke(
-					IPC_CHANNELS.discoverOrigin,
-					site.id,
-					request,
-				) as OriginSuggestion;
+				const result = await withIpcDeadline(
+					ipcRenderer.invoke(
+						IPC_CHANNELS.discoverOrigin,
+						site.id,
+						request,
+					) as Promise<OriginSuggestion>,
+					IPC_DISCOVERY_DEADLINE_MS,
+					ORIGIN_DISCOVERY_TIMEOUT_MESSAGE,
+				);
 				if (
 					discoveryEpoch.current === requestId &&
 					siteEpoch.current === currentSiteEpoch

@@ -10,10 +10,144 @@ const test = require('node:test');
 const {
 	cleanupRequiresRefresh,
 	completeUnresolvedServiceCleanup,
+	isServerTransactionChangedError,
+	runServerTransactionMutation,
+	ServerTransactionChangedError,
+	serverTransactionFingerprintsMatch,
 	shouldReconcileManagedFiles,
 	shouldRefreshRuntime,
 	synchronousCleanupRequiresRefresh,
 } = require('../lib/lifecycle');
+
+function serverTransaction(overrides = {}) {
+	return {
+		configPath: '/example/site/conf/nginx',
+		executablePath: '/example/services/nginx',
+		runPath: '/example/site/run/nginx',
+		serverKind: 'nginx',
+		serviceName: 'nginx-1.26.1',
+		siteConfigTemplatePath: '/example/site/conf/nginx/site.conf.hbs',
+		sitePath: '/example/site',
+		siteStatus: 'running',
+		templatesPath: '/example/site/conf',
+		...overrides,
+	};
+}
+
+test('server transactions close when server identity, paths, or lifecycle status changes', () => {
+	const original = serverTransaction();
+	assert.equal(serverTransactionFingerprintsMatch(original, serverTransaction()), true);
+
+	for (const [field, value] of [
+		['configPath', '/example/site/conf/apache'],
+		['executablePath', '/example/services/httpd'],
+		['runPath', '/example/site/run/apache'],
+		['serverKind', 'apache'],
+		['serviceName', 'apache-2.4.63+1'],
+		['siteConfigTemplatePath', '/example/site/conf/apache/site.conf.hbs'],
+		['sitePath', '/example/other-site'],
+		['siteStatus', 'restarting'],
+		['templatesPath', '/example/site/alternate-conf'],
+	]) {
+		assert.equal(
+			serverTransactionFingerprintsMatch(original, serverTransaction({ [field]: value })),
+			false,
+			`${field} changes must invalidate the transaction`,
+		);
+	}
+});
+
+test('server transaction failures give actionable rollback guidance', () => {
+	const error = new ServerTransactionChangedError();
+	assert.equal(error.name, 'LocalMediaProxyServerTransactionChangedError');
+	assert.match(error.message, /settings and managed files.*were restored/i);
+	assert.match(error.message, /wait for Local.*then retry/i);
+});
+
+test('server transaction failures remain identifiable across duplicate module copies', () => {
+	const equivalentError = new Error('transaction changed');
+	equivalentError.name = 'LocalMediaProxyServerTransactionChangedError';
+
+	assert.equal(isServerTransactionChangedError(new ServerTransactionChangedError()), true);
+	assert.equal(isServerTransactionChangedError(equivalentError), true);
+	assert.equal(isServerTransactionChangedError({
+		name: 'LocalMediaProxyServerTransactionChangedError',
+	}), false);
+	assert.equal(isServerTransactionChangedError(new Error('ordinary failure')), false);
+	assert.equal(isServerTransactionChangedError(null), false);
+});
+
+test('guarded interactive mutations reject server transitions before writes and after deferred writes', async () => {
+	const original = serverTransaction();
+	let current = serverTransaction({ serverKind: 'apache', serviceName: 'apache-2.4.63+1' });
+	let applied = false;
+	const assertCurrent = () => {
+		if (!serverTransactionFingerprintsMatch(original, current)) {
+			throw new ServerTransactionChangedError();
+		}
+	};
+
+	await assert.rejects(
+		runServerTransactionMutation(assertCurrent, async () => {
+			applied = true;
+		}),
+		ServerTransactionChangedError,
+	);
+	assert.equal(applied, false, 'a Nginx-to-Apache transition before mutation must prevent the write');
+
+	current = serverTransaction();
+	await assert.rejects(
+		runServerTransactionMutation(assertCurrent, async () => {
+			applied = true;
+			current = serverTransaction({
+				executablePath: '/example/services/httpd',
+				serverKind: 'apache',
+				serviceName: 'apache-2.4.63+1',
+			});
+		}),
+		ServerTransactionChangedError,
+	);
+	assert.equal(applied, true, 'the post-mutation guard must detect a transition during the write');
+});
+
+test('guarded reconciliation stops between managed-file mutation and refresh on status or Apache-to-Nginx changes', async () => {
+	const apacheTransaction = serverTransaction({
+		configPath: '/example/site/conf/apache',
+		executablePath: '/example/services/httpd',
+		runPath: '/example/site/run/apache',
+		serverKind: 'apache',
+		serviceName: 'apache-2.4.63+1',
+		siteConfigTemplatePath: '/example/site/conf/apache/site.conf.hbs',
+	});
+	for (const currentAfterMutation of [
+		{ ...apacheTransaction, siteStatus: 'restarting' },
+		serverTransaction({
+			configPath: '/example/site/conf/nginx',
+			executablePath: '/example/services/nginx',
+			runPath: '/example/site/run/nginx',
+			serverKind: 'nginx',
+			serviceName: 'nginx-1.26.1',
+			siteConfigTemplatePath: '/example/site/conf/nginx/site.conf.hbs',
+		}),
+	]) {
+		const expected = apacheTransaction;
+		let current = expected;
+		let refreshed = false;
+		const assertCurrent = () => {
+			if (!serverTransactionFingerprintsMatch(expected, current)) {
+				throw new ServerTransactionChangedError();
+			}
+		};
+
+		await assert.rejects(async () => {
+			await runServerTransactionMutation(assertCurrent, async () => {
+				current = currentAfterMutation;
+			});
+			refreshed = true;
+		}, ServerTransactionChangedError);
+		assert.equal(refreshed, false, 'the stale service must not refresh after a transaction-closing change');
+	}
+});
 
 test('enabled reconciliation intent forces cleanup refresh when persistent files are already absent', () => {
 	assert.equal(cleanupRequiresRefresh(false, true), true);

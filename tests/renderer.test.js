@@ -12,6 +12,7 @@ const test = require('node:test');
 const rendererModule = require('../lib/renderer');
 const { IPC_CHANNELS } = require('../lib/constants');
 const {
+	IPC_DISCOVERY_DEADLINE_MS,
 	IPC_MUTATION_DEADLINE_MS,
 	IPC_READ_DEADLINE_MS,
 	connectionTestControlState,
@@ -323,6 +324,7 @@ function installManualTimers() {
 
 test('bounds renderer IPC waits, clears timers, and ignores late settlement', async () => {
 	assert.equal(IPC_READ_DEADLINE_MS, 15_000);
+	assert.equal(IPC_DISCOVERY_DEADLINE_MS, 30_000);
 	assert.equal(IPC_MUTATION_DEADLINE_MS, 90_000);
 
 	const originalSetTimeout = global.setTimeout;
@@ -2384,6 +2386,83 @@ test('shows Tools after site state resolves while discovery remains bounded and 
 		tree = harness.render(element.type, element.props);
 		assert.doesNotMatch(elementText(tree), /Late provider result|Late environment/);
 		assert.match(elementText(tree), /Manual entry remains available/);
+	} finally {
+		timers.restore();
+	}
+});
+
+test('times out user-triggered origin discovery, restores Tools controls, and ignores a late result', async () => {
+	const timers = installManualTimers();
+	const pendingDiscovery = deferred();
+	const initialState = createSiteState({ applied: false, enabled: false });
+	const discoveryOptions = {
+		canAutoPopulate: true,
+		environments: [{ current: true, environment: 'production', name: 'Example production' }],
+		message: 'Connected to WP Engine',
+		provider: 'wpengine',
+		selectedEnvironment: 'production',
+	};
+	try {
+		const registration = createRendererRegistration((channel) => {
+			if (channel === IPC_CHANNELS.getSiteState) {
+				return Promise.resolve(initialState);
+			}
+			if (channel === IPC_CHANNELS.getOriginDiscoveryOptions) {
+				return Promise.resolve(discoveryOptions);
+			}
+			if (channel === IPC_CHANNELS.discoverOrigin) {
+				return pendingDiscovery.promise;
+			}
+			throw new Error(`Unexpected channel: ${channel}`);
+		});
+		const element = registration.filters.get('siteInfoToolsItem')([])[0]
+			.render({ site: { id: 'site-discovery-action-timeout', name: 'Example site' } });
+		const harness = createHookHarness(registration.React);
+		harness.render(element.type, element.props);
+		await flushPromises();
+		let tree = harness.render(element.type, element.props);
+		let discoverButton = findElement(tree, (node) => (
+			node.type === 'button' && elementText(node) === 'Auto-populate from WP Engine'
+		));
+		assert.equal(discoverButton.props.disabled, false);
+
+		discoverButton.props.onClick();
+		tree = harness.render(element.type, element.props);
+		assert.equal(findElement(tree, (node) => node.props?.role === 'switch').props.disabled, true);
+		assert.equal(findElement(tree, (node) => node.props?.id === 'local-media-proxy-environment').props.disabled, true);
+		assert.equal(findElement(tree, (node) => node.props?.id === 'local-media-proxy-site-url').props.disabled, true);
+		assert.equal(findElement(tree, (node) => node.props?.id === 'local-media-proxy-origin-ip').props.disabled, true);
+		assert.ok(findElement(tree, (node) => (
+			node.type === 'button' && elementText(node) === 'Discovering…'
+		)));
+
+		timers.runNext(IPC_DISCOVERY_DEADLINE_MS);
+		await flushPromises();
+		tree = harness.render(element.type, element.props);
+		discoverButton = findElement(tree, (node) => (
+			node.type === 'button' && elementText(node) === 'Auto-populate from WP Engine'
+		));
+		assert.equal(discoverButton.props.disabled, false);
+		assert.equal(findElement(tree, (node) => node.props?.role === 'switch').props.disabled, false);
+		assert.equal(findElement(tree, (node) => node.props?.id === 'local-media-proxy-environment').props.disabled, false);
+		assert.equal(findElement(tree, (node) => node.props?.id === 'local-media-proxy-site-url').props.disabled, false);
+		assert.equal(findElement(tree, (node) => node.props?.id === 'local-media-proxy-origin-ip').props.disabled, false);
+		const timeoutAlert = findElement(tree, (node) => node.props?.role === 'alert');
+		assert.match(elementText(timeoutAlert), /did not finish within 30 seconds.*Try again.*manually/i);
+
+		pendingDiscovery.resolve({
+			addresses: [{ address: '192.0.2.99', family: 4, source: 'wpengine-stable-ip' }],
+			environment: 'production',
+			provider: 'wpengine',
+			resolvedAt: '2026-07-22T22:00:00.000Z',
+			siteUrl: 'https://late.example.com',
+			warning: 'Late suggestion',
+		});
+		await flushPromises();
+		tree = harness.render(element.type, element.props);
+		assert.equal(findElement(tree, (node) => node.props?.id === 'local-media-proxy-site-url').props.value, 'https://example.com');
+		assert.equal(findElement(tree, (node) => node.props?.id === 'local-media-proxy-origin-ip').props.value, '192.0.2.10');
+		assert.doesNotMatch(elementText(tree), /Late suggestion|late\.example\.com/);
 	} finally {
 		timers.restore();
 	}

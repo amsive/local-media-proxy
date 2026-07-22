@@ -18,11 +18,11 @@ test('Apache apply snapshots both servers and rolls settings and files back on r
 		mainSource.indexOf('} else {', mainSource.indexOf('if (normalizedInput.enabled)')),
 	);
 	assert.match(applyBranch, /const snapshots = await captureAllManagedFiles\(site\)/);
-	assert.match(applyBranch, /await applyServerManagedFiles\(/);
-	assert.match(applyBranch, /await compileAndReload\(site, server, true\)/);
+	assert.match(applyBranch, /runServerTransactionMutation\([\s\S]{0,220}applyServerManagedFiles\(/);
+	assert.match(applyBranch, /await compileAndReload\([\s\S]{0,80}site,[\s\S]{0,80}server,[\s\S]{0,80}true,[\s\S]{0,120}assertServerTransactionCurrent/);
 	assert.match(applyBranch, /return rollbackTransaction\([\s\S]{0,180}snapshots,[\s\S]{0,80}error/);
 	assert.match(mainSource, /persistSettings\(site\.id, previousEnvelope\)[\s\S]{0,260}await restoreManagedFiles\(snapshots\)/);
-	assert.match(mainSource, /apacheSnapshotHasCompleteManagedConfig\(site, snapshots\)/);
+	assert.match(mainSource, /apacheSnapshotHasCompleteManagedConfig\(currentSite, snapshots\)/);
 });
 
 test('Apache refresh observes Local runtime process name httpd without using its non-settling hard restart', () => {
@@ -56,14 +56,14 @@ test('startup and site-start reconciliation repair active-server drift and clean
 	assert.match(reconcile, /serverManagedFilesMatch\(/);
 	assert.match(reconcile, /applyServerManagedFiles\(/);
 	assert.match(reconcile, /removeAllManagedFiles\(site\)/);
-	assert.match(reconcile, /compileAndReload\(site, server, settings\.enabled\)/);
+	assert.match(reconcile, /compileAndReload\([\s\S]{0,80}site,[\s\S]{0,80}server,[\s\S]{0,80}settings\.enabled,[\s\S]{0,80}assertReconciliationTransactionCurrent/);
 	assert.match(reconcile, /const forcedAfterSiteStarted = options\.refreshMatchingEnabledRuntime === true;[\s\S]{0,220}shouldReconcileManagedFiles\(/);
 	assert.ok(
 		reconcile.indexOf('siteStatusAllowsReconciliation(site)') < reconcile.indexOf('const server = resolveServer(site)'),
 		'background reconciliation must reject Local transition states before resolving or mutating server templates',
 	);
 	assert.match(reconcile, /normalizedOrigin = validateAndNormalizeOrigin[\s\S]{0,180}await assertApacheOriginCapability\(server, normalizedOrigin\.protocol\)/);
-	assert.match(reconcile, /catch \(validationError\)[\s\S]{0,500}removeAllManagedFiles\(site\)[\s\S]{0,300}compileAndReload\(site, server, false\)/);
+	assert.match(reconcile, /catch \(validationError\)[\s\S]{0,800}removeAllManagedFiles\(site\)[\s\S]{0,1200}compileAndReload\([\s\S]{0,120}false,[\s\S]{0,100}assertReconciliationTransactionCurrent/);
 	assert.match(reconcile, /retaining global enabled intent for the current \$\{server\.kind\} profile/);
 	assert.match(reconcile, /cleanupRequiresRefresh\(changed, settings\.enabled\)/);
 	assert.match(reconcile, /nextEnvelope !== previousEnvelope \|\|[\s\S]{0,100}storedSettingsEnvelopeNeedsMigration\(rawStoredSettings\)/);
@@ -75,7 +75,7 @@ test('startup and site-start reconciliation repair active-server drift and clean
 	);
 	assert.match(
 		reconcile,
-		/if \(options\.refreshMatchingEnabledRuntime\) \{[\s\S]{0,180}compileAndReload\(site, server, true\)/,
+		/if \(options\.refreshMatchingEnabledRuntime\) \{[\s\S]{0,300}compileAndReload\([\s\S]{0,120}true,[\s\S]{0,100}assertReconciliationTransactionCurrent/,
 	);
 	assert.match(mainSource, /Startup reconciliation failed/);
 });
@@ -87,11 +87,11 @@ test('reconciliation rechecks current status and server identity immediately bef
 	);
 	assert.match(
 		reconcile,
-		/const reconciliationCanMutate = \(\): boolean => \{[\s\S]{0,180}siteData\.getSite\(siteId\)[\s\S]{0,180}siteStatusAllowsReconciliation\(latestSite\)/,
+		/const transaction = serverTransactionFingerprint\(site, server\)[\s\S]{0,300}const reconciliationCanMutate = \(\): boolean => \{[\s\S]{0,180}siteData\.getSite\(siteId\)[\s\S]{0,180}siteStatusAllowsReconciliation\(latestSite\)/,
 	);
 	assert.match(
 		reconcile,
-		/const latestServer = resolveServer\(latestSite\);[\s\S]{0,260}latestSite\.longPath === site\.longPath[\s\S]{0,260}latestServer\.kind === server\.kind[\s\S]{0,260}latestServer\.serviceName === server\.serviceName[\s\S]{0,260}latestServer\.service\?\.bin\?\.\[binaryName\] === server\.service\?\.bin\?\.\[binaryName\][\s\S]{0,400}siteConfigTemplatePath === server\.service\?\.siteConfigTemplatePath/,
+		/return serverTransactionIsCurrent\(siteId, transaction\)/,
 	);
 
 	const invalidCleanup = reconcile.slice(
@@ -103,13 +103,21 @@ test('reconciliation rechecks current status and server identity immediately bef
 		'invalid-profile cleanup must recheck status after awaited validation',
 	);
 	assert.ok(
-		invalidCleanup.lastIndexOf('reconciliationCanMutate()') < invalidCleanup.indexOf('compileAndReload(site, server, false)') &&
+		invalidCleanup.lastIndexOf('reconciliationCanMutate()') < invalidCleanup.indexOf('await compileAndReload(') &&
 		invalidCleanup.lastIndexOf('reconciliationCanMutate()') >= 0,
 		'runtime cleanup refresh must recheck status after file removal',
 	);
+	assert.match(
+		invalidCleanup,
+		/removeAllManagedFiles\(site\)[\s\S]{0,500}rollbackTransaction\([\s\S]{0,200}snapshots[\s\S]{0,100}ServerTransactionChangedError/,
+	);
+	assert.ok(
+		invalidCleanup.indexOf('if (cleanupErrors.length > 0)') < invalidCleanup.indexOf("logger.log(\n\t\t\t\t\t\t'warn'"),
+		'invalid cleanup must not log successful removal before every cleanup step succeeds',
+	);
 
 	const driftRepair = reconcile.slice(
-		reconcile.indexOf('const snapshots = await captureAllManagedFiles(site)'),
+		reconcile.lastIndexOf('const snapshots = await captureAllManagedFiles(site)'),
 		reconcile.indexOf('const matchesThisAddon'),
 	);
 	assert.ok(
@@ -117,10 +125,48 @@ test('reconciliation rechecks current status and server identity immediately bef
 		'drift repair must recheck status and server identity after snapshot reads',
 	);
 	assert.ok(
-		driftRepair.lastIndexOf('if (!reconciliationCanMutate())') < driftRepair.indexOf('compileAndReload(site, server, settings.enabled)') &&
-		driftRepair.lastIndexOf('if (!reconciliationCanMutate())') >= 0,
-		'runtime refresh must recheck status after drift repair',
+		driftRepair.indexOf('runServerTransactionMutation(') < driftRepair.indexOf('applyServerManagedFiles(') &&
+		driftRepair.indexOf('applyServerManagedFiles(') < driftRepair.indexOf('await compileAndReload('),
+		'post-mutation transaction checks must enter rollback before runtime refresh',
 	);
+	assert.match(
+		driftRepair,
+		/return rollbackTransaction\([\s\S]{0,180}previousEnvelope,[\s\S]{0,100}snapshots/,
+	);
+});
+
+test('interactive apply, disable, and toggle close server transactions around every persistent mutation', () => {
+	const apply = mainSource.slice(
+		mainSource.indexOf('const applySettingsLocked'),
+		mainSource.indexOf('const applySettings = async'),
+	);
+	const toggle = mainSource.slice(
+		mainSource.indexOf('const setEnabled = async'),
+		mainSource.indexOf('const discoverOrigin = async'),
+	);
+
+	assert.match(apply, /const transaction = beginInteractiveServerTransaction\(site, server\)/);
+	assert.match(apply, /captureAllManagedFiles\(site\)[\s\S]{0,120}assertServerTransactionCurrent\(siteId, transaction\)/);
+	assert.match(apply, /persistSettings\(siteId, nextEnvelope\)[\s\S]{0,120}assertServerTransactionCurrent\(siteId, transaction\)[\s\S]{0,180}runServerTransactionMutation\([\s\S]{0,220}applyServerManagedFiles\(/);
+	assert.match(apply, /runServerTransactionMutation\([\s\S]{0,220}applyServerManagedFiles\([\s\S]{0,500}compileAndReload\(/);
+	assert.match(apply, /runServerTransactionMutation\([\s\S]{0,220}removeAllManagedFiles\(site\)[\s\S]{0,400}compileAndReload\(/);
+
+	assert.match(toggle, /const transaction = beginInteractiveServerTransaction\(site, server\)/);
+	assert.match(toggle, /persistSettings\(siteId, disabledEnvelope\)[\s\S]{0,120}assertServerTransactionCurrent\(siteId, transaction\)[\s\S]{0,180}runServerTransactionMutation\([\s\S]{0,180}removeAllManagedFiles\(site\)/);
+	assert.match(toggle, /runServerTransactionMutation\([\s\S]{0,180}removeAllManagedFiles\(site\)[\s\S]{0,400}compileAndReload\(/);
+
+	const rollback = mainSource.slice(
+		mainSource.indexOf('const rollbackTransaction = async'),
+		mainSource.indexOf('const abortForGlobalLifecycle'),
+	);
+	assert.match(rollback, /const currentSite = siteData\.getSite\(site\.id\)/);
+	assert.match(rollback, /currentServer = currentSite \? resolveServer\(currentSite\) : null/);
+	assert.match(rollback, /compileAndReload\([\s\S]{0,80}currentSite,[\s\S]{0,80}currentServer/);
+	assert.match(
+		rollback,
+		/catch \(error\) \{\s*if \(isServerTransactionChangedError\(error\)\) \{[\s\S]{0,400}runtime refresh was deferred[\s\S]{0,300}\} else \{\s*rollbackErrors\.push/,
+	);
+	assert.doesNotMatch(rollback, /compileAndReload\([\s\S]{0,80}\bsite,[\s\S]{0,80}\b_server/);
 });
 
 test('site-state IPC reconciles server metadata changes before returning readable state', () => {
@@ -161,7 +207,7 @@ test('enabled-only toggle cleanup preserves both saved connection profiles trans
 		mainSource.indexOf('const discoverOrigin = async'),
 	);
 	assert.match(toggle, /const disabledEnvelope = setStoredSettingsEnabled\(envelope, false\)/);
-	assert.match(toggle, /persistSettings\(siteId, disabledEnvelope\)[\s\S]{0,180}removeAllManagedFiles\(site\)/);
+	assert.match(toggle, /persistSettings\(siteId, disabledEnvelope\)[\s\S]{0,320}removeAllManagedFiles\(site\)/);
 	assert.match(toggle, /rollbackTransaction\([\s\S]{0,160}envelope,[\s\S]{0,100}snapshots/);
 	assert.doesNotMatch(toggle, /replaceStoredSettingsForServer/);
 });

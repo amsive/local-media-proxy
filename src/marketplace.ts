@@ -116,6 +116,17 @@ ${ADDON_NAME} is maintained by Amsive LLC and developed by Mark Davoli and Boris
 }
 
 function createCurrentReleaseNotes(): string {
+	return `Version 0.2.2 makes server changes and origin discovery recover safely.
+
+- Closed apply, disable, toggle, rollback, and background-reconciliation race windows when Local changes a site's web server, service identity, configuration paths, or lifecycle status mid-operation. ([#16](https://github.com/amsive/local-media-proxy/issues/16))
+- Restores settings and managed files after an interrupted lifecycle transaction, and refreshes only the currently selected service when recovery is safe.
+- Stops incomplete invalid-profile cleanup from being reported as successful.
+- Limits user-triggered WP Engine and public-DNS origin discovery to 30 seconds, restores the Tools controls in place, and ignores late provider results. ([#17](https://github.com/amsive/local-media-proxy/issues/17))
+
+[View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
+}
+
+function createV021ReleaseNotes(): string {
 	return `Version 0.2.1 makes web-server switching and proxy activation seamless.
 
 - Added separate saved Nginx and Apache connection profiles, with one shared proxy on/off intent.
@@ -161,6 +172,12 @@ function createPackagedReleaseHistory(): PackagedRelease[] {
 			date: '2026-07-22T00:00:00.000Z',
 			id: `${ADDON_ID}-${ADDON_VERSION}`,
 			version: ADDON_VERSION,
+		},
+		{
+			changelog: createV021ReleaseNotes(),
+			date: '2026-07-22T00:00:00.000Z',
+			id: `${ADDON_ID}-0.2.1`,
+			version: '0.2.1',
 		},
 		{
 			changelog: createV020ReleaseNotes(),

@@ -32,9 +32,14 @@ import { reloadNginxWithFallback } from './nginx';
 import {
 	cleanupRequiresRefresh,
 	completeUnresolvedServiceCleanup,
+	isServerTransactionChangedError,
+	runServerTransactionMutation,
+	ServerTransactionChangedError,
+	serverTransactionFingerprintsMatch,
 	shouldReconcileManagedFiles,
 	shouldRefreshRuntime,
 	synchronousCleanupRequiresRefresh,
+	type ServerTransactionFingerprint,
 } from './lifecycle';
 import {
 	originResponseOutcome,
@@ -157,6 +162,74 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			? lightningServices.getSiteService(site, adapter.serviceName) as ApacheRuntimeService | null
 			: null;
 		return { ...adapter, service };
+	};
+
+	const serverTransactionFingerprint = (
+		site: Local.Site,
+		server: RuntimeServer,
+	): ServerTransactionFingerprint => {
+		const executableName = server.kind === 'apache' ? 'httpd' : 'nginx';
+		const templatesPath = (site as Local.Site & {
+			paths?: { confTemplates?: unknown };
+		}).paths?.confTemplates;
+		return {
+			configPath: server.service?.configPath ?? null,
+			executablePath: server.kind === 'unsupported'
+				? null
+				: server.service?.bin?.[executableName] ?? null,
+			runPath: server.service?.runPath ?? null,
+			serverKind: server.kind,
+			serviceName: server.serviceName,
+			siteConfigTemplatePath: server.service?.siteConfigTemplatePath ?? null,
+			sitePath: site.longPath,
+			siteStatus: siteProcessManager.getSiteStatus(site),
+			templatesPath: typeof templatesPath === 'string' ? templatesPath : null,
+		};
+	};
+
+	const currentServerTransactionFingerprint = (
+		siteId: string,
+	): ServerTransactionFingerprint | null => {
+		const currentSite = siteData.getSite(siteId);
+		if (!currentSite) {
+			return null;
+		}
+		try {
+			return serverTransactionFingerprint(currentSite, resolveServer(currentSite));
+		} catch {
+			return null;
+		}
+	};
+
+	const serverTransactionIsCurrent = (
+		siteId: string,
+		expected: ServerTransactionFingerprint,
+	): boolean => {
+		const current = currentServerTransactionFingerprint(siteId);
+		return current !== null && serverTransactionFingerprintsMatch(expected, current);
+	};
+
+	const assertServerTransactionCurrent = (
+		siteId: string,
+		expected: ServerTransactionFingerprint,
+	): void => {
+		assertGloballyActive();
+		if (!serverTransactionIsCurrent(siteId, expected)) {
+			throw new ServerTransactionChangedError();
+		}
+	};
+
+	const beginInteractiveServerTransaction = (
+		site: Local.Site,
+		server: RuntimeServer,
+	): ServerTransactionFingerprint => {
+		const transaction = serverTransactionFingerprint(site, server);
+		if (!shouldReconcileManagedFiles(transaction.siteStatus, false)) {
+			throw new Error(
+				`Local is currently ${transaction.siteStatus || 'changing this site'}. Wait until the site is running or stopped before changing Media Proxy settings.`,
+			);
+		}
+		return transaction;
 	};
 
 	const managedFileOptions = (server: RuntimeServer): {
@@ -329,17 +402,20 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		site: Local.Site,
 		server: RuntimeServer,
 		expectManaged: boolean,
+		assertCurrent: () => void = (): void => undefined,
 	): Promise<boolean> => {
+		assertCurrent();
 		if (!server.serviceName || server.kind === 'unsupported' || !server.service) {
 			throw new Error(server.reason || 'Local could not load the web-server service for this site.');
 		}
 		const serviceName = server.serviceName;
 		if (server.kind === 'apache') {
 			const processName = 'httpd';
-			const targetServiceRunning = (): boolean => (
-				siteProcessManager.hasRunningProcess(site, processName)
-			);
-			return refreshApacheService(
+			const targetServiceRunning = (): boolean => {
+				assertCurrent();
+				return siteProcessManager.hasRunningProcess(site, processName);
+			};
+			const refreshed = await refreshApacheService(
 				site,
 				server.service,
 				configTemplates,
@@ -351,12 +427,16 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				),
 				targetServiceRunning,
 			);
+			assertCurrent();
+			return refreshed;
 		}
 
 		await configTemplates.compileServiceConfigs(site);
-		const targetServiceRunning = (): boolean => (
-			siteProcessManager.hasRunningProcess(site, serviceName)
-		);
+		assertCurrent();
+		const targetServiceRunning = (): boolean => {
+			assertCurrent();
+			return siteProcessManager.hasRunningProcess(site, serviceName);
+		};
 		if (shouldRefreshRuntime(
 			siteProcessManager.getSiteStatus(site),
 			targetServiceRunning(),
@@ -365,14 +445,18 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				server.service,
 				LocalMain.execFilePromise,
 				async () => {
+					assertCurrent();
 					await siteProcessManager.restartSiteService(site, serviceName);
+					assertCurrent();
 					return siteProcessManager.hasRunningProcess(site, serviceName);
 				},
-				() => (
-					siteProcessManager.getSiteStatus(site) === 'running' &&
-					siteProcessManager.hasRunningProcess(site)
-				),
+				() => {
+					assertCurrent();
+					return siteProcessManager.getSiteStatus(site) === 'running' &&
+						siteProcessManager.hasRunningProcess(site);
+				},
 			);
+			assertCurrent();
 			if (reloadResult === 'restarted') {
 				logger.log('warn', `Restarted the ${serviceName} service for site ${site.id} after its Nginx master PID became stale.`);
 			}
@@ -434,17 +518,48 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			rollbackErrors.push(`files: ${errorMessage(error)}`);
 		}
 
-		if (server.serviceName && server.kind !== 'unsupported') {
+		const currentSite = siteData.getSite(site.id);
+		let currentServer: RuntimeServer | null = null;
+		try {
+			currentServer = currentSite ? resolveServer(currentSite) : null;
+		} catch (error) {
+			rollbackErrors.push(`${server.kind} transaction current runtime: ${errorMessage(error)}`);
+		}
+		if (
+			currentSite &&
+			currentServer?.serviceName &&
+			currentServer.kind !== 'unsupported'
+		) {
+			const currentTransaction = serverTransactionFingerprint(currentSite, currentServer);
+			const currentStatusIsStable = shouldReconcileManagedFiles(
+				currentTransaction.siteStatus,
+				false,
+			);
 			try {
-				await compileAndReload(
-					site,
-					server,
-					server.kind === 'apache'
-						? apacheSnapshotHasCompleteManagedConfig(site, snapshots)
-						: previousEnvelope.enabled,
-				);
+				if (currentStatusIsStable) {
+					await compileAndReload(
+						currentSite,
+						currentServer,
+						currentServer.kind === 'apache'
+							? apacheSnapshotHasCompleteManagedConfig(currentSite, snapshots)
+							: previousEnvelope.enabled,
+						() => assertServerTransactionCurrent(site.id, currentTransaction),
+					);
+				} else {
+					logger.log(
+						'warn',
+						`Restored Media Proxy settings and managed files for site ${site.id}; runtime refresh was deferred while Local reported ${currentTransaction.siteStatus || 'a lifecycle transition'}.`,
+					);
+				}
 			} catch (error) {
-				rollbackErrors.push(`${server.kind} restore: ${errorMessage(error)}`);
+				if (isServerTransactionChangedError(error)) {
+					logger.log(
+						'warn',
+						`Restored Media Proxy settings and managed files for site ${site.id}; runtime refresh was deferred because Local changed the site's web-server identity or lifecycle status during recovery.`,
+					);
+				} else {
+					rollbackErrors.push(`${currentServer.kind} restore: ${errorMessage(error)}`);
+				}
 			}
 		}
 
@@ -630,6 +745,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		const site = requireSite(siteId);
 		const server = resolveServer(site);
 		assertExpectedServer(server, expectedServerKind);
+		const transaction = beginInteractiveServerTransaction(site, server);
 		const normalizedInput = validateSettingsInput(input, {
 			requiresOriginIp: server.requiresOriginIp,
 		});
@@ -660,11 +776,9 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					? probe.verifiedTlsHostname ?? origin.tlsHostname
 					: origin.hostname,
 			};
-			assertGloballyActive();
-			assertExpectedServer(resolveServer(requireSite(siteId)), expectedServerKind);
+			assertServerTransactionCurrent(siteId, transaction);
 			const snapshots = await captureAllManagedFiles(site);
-			assertGloballyActive();
-			assertExpectedServer(resolveServer(requireSite(siteId)), expectedServerKind);
+			assertServerTransactionCurrent(siteId, transaction);
 			nextSettings = {
 				certificate: probe.certificate,
 				enabled: true,
@@ -689,15 +803,23 @@ export default function main(context: LocalMain.AddonMainContext): void {
 
 			try {
 				persistSettings(siteId, nextEnvelope);
-				await applyServerManagedFiles(
-					site,
-					verifiedOrigin,
-					managedFileOptions(server),
-					probe.trustedCertificateAuthoritiesPem,
+				assertServerTransactionCurrent(siteId, transaction);
+				await runServerTransactionMutation(
+					() => assertServerTransactionCurrent(siteId, transaction),
+					() => applyServerManagedFiles(
+						site,
+						verifiedOrigin,
+						managedFileOptions(server),
+						probe.trustedCertificateAuthoritiesPem,
+					),
 				);
-				assertGloballyActive();
-				const restarted = await compileAndReload(site, server, true);
-				assertGloballyActive();
+				const restarted = await compileAndReload(
+					site,
+					server,
+					true,
+					() => assertServerTransactionCurrent(siteId, transaction),
+				);
+				assertServerTransactionCurrent(siteId, transaction);
 				logger.log('info', `Enabled media proxy for site ${siteId}${restarted ? ` and refreshed ${server.kind}` : ''}.`);
 			} catch (error) {
 				if (globalLifecycleState) {
@@ -758,10 +880,9 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				}
 			}
 			const preserveVerification = originPairMatches(disabled, previousSettings);
-			assertExpectedServer(resolveServer(requireSite(siteId)), expectedServerKind);
+			assertServerTransactionCurrent(siteId, transaction);
 			const snapshots = await captureAllManagedFiles(site);
-			assertGloballyActive();
-			assertExpectedServer(resolveServer(requireSite(siteId)), expectedServerKind);
+			assertServerTransactionCurrent(siteId, transaction);
 			nextSettings = {
 				...disabled,
 				certificate: preserveVerification ? previousSettings.certificate : undefined,
@@ -778,11 +899,19 @@ export default function main(context: LocalMain.AddonMainContext): void {
 
 			try {
 				persistSettings(siteId, nextEnvelope);
-				const changed = await removeAllManagedFiles(site);
-				assertGloballyActive();
+				assertServerTransactionCurrent(siteId, transaction);
+				const changed = await runServerTransactionMutation(
+					() => assertServerTransactionCurrent(siteId, transaction),
+					() => removeAllManagedFiles(site),
+				);
 				if ((changed || previousSettings.enabled) && server.kind !== 'unsupported' && server.service) {
-					await compileAndReload(site, server, false);
-					assertGloballyActive();
+					await compileAndReload(
+						site,
+						server,
+						false,
+						() => assertServerTransactionCurrent(siteId, transaction),
+					);
+					assertServerTransactionCurrent(siteId, transaction);
 				}
 				logger.log('info', `Disabled media proxy for site ${siteId}.`);
 			} catch (error) {
@@ -823,6 +952,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		const site = requireSite(siteId);
 		const server = resolveServer(site);
 		assertExpectedServer(server, expectedServerKind);
+		const transaction = beginInteractiveServerTransaction(site, server);
 		const envelope = readStoredSettingsEnvelope(site, expectedServerKind);
 		if (envelope.enabled === rawEnabled) {
 			return getSiteState(siteId);
@@ -840,16 +970,23 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			throw new Error(runtimeCleanupUnavailableReason(server));
 		}
 		const snapshots = await captureAllManagedFiles(site);
-		assertGloballyActive();
-		assertExpectedServer(resolveServer(requireSite(siteId)), expectedServerKind);
+		assertServerTransactionCurrent(siteId, transaction);
 		const disabledEnvelope = setStoredSettingsEnabled(envelope, false);
 		try {
 			persistSettings(siteId, disabledEnvelope);
-			const changed = await removeAllManagedFiles(site);
-			assertGloballyActive();
+			assertServerTransactionCurrent(siteId, transaction);
+			const changed = await runServerTransactionMutation(
+				() => assertServerTransactionCurrent(siteId, transaction),
+				() => removeAllManagedFiles(site),
+			);
 			if (changed || envelope.enabled) {
-				await compileAndReload(site, server, false);
-				assertGloballyActive();
+				await compileAndReload(
+					site,
+					server,
+					false,
+					() => assertServerTransactionCurrent(siteId, transaction),
+				);
+				assertServerTransactionCurrent(siteId, transaction);
 			}
 			logger.log('info', `Disabled media proxy for site ${siteId} without changing its connection profiles.`);
 		} catch (error) {
@@ -982,23 +1119,18 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			}
 
 			const server = resolveServer(site);
+			const transaction = serverTransactionFingerprint(site, server);
 			const reconciliationCanMutate = (): boolean => {
 				const latestSite = siteData.getSite(siteId);
 				if (!latestSite || !siteStatusAllowsReconciliation(latestSite)) {
 					return false;
 				}
-				try {
-					const latestServer = resolveServer(latestSite);
-					const binaryName = server.kind === 'apache' ? 'httpd' : 'nginx';
-					return latestSite.longPath === site.longPath &&
-						latestServer.kind === server.kind &&
-						latestServer.serviceName === server.serviceName &&
-						latestServer.service?.bin?.[binaryName] === server.service?.bin?.[binaryName] &&
-						latestServer.service?.configPath === server.service?.configPath &&
-						latestServer.service?.runPath === server.service?.runPath &&
-						latestServer.service?.siteConfigTemplatePath === server.service?.siteConfigTemplatePath;
-				} catch {
-					return false;
+				return serverTransactionIsCurrent(siteId, transaction);
+			};
+			const assertReconciliationTransactionCurrent = (): void => {
+				assertGloballyActive();
+				if (!reconciliationCanMutate()) {
+					throw new ServerTransactionChangedError();
 				}
 			};
 			const rawStoredSettings = (site as SiteWithSettings)[SITE_SETTINGS_KEY];
@@ -1043,38 +1175,86 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					if (!reconciliationCanMutate()) {
 						return;
 					}
+					const snapshots = await captureAllManagedFiles(site);
+					if (!reconciliationCanMutate()) {
+						return;
+					}
 					const cleanupErrors: string[] = [];
 
 					let changed = false;
 					try {
-						changed = await removeAllManagedFiles(site);
+						changed = await runServerTransactionMutation(
+							assertReconciliationTransactionCurrent,
+							() => removeAllManagedFiles(site),
+						);
 					} catch (error) {
+						if (isServerTransactionChangedError(error)) {
+							return rollbackTransaction(
+								site,
+								server,
+								previousEnvelope,
+								snapshots,
+								error,
+							);
+						}
 						cleanupErrors.push(`files: ${errorMessage(error)}`);
+					}
+					if (!reconciliationCanMutate()) {
+						return rollbackTransaction(
+							site,
+							server,
+							previousEnvelope,
+							snapshots,
+							new ServerTransactionChangedError(),
+						);
 					}
 
 					if (cleanupRequiresRefresh(changed, settings.enabled)) {
-						if (reconciliationCanMutate()) {
-							try {
-								await compileAndReload(site, server, false);
-							} catch (error) {
-								cleanupErrors.push(`${server.kind} cleanup: ${errorMessage(error)}`);
+						try {
+							await compileAndReload(
+								site,
+								server,
+								false,
+								assertReconciliationTransactionCurrent,
+							);
+						} catch (error) {
+							if (isServerTransactionChangedError(error)) {
+								return rollbackTransaction(
+									site,
+									server,
+									previousEnvelope,
+									snapshots,
+									error,
+								);
 							}
+							cleanupErrors.push(`${server.kind} cleanup: ${errorMessage(error)}`);
 						}
 					}
 					try {
-						persistReconciledEnvelope();
+						if (!persistReconciledEnvelope()) {
+							return rollbackTransaction(
+								site,
+								server,
+								previousEnvelope,
+								snapshots,
+								new ServerTransactionChangedError(),
+							);
+						}
 					} catch (error) {
+						if (isServerTransactionChangedError(error)) {
+							throw error;
+						}
 						cleanupErrors.push(`settings: ${errorMessage(error)}`);
 					}
 
 					const reason = errorMessage(validationError);
+					if (cleanupErrors.length > 0) {
+						throw new Error(`${reason} Fail-closed cleanup also failed (${cleanupErrors.join('; ')}).`);
+					}
 					logger.log(
 						'warn',
 						`Removed unverified media proxy configuration for site ${site.id} while retaining global enabled intent for the current ${server.kind} profile: ${reason}`,
 					);
-					if (cleanupErrors.length > 0) {
-						throw new Error(`${reason} Fail-closed cleanup also failed (${cleanupErrors.join('; ')}).`);
-					}
 					return;
 				}
 
@@ -1095,9 +1275,13 @@ export default function main(context: LocalMain.AddonMainContext): void {
 						if (!reconciliationCanMutate()) {
 							return;
 						}
-						assertGloballyActive();
-						await compileAndReload(site, server, true);
-						assertGloballyActive();
+						await compileAndReload(
+							site,
+							server,
+							true,
+							assertReconciliationTransactionCurrent,
+						);
+						assertReconciliationTransactionCurrent();
 					}
 					return;
 				}
@@ -1109,6 +1293,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				if (!persistReconciledEnvelope() || !reconciliationCanMutate()) {
 					return;
 				}
+				assertReconciliationTransactionCurrent();
 				let changed: boolean;
 				if (settings.enabled) {
 					const origin = normalizedOrigin ?? validateAndNormalizeOrigin(settings, {
@@ -1117,23 +1302,30 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					const trustBundle = origin.protocol === 'https:'
 						? trustedCertificateAuthoritiesPem()
 						: undefined;
-					changed = await applyServerManagedFiles(
-						site,
-						origin,
-						managedFileOptions(server),
-						trustBundle,
+					changed = await runServerTransactionMutation(
+						assertReconciliationTransactionCurrent,
+						() => applyServerManagedFiles(
+							site,
+							origin,
+							managedFileOptions(server),
+							trustBundle,
+						),
 					);
 				} else {
-					changed = await removeAllManagedFiles(site);
+					changed = await runServerTransactionMutation(
+						assertReconciliationTransactionCurrent,
+						() => removeAllManagedFiles(site),
+					);
 				}
-				assertGloballyActive();
 
 				if (changed) {
-					if (!reconciliationCanMutate()) {
-						return;
-					}
-					await compileAndReload(site, server, settings.enabled);
-					assertGloballyActive();
+					await compileAndReload(
+						site,
+						server,
+						settings.enabled,
+						assertReconciliationTransactionCurrent,
+					);
+					assertReconciliationTransactionCurrent();
 				}
 			} catch (error) {
 				if (globalLifecycleState) {

@@ -390,7 +390,7 @@ test('main delegates stale-master recovery through the guarded Nginx reload help
 	assert.match(mainSource, /reloadNginxWithFallback\(/);
 	assert.match(
 		mainSource,
-		/const targetServiceRunning = \(\): boolean => \([\s\S]{0,140}hasRunningProcess\(site, serviceName\)[\s\S]{0,180}if \(shouldRefreshRuntime\(/,
+		/const targetServiceRunning = \(\): boolean => \{[\s\S]{0,180}hasRunningProcess\(site, serviceName\)[\s\S]{0,180}if \(shouldRefreshRuntime\(/,
 	);
 	assert.match(mainSource, /await siteProcessManager\.restartSiteService\(site, serviceName\)/);
 	assert.match(mainSource, /return siteProcessManager\.hasRunningProcess\(site, serviceName\)/);

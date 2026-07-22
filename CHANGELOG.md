@@ -6,6 +6,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-22
+
+### Fixed
+
+- Made apply, disable, toggle, rollback, and background reconciliation transactions fail safely when Local changes a site's web server, service identity, configuration paths, or lifecycle status mid-operation. Settings and managed files are restored, and only the currently selected service is eligible for recovery refresh. ([#16](https://github.com/amsive/local-media-proxy/issues/16))
+- Limited user-triggered origin discovery to 30 seconds so a stalled hosting-provider request cannot leave the Tools panel locked. Controls recover in place with retry and manual-entry guidance, and late results are ignored. ([#17](https://github.com/amsive/local-media-proxy/issues/17))
+
 ## [0.2.1] - 2026-07-22
 
 ### Added
@@ -75,7 +82,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Prevented slow or cancelled connection probes from hanging the UI and replaced low-level timeout errors with actionable messages.
 - Preserved correct TLS verification when switching between direct WP Engine origins and compatible proxy, CDN, or load-balancer endpoints.
 
-[Unreleased]: https://github.com/amsive/local-media-proxy/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/amsive/local-media-proxy/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/amsive/local-media-proxy/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/amsive/local-media-proxy/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/amsive/local-media-proxy/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/amsive/local-media-proxy/compare/v0.1.0...v0.1.1
