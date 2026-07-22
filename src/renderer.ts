@@ -17,12 +17,14 @@ import type {
 	OriginSuggestion,
 	PublicOriginProbeResult,
 	SettingsInput,
+	ServerKind,
 	SiteState,
 	StoredSettings,
 } from './types';
 import {
 	siteUrlComparisonKey,
 	siteUrlsAreEquivalent,
+	validateAndNormalizeSiteUrl,
 } from './validation';
 
 interface RendererContext {
@@ -33,7 +35,11 @@ interface RendererContext {
 		};
 	};
 	hooks: {
-		addContent: (hook: string, callback: () => unknown) => void;
+		addContent: <Args extends unknown[]>(
+			hook: string,
+			callback: (...args: Args) => unknown,
+			priority?: number,
+		) => void;
 		addFilter: (hook: string, callback: (items: unknown[]) => unknown[]) => void;
 	};
 }
@@ -45,9 +51,117 @@ interface SiteProps {
 	};
 }
 
+interface ProxyStatusRowProps extends SiteProps {
+	siteStatus: string;
+}
+
 interface Notice {
 	message: string;
 	variant: 'error' | 'neutral' | 'success' | 'warning';
+}
+
+export interface SiteStatusPresentation {
+	className: string;
+	label: string;
+}
+
+export function proxyPrivacySummary(serverKind: ServerKind): string {
+	return serverKind === 'apache'
+		? 'Only GET and HEAD are allowed; request bodies and named credential, nonce, CSRF, sensitive, and client-IP headers are stripped. Apache 2.4 cannot wildcard-remove arbitrary custom header names. Controlled Host and fixed add-on User-Agent headers are used for compatibility.'
+		: 'Only GET and HEAD are allowed; incoming visitor headers and request bodies are not forwarded, and a fixed add-on User-Agent is used for compatibility.';
+}
+
+export interface OverviewProxyStatusPresentation {
+	className: string;
+	detail: string;
+	label: 'Active' | 'Inactive' | 'Needs attention' | 'Unavailable';
+}
+
+export function overviewProxyStatusPresentation(
+	siteState: SiteState | null,
+): OverviewProxyStatusPresentation {
+	if (!siteState) {
+		return {
+			className: 'LocalMediaProxy__OverviewStatus--Unavailable',
+			detail: 'Proxy status could not be loaded.',
+			label: 'Unavailable',
+		};
+	}
+
+	if (siteState.needsAttention) {
+		return {
+			className: 'LocalMediaProxy__OverviewStatus--Attention',
+			detail: siteState.reason || 'Runtime cleanup requires attention.',
+			label: 'Needs attention',
+		};
+	}
+
+	if (!siteState.supported) {
+		return {
+			className: 'LocalMediaProxy__OverviewStatus--Unavailable',
+			detail: siteState.reason || 'Media proxy is unavailable for this site.',
+			label: 'Unavailable',
+		};
+	}
+
+	if (
+		siteState.settings.enabled &&
+		siteState.applied &&
+		siteState.siteStatus !== 'running'
+	) {
+		return {
+			className: 'LocalMediaProxy__OverviewStatus--Inactive',
+			detail: 'Enabled and applied, but the Local site is not running.',
+			label: 'Inactive',
+		};
+	}
+
+	if (siteState.settings.enabled === siteState.applied) {
+		return siteState.applied
+			? {
+				className: 'LocalMediaProxy__OverviewStatus--Active',
+				detail: 'Enabled and applied.',
+				label: 'Active',
+			}
+			: {
+				className: 'LocalMediaProxy__OverviewStatus--Inactive',
+				detail: 'Disabled and not applied.',
+				label: 'Inactive',
+			};
+	}
+
+	return {
+		className: 'LocalMediaProxy__OverviewStatus--Attention',
+		detail: siteState.settings.enabled
+			? 'Enabled, but proxy configuration is not applied.'
+			: 'Disabled, but proxy configuration is still applied.',
+		label: 'Needs attention',
+	};
+}
+
+export function siteStatusPresentation(
+	persistedEnabled: boolean,
+	isApplied: boolean,
+	draftDirty: boolean,
+): SiteStatusPresentation {
+	const persistedStatus = persistedEnabled
+		? isApplied
+			? 'Enabled'
+			: 'Not applied'
+		: isApplied
+			? 'Cleanup pending'
+			: 'Disabled';
+
+	return {
+		className: persistedEnabled && isApplied
+			? 'LocalMediaProxy__Status--Enabled'
+			: persistedEnabled || isApplied
+				? 'LocalMediaProxy__Status--Warning'
+				: 'LocalMediaProxy__Status--Disabled',
+		label: draftDirty
+			? `${persistedStatus} · Unsaved changes`
+			: persistedStatus,
+	};
 }
 
 export function draftOriginKey(
@@ -55,20 +169,24 @@ export function draftOriginKey(
 	originIp: string,
 	originTlsHostname?: string,
 	originEnvironment?: HostingEnvironment,
+	requiresOriginIp = true,
 ): string {
-	return `${siteUrlComparisonKey(siteUrl)}\n${originIp.trim()}\n${originTlsHostname?.trim() ?? ''}\n${originEnvironment ?? ''}`;
+	return requiresOriginIp
+		? `${siteUrlComparisonKey(siteUrl)}\n${originIp.trim()}\n${originTlsHostname?.trim() ?? ''}\n${originEnvironment ?? ''}`
+		: siteUrlComparisonKey(siteUrl);
 }
 
 export function settingsDraftIsDirty(
 	draft: SettingsInput,
 	persisted: StoredSettings,
+	requiresOriginIp = true,
 ): boolean {
 	return draft.enabled !== persisted.enabled ||
-		draft.originIp !== persisted.originIp ||
-		draft.originEnvironment !== persisted.originEnvironment ||
-		(draft.originSource ?? 'manual') !== (persisted.originSource ?? 'manual') ||
-		(draft.originTlsHostname ?? '') !== (persisted.originTlsHostname ?? '') ||
-		(draft.resolvedAt ?? '') !== (persisted.resolvedAt ?? '') ||
+		(requiresOriginIp && draft.originIp !== persisted.originIp) ||
+		(requiresOriginIp && draft.originEnvironment !== persisted.originEnvironment) ||
+		(requiresOriginIp && (draft.originSource ?? 'manual') !== (persisted.originSource ?? 'manual')) ||
+		(requiresOriginIp && (draft.originTlsHostname ?? '') !== (persisted.originTlsHostname ?? '')) ||
+		(requiresOriginIp && (draft.resolvedAt ?? '') !== (persisted.resolvedAt ?? '')) ||
 		draft.siteUrl !== persisted.siteUrl;
 }
 
@@ -80,6 +198,61 @@ export function originCandidateLabel(candidate: OriginAddressCandidate): string 
 
 export function originCandidatesRequireSelection(candidates: OriginAddressCandidate[]): boolean {
 	return candidates.length > 1 || candidates.some((candidate) => Boolean(candidate.warning));
+}
+
+export type OriginDiscoveryLayoutMode = 'manual' | 'pending' | 'wpengine';
+
+export function originDiscoveryLayoutMode(
+	options: OriginDiscoveryOptions | null,
+): OriginDiscoveryLayoutMode {
+	if (!options) {
+		return 'pending';
+	}
+
+	return options.provider === 'wpengine' && options.canAutoPopulate
+		? 'wpengine'
+		: 'manual';
+}
+
+export function siteUrlIsUsableForDns(siteUrl: string): boolean {
+	try {
+		validateAndNormalizeSiteUrl(siteUrl);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export function siteUrlUsesHttps(siteUrl: string): boolean {
+	try {
+		return validateAndNormalizeSiteUrl(siteUrl).protocol === 'https:';
+	} catch {
+		return false;
+	}
+}
+
+export function originCapabilityControlState(
+	enabled: boolean,
+	supportsHttpsOrigin: boolean,
+	siteUrl: string,
+): { blocksSave: boolean; blocksTest: boolean } {
+	const unsupportedHttps = !supportsHttpsOrigin && siteUrlUsesHttps(siteUrl);
+	return {
+		blocksSave: enabled && unsupportedHttps,
+		blocksTest: unsupportedHttps,
+	};
+}
+
+export function settingsActionAvailability(
+	supported: boolean,
+	cleanupSupported: boolean,
+	enabled: boolean,
+	blocksSave: boolean,
+): { canSave: boolean; canToggle: boolean } {
+	return {
+		canSave: (supported && !blocksSave) || (!enabled && cleanupSupported),
+		canToggle: supported || (enabled && cleanupSupported),
+	};
 }
 
 export interface ConnectionTestControlState {
@@ -128,6 +301,64 @@ export default function renderer(context: RendererContext): void {
 		globalThis as unknown as MarketplaceFetchHost,
 	);
 
+	const ProxyStatusRow = ({ site, siteStatus }: ProxyStatusRowProps) => {
+		const [siteState, setSiteState] = React.useState(undefined as SiteState | null | undefined);
+		const siteEpoch = React.useRef(0);
+
+		React.useEffect(() => {
+			const epoch = ++siteEpoch.current;
+			setSiteState(undefined);
+
+			ipcRenderer.invoke(IPC_CHANNELS.getSiteState, site.id)
+				.then((value: unknown) => {
+					if (siteEpoch.current === epoch) {
+						setSiteState(value as SiteState);
+					}
+				})
+				.catch(() => {
+					if (siteEpoch.current === epoch) {
+						setSiteState(null);
+					}
+				});
+
+			return () => {
+				if (siteEpoch.current === epoch) {
+					siteEpoch.current += 1;
+				}
+			};
+		}, [site.id, siteStatus]);
+
+		const presentation = siteState === undefined
+			? {
+				className: 'LocalMediaProxy__OverviewStatus--Loading',
+				detail: 'Loading proxy status.',
+				label: 'Checking…',
+			}
+			: overviewProxyStatusPresentation(siteState);
+
+		return e(
+			'li',
+			{ className: 'TableListRow LocalMediaProxy LocalMediaProxy--OverviewRow' },
+			e('strong', null, 'Proxy status'),
+			e(
+				'div',
+				null,
+				e(
+					'div',
+					{
+						'aria-atomic': true,
+						'aria-label': `${presentation.label}: ${presentation.detail}`,
+						'aria-live': 'polite',
+						className: `LocalMediaProxy__OverviewStatus ${presentation.className}`,
+						role: 'status',
+					},
+					e('span', { className: 'LocalMediaProxy__OverviewBadge' }, presentation.label),
+					e('span', { className: 'LocalMediaProxy__OverviewDetail' }, presentation.detail),
+				),
+			),
+		);
+	};
+
 	const MediaProxyPanel = ({ site }: SiteProps) => {
 		const [busy, setBusy] = React.useState('');
 		const [discoveryLoading, setDiscoveryLoading] = React.useState(false);
@@ -170,8 +401,9 @@ export default function renderer(context: RendererContext): void {
 				? draftOriginKey(
 					nextState.settings.siteUrl,
 					nextState.settings.originIp,
-					nextState.settings.originTlsHostname,
-					nextState.settings.originEnvironment,
+						nextState.settings.originTlsHostname,
+						nextState.settings.originEnvironment,
+						nextState.requiresOriginIp,
 				)
 				: null,
 			);
@@ -183,6 +415,7 @@ export default function renderer(context: RendererContext): void {
 			operationEpoch.current += 1;
 			setBusy('');
 			setLoaded(false);
+			setSiteState(null);
 			setDiscoveryLoading(true);
 			setDiscoveryOptions(null);
 			setNotice(null);
@@ -256,14 +489,24 @@ export default function renderer(context: RendererContext): void {
 			siteUrl,
 		});
 
+		const clearActionFeedback = (): void => {
+			setNotice(null);
+		};
+
 		const invalidateTest = (): void => {
 			setTestedDraftKey(null);
-			setNotice(null);
+			clearActionFeedback();
+		};
+
+		const editEnabled = (value: boolean): void => {
+			setEnabled(value);
+			clearActionFeedback();
 		};
 
 		const editSiteUrl = (value: string): void => {
 			const preservesOriginIdentity = siteUrlsAreEquivalent(siteUrl, value);
 			setSiteUrl(value);
+			clearActionFeedback();
 			if (preservesOriginIdentity) {
 				return;
 			}
@@ -288,23 +531,26 @@ export default function renderer(context: RendererContext): void {
 		};
 
 		const applySuggestion = (nextSuggestion: OriginSuggestion): void => {
+			const requiresOriginIp = siteState?.requiresOriginIp !== false;
 			const selectionRequired = originCandidatesRequireSelection(nextSuggestion.addresses);
 			const soleCandidate = !selectionRequired && nextSuggestion.addresses.length === 1
 				? nextSuggestion.addresses[0]
 				: undefined;
 			setSuggestion(nextSuggestion);
 			setSiteUrl(nextSuggestion.siteUrl);
-			setOriginIp(soleCandidate?.address ?? '');
-			setSelectedCandidate(soleCandidate?.address ?? '');
+			setOriginIp(requiresOriginIp ? soleCandidate?.address ?? '' : '');
+			setSelectedCandidate(requiresOriginIp ? soleCandidate?.address ?? '' : '');
 			setOriginSource(nextSuggestion.provider === 'wpengine' ? 'wpengine' : 'dns');
 			setOriginEnvironment(nextSuggestion.provider === 'wpengine'
 				? nextSuggestion.environment
 				: undefined);
-			setOriginTlsHostname(nextSuggestion.originTlsHostname);
+			setOriginTlsHostname(requiresOriginIp ? nextSuggestion.originTlsHostname : undefined);
 			setResolvedAt(nextSuggestion.resolvedAt);
 			setTestedDraftKey(null);
 			setNotice({
-				message: selectionRequired
+				message: !requiresOriginIp
+					? 'Suggested Site URL populated. Apache will use its hostname for DNS, HTTP Host, TLS SNI, and certificate verification. Test the connection before enabling the proxy.'
+					: selectionRequired
 					? 'Site URL populated. Select an IP address, then test the connection.'
 					: 'Suggested Site URL and remote IP populated. Test the connection before enabling the proxy.',
 				variant: 'neutral',
@@ -418,7 +664,13 @@ export default function renderer(context: RendererContext): void {
 						}
 					}
 					setTestedDraftKey(result.outcome === 'success'
-						? draftOriginKey(siteUrl, originIp, verifiedTlsHostname, originEnvironment)
+						? draftOriginKey(
+							siteUrl,
+							originIp,
+							verifiedTlsHostname,
+							originEnvironment,
+							siteState?.requiresOriginIp !== false,
+						)
 						: null);
 					setNotice({ message: result.message, variant: result.outcome });
 				}
@@ -466,8 +718,8 @@ export default function renderer(context: RendererContext): void {
 					hydrate(nextState);
 					setNotice({
 						message: nextState.settings.enabled
-							? 'Media proxy enabled. Nginx now checks local uploads first and fetches only missing images from the configured site.'
-							: 'Media proxy disabled. The managed Nginx configuration was removed.',
+							? `Media proxy enabled. ${nextState.serverKind === 'apache' ? 'Apache' : 'Nginx'} now checks local uploads first and fetches only missing images from the configured site.`
+							: 'Media proxy disabled. The managed web-server configuration was removed.',
 						variant: 'success',
 					});
 				}
@@ -513,48 +765,64 @@ export default function renderer(context: RendererContext): void {
 			return e('div', { className: 'LocalMediaProxy LocalMediaProxy--Loading' }, 'Loading media proxy settings…');
 		}
 
-		const supported = siteState?.supported !== false;
+		const supported = siteState?.supported === true;
+		const cleanupSupported = siteState?.cleanupSupported === true;
+		const requiresOriginIp = siteState?.requiresOriginIp === true;
 		const isApplied = Boolean(siteState?.applied);
 		const persistedEnabled = Boolean(siteState?.settings.enabled);
-		const cleanupAvailable = !supported && (persistedEnabled || isApplied);
+		const {
+			blocksSave: capabilityBlocksSave,
+			blocksTest: capabilityBlocksTest,
+		} = originCapabilityControlState(
+			enabled,
+			siteState?.supportsHttpsOrigin !== false,
+			siteUrl,
+		);
 		const draftDirty = siteState
-			? settingsDraftIsDirty(settings(), siteState.settings)
+			? settingsDraftIsDirty(settings(), siteState.settings, requiresOriginIp)
 			: false;
-		const persistedStatus = persistedEnabled
-			? isApplied
-				? 'Enabled'
-				: 'Not applied'
-			: isApplied
-				? 'Cleanup pending'
-				: 'Disabled';
-		const statusLabel = draftDirty
-			? `${persistedStatus} · Unsaved changes`
-			: persistedStatus;
-		const statusClass = persistedEnabled && isApplied
-			? 'LocalMediaProxy__Status--Enabled'
-			: persistedEnabled || isApplied
-				? 'LocalMediaProxy__Status--Warning'
-				: 'LocalMediaProxy__Status--Disabled';
-		const fieldsMissing = enabled && (!siteUrl.trim() || !originIp.trim());
-		const siteUrlHelp = originTlsHostname
+		const status = !siteState
+			? { className: 'LocalMediaProxy__Status--Warning', label: 'Unavailable' }
+			: siteState.needsAttention
+			? { className: 'LocalMediaProxy__Status--Warning', label: 'Needs attention' }
+			: siteStatusPresentation(persistedEnabled, isApplied, draftDirty);
+		const fieldsMissing = enabled && (
+			!siteUrl.trim() ||
+			(requiresOriginIp && !originIp.trim()) ||
+			capabilityBlocksSave
+		);
+		const siteUrlHelp = !requiresOriginIp
+			? siteState?.httpsUnavailableReason
+				? 'This Local Apache bundle supports HTTP origins only because its platform package does not include mod_ssl. Enter an http:// Site URL, or use Nginx when an HTTPS origin is required.'
+				: 'Enter only the scheme and hostname, plus an optional port, without a path. Apache uses this hostname for DNS, HTTP Host, TLS SNI, and certificate verification.'
+			: originTlsHostname
 			? `Enter only the scheme and hostname, plus an optional port, without a path. WP Engine TLS identity is ${originTlsHostname}; HTTP Host remains the Site URL.`
 			: 'Enter only the scheme and hostname, plus an optional port, without a path. HTTPS is recommended.';
-		const canSave = supported || (!enabled && cleanupAvailable);
+		const actionAvailability = settingsActionAvailability(
+			supported,
+			cleanupSupported,
+			enabled,
+			capabilityBlocksSave,
+		);
+		const canSave = actionAvailability.canSave;
 		const draftVerified = testedDraftKey === draftOriginKey(
 			siteUrl,
 			originIp,
 			originTlsHostname,
 			originEnvironment,
+			requiresOriginIp,
 		);
 		const providerLabel = discoveryOptions?.provider === 'wpengine'
 			? 'WP Engine'
 			: discoveryOptions?.provider === 'flywheel'
 				? 'Flywheel'
 				: 'Manual';
+		const discoveryLayout = originDiscoveryLayoutMode(discoveryOptions);
+		const canDiscoverFromDns = siteUrlIsUsableForDns(siteUrl);
 		const testControl = connectionTestControlState(
 			busy,
-			supported,
-			Boolean(siteUrl.trim() && originIp.trim()),
+			supported && !capabilityBlocksTest,
+			Boolean(siteUrl.trim() && (!requiresOriginIp || originIp.trim())),
 		);
 
 		return e(
@@ -573,9 +841,9 @@ export default function renderer(context: RendererContext): void {
 					e('h2', { id: `${ADDON_ID}-title` }, ADDON_NAME),
 					e('p', null, `Configure a local-first remote media fallback for ${site.name || 'this site'}.`),
 				),
-				e('span', { className: `LocalMediaProxy__Status ${statusClass}` }, statusLabel),
+				e('span', { className: `LocalMediaProxy__Status ${status.className}` }, status.label),
 			),
-			!supported && e(
+			siteState?.supported === false && e(
 				'div',
 				{
 					className: 'LocalMediaProxy__Banner LocalMediaProxy__Banner--warning',
@@ -583,14 +851,13 @@ export default function renderer(context: RendererContext): void {
 				},
 				siteState?.reason || 'This site uses an unsupported web server.',
 			),
-			notice && e(
+			siteState?.httpsUnavailableReason && e(
 				'div',
 				{
-					'aria-live': notice.variant === 'error' ? undefined : 'polite',
-					className: `LocalMediaProxy__Banner LocalMediaProxy__Banner--${notice.variant}`,
-					role: notice.variant === 'error' ? 'alert' : 'status',
+					className: 'LocalMediaProxy__Banner LocalMediaProxy__Banner--warning',
+					role: 'status',
 				},
-				notice.message,
+				siteState.httpsUnavailableReason,
 			),
 			e(
 				'section',
@@ -606,8 +873,8 @@ export default function renderer(context: RendererContext): void {
 						'aria-checked': enabled,
 						'aria-labelledby': `${ADDON_ID}-enable-title`,
 						className: `LocalMediaProxy__Switch${enabled ? ' LocalMediaProxy__Switch--Checked' : ''}`,
-						disabled: Boolean(busy) || (!supported && !enabled),
-						onClick: () => setEnabled(!enabled),
+						disabled: Boolean(busy) || !actionAvailability.canToggle,
+						onClick: () => editEnabled(!enabled),
 						role: 'switch',
 						type: 'button',
 					}),
@@ -622,7 +889,7 @@ export default function renderer(context: RendererContext): void {
 						),
 						e('span', { className: 'LocalMediaProxy__Provider' }, providerLabel),
 					),
-					discoveryOptions?.canAutoPopulate && e(
+					discoveryLayout === 'wpengine' && e(
 						'div',
 						{ className: 'LocalMediaProxy__DiscoveryControls' },
 						e('div', { className: 'LocalMediaProxy__Field LocalMediaProxy__Field--Compact' },
@@ -654,56 +921,6 @@ export default function renderer(context: RendererContext): void {
 							onClick: () => discover('wpengine'),
 							type: 'button',
 						}, busy === 'discovering' ? 'Discovering…' : 'Auto-populate from WP Engine'),
-					),
-					e(
-						'div',
-						{ className: 'LocalMediaProxy__DnsAction' },
-						e('p', null, 'Public DNS may return a direct origin, CDN, reverse proxy, or load balancer address. Compatible proxy or CDN addresses can work, but every result must be tested.'),
-						e('button', {
-							className: 'LocalMediaProxy__Button LocalMediaProxy__Button--Secondary',
-							disabled: Boolean(busy) || !siteUrl.trim(),
-							onClick: () => discover('dns'),
-							type: 'button',
-						}, busy === 'discovering' ? 'Finding…' : 'Find IP addresses'),
-					),
-					suggestion && e(
-						'div',
-						{ className: 'LocalMediaProxy__DiscoveryResult' },
-						originCandidatesRequireSelection(suggestion.addresses) && e(
-							'div',
-							{ className: 'LocalMediaProxy__Field' },
-							e('label', { htmlFor: `${ADDON_ID}-candidate` }, 'Remote IP candidate'),
-							e(
-								'select',
-								{
-									className: 'LocalMediaProxy__Input LocalMediaProxy__Select',
-									disabled: Boolean(busy),
-									id: `${ADDON_ID}-candidate`,
-									onChange: (event: { target: { value: string } }) => chooseCandidate(event.target.value),
-									value: selectedCandidate,
-								},
-								e('option', { value: '' }, 'Select an address to test'),
-								suggestion.addresses.map((candidate: OriginAddressCandidate) => e(
-									'option',
-									{ key: candidate.address, value: candidate.address },
-									originCandidateLabel(candidate),
-								)),
-							),
-						),
-						e('p', {
-							'aria-live': 'polite',
-							className: 'LocalMediaProxy__DiscoveryWarning',
-							role: 'status',
-						}, suggestion.warning),
-						selectedCandidate && suggestion.addresses.find((candidate: OriginAddressCandidate) => candidate.address === selectedCandidate)?.warning && e(
-							'p',
-							{
-								'aria-live': 'polite',
-								className: 'LocalMediaProxy__DiscoveryWarning',
-								role: 'status',
-							},
-							suggestion.addresses.find((candidate: OriginAddressCandidate) => candidate.address === selectedCandidate)?.warning,
-						),
 					),
 				),
 				e(
@@ -737,23 +954,32 @@ export default function renderer(context: RendererContext): void {
 						),
 						e('p', { className: 'LocalMediaProxy__Help', id: `${ADDON_ID}-site-url-help` }, siteUrlHelp),
 					),
-					e(
+					requiresOriginIp && e(
 						'div',
 						{ className: 'LocalMediaProxy__Field' },
 						e('label', { htmlFor: `${ADDON_ID}-origin-ip` }, 'Remote IP address'),
-						e('input', {
-							'aria-describedby': fieldsMissing && !originIp.trim()
-								? `${ADDON_ID}-origin-ip-help ${ADDON_ID}-origin-ip-error`
-								: `${ADDON_ID}-origin-ip-help`,
-							'aria-invalid': fieldsMissing && !originIp.trim(),
-							className: `LocalMediaProxy__Input${fieldsMissing && !originIp.trim() ? ' LocalMediaProxy__Input--Invalid' : ''}`,
-							disabled: !supported || Boolean(busy),
-							id: `${ADDON_ID}-origin-ip`,
-							onChange: (event: { target: { value: string } }) => editOriginIp(event.target.value),
-							placeholder: '203.0.113.10',
-							type: 'text',
-							value: originIp,
-						}),
+						e('div', { className: 'LocalMediaProxy__OriginIpRow' },
+							e('input', {
+								'aria-describedby': fieldsMissing && !originIp.trim()
+									? `${ADDON_ID}-origin-ip-help ${ADDON_ID}-origin-ip-error`
+									: `${ADDON_ID}-origin-ip-help`,
+								'aria-invalid': fieldsMissing && !originIp.trim(),
+								className: `LocalMediaProxy__Input${fieldsMissing && !originIp.trim() ? ' LocalMediaProxy__Input--Invalid' : ''}`,
+								disabled: !supported || Boolean(busy),
+								id: `${ADDON_ID}-origin-ip`,
+								onChange: (event: { target: { value: string } }) => editOriginIp(event.target.value),
+								placeholder: '203.0.113.10',
+								type: 'text',
+								value: originIp,
+							}),
+							discoveryLayout !== 'pending' && e('button', {
+								'aria-describedby': `${ADDON_ID}-dns-help`,
+								className: 'LocalMediaProxy__Button LocalMediaProxy__Button--Secondary LocalMediaProxy__Button--Dns',
+								disabled: Boolean(busy) || !supported || !canDiscoverFromDns,
+								onClick: () => discover('dns'),
+								type: 'button',
+							}, busy === 'discovering' ? 'Finding…' : 'Find via public DNS'),
+						),
 						fieldsMissing && !originIp.trim() && e(
 							'p',
 							{
@@ -763,8 +989,61 @@ export default function renderer(context: RendererContext): void {
 							},
 							'Enter a valid remote IPv4 or IPv6 address.',
 						),
+						suggestion && e(
+							'div',
+							{ className: 'LocalMediaProxy__DiscoveryResult' },
+							originCandidatesRequireSelection(suggestion.addresses) && e(
+								'div',
+								{ className: 'LocalMediaProxy__Field' },
+								e('label', { htmlFor: `${ADDON_ID}-candidate` }, 'Remote IP candidate'),
+								e(
+									'select',
+									{
+										className: 'LocalMediaProxy__Input LocalMediaProxy__Select',
+										disabled: Boolean(busy),
+										id: `${ADDON_ID}-candidate`,
+										onChange: (event: { target: { value: string } }) => chooseCandidate(event.target.value),
+										value: selectedCandidate,
+									},
+									e('option', { value: '' }, 'Select an address to test'),
+									suggestion.addresses.map((candidate: OriginAddressCandidate) => e(
+										'option',
+										{ key: candidate.address, value: candidate.address },
+										originCandidateLabel(candidate),
+									)),
+								),
+							),
+							e('p', {
+								'aria-live': 'polite',
+								className: 'LocalMediaProxy__DiscoveryWarning',
+								role: 'status',
+							}, suggestion.warning),
+							selectedCandidate && suggestion.addresses.find((candidate: OriginAddressCandidate) => candidate.address === selectedCandidate)?.warning && e(
+								'p',
+								{
+									'aria-live': 'polite',
+									className: 'LocalMediaProxy__DiscoveryWarning',
+									role: 'status',
+								},
+								suggestion.addresses.find((candidate: OriginAddressCandidate) => candidate.address === selectedCandidate)?.warning,
+							),
+						),
+						discoveryLayout !== 'pending' && e(
+							'p',
+							{ className: 'LocalMediaProxy__Help', id: `${ADDON_ID}-dns-help` },
+							'Public DNS may return a direct origin, CDN, reverse proxy, or load balancer address. Compatible proxy or CDN addresses can work, but every result must be tested.',
+						),
 						e('p', { className: 'LocalMediaProxy__Help', id: `${ADDON_ID}-origin-ip-help` }, 'A provider-supplied origin IP is preferred when available. A proxy, CDN, or load-balancer IP can also work when it serves the Site URL; test this connection before enabling, then verify an actual missing upload after applying.'),
 					),
+				),
+				notice && e(
+					'div',
+					{
+						'aria-live': notice.variant === 'error' ? undefined : 'polite',
+						className: `LocalMediaProxy__ActionFeedback LocalMediaProxy__Banner LocalMediaProxy__Banner--${notice.variant}`,
+						role: notice.variant === 'error' ? 'alert' : 'status',
+					},
+					notice.message,
 				),
 				e(
 					'div',
@@ -805,8 +1084,10 @@ export default function renderer(context: RendererContext): void {
 				e('ul', null,
 					e('li', null, 'Existing images continue to come from the local uploads directory.'),
 					e('li', null, 'Only missing image files under /wp-content/uploads/ are fetched.'),
-					e('li', null, 'Only GET and HEAD are allowed; visitor headers and request bodies are not forwarded, and a fixed add-on User-Agent is used for compatibility.'),
-					e('li', null, 'HTTPS identity and chain are verified against standard CA roots and the published Cloudflare Origin CA roots.'),
+					e('li', null, proxyPrivacySummary(siteState?.serverKind ?? 'unsupported')),
+				e('li', null, requiresOriginIp
+					? 'HTTPS identity and chain are verified against standard CA roots and the published Cloudflare Origin CA roots.'
+					: 'Apache resolves the Site URL hostname and uses that same identity for HTTP Host, TLS SNI, and certificate verification.'),
 					e('li', null, 'A successful connection test verifies reachability and, for HTTPS, certificate identity and trust—not a media file. After applying, test an actual missing upload through the Local site.'),
 				),
 			),
@@ -823,6 +1104,15 @@ export default function renderer(context: RendererContext): void {
 		key: `${ADDON_ID}-stylesheet`,
 		rel: 'stylesheet',
 	}));
+
+	hooks.addContent(
+		'SiteInfoOverview_TableList',
+		(site: SiteProps['site'], siteStatus: string) => e(ProxyStatusRow, {
+			key: `${ADDON_ID}-overview-status-${site.id}`,
+			site,
+			siteStatus,
+		}),
+	);
 
 	hooks.addFilter('siteInfoToolsItem', (menu) => [
 		...menu,

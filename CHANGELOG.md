@@ -6,9 +6,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-21
+
+### Added
+
+- Added local-first Apache support using URL-only hostname routing, verified TLS, reversible managed templates, and server-specific controls. Its refresh path uses targeted compilation and managed-marker checks, runs `httpd -t`, then performs a bounded site-scoped `httpd -k graceful -f <site-config>` reload without restarting Apache. ([#12](https://github.com/amsive/local-media-proxy/issues/12))
+- Added an Overview-tab proxy status row that distinguishes active, inactive, unavailable, and configuration-drift states. ([#11](https://github.com/amsive/local-media-proxy/issues/11))
+
 ### Changed
 
-- Nothing yet.
+- Reordered connection setup around the Site URL and placed public-DNS discovery beside the Nginx Remote IP field it populates. ([#10](https://github.com/amsive/local-media-proxy/issues/10))
+- Apache intentionally uses the Site URL hostname for DNS, HTTP `Host`, TLS SNI, and certificate verification instead of claiming Nginx's split IP/hostname behavior. HTTPS remains fail-closed when Local's platform bundle lacks `mod_ssl`; the current Intel macOS +11 bundle supports Apache HTTP origins only. ([#12](https://github.com/amsive/local-media-proxy/issues/12))
+
+### Fixed
+
+- Kept success and error feedback beside the action controls so results remain visible after testing or saving settings. ([#8](https://github.com/amsive/local-media-proxy/issues/8))
+- Replaced raw socket and TLS failures with concise, actionable connection messages while preserving detailed causes in Local's log. ([#9](https://github.com/amsive/local-media-proxy/issues/9))
 
 ## [0.1.1] - 2026-07-21
 
@@ -42,6 +55,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Prevented slow or cancelled connection probes from hanging the UI and replaced low-level timeout errors with actionable messages.
 - Preserved correct TLS verification when switching between direct WP Engine origins and compatible proxy, CDN, or load-balancer endpoints.
 
-[Unreleased]: https://github.com/amsive/local-media-proxy/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/amsive/local-media-proxy/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/amsive/local-media-proxy/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/amsive/local-media-proxy/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/amsive/local-media-proxy/releases/tag/v0.1.0

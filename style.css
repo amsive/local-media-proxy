@@ -76,6 +76,59 @@
 	color: #75520a;
 }
 
+.LocalMediaProxy.LocalMediaProxy--OverviewRow {
+	color: inherit;
+	max-width: none;
+	padding: 0;
+}
+
+.LocalMediaProxy.LocalMediaProxy--OverviewRow > strong + div {
+	vertical-align: middle;
+}
+
+.LocalMediaProxy .LocalMediaProxy__OverviewStatus {
+	align-items: center;
+	display: flex;
+	gap: 10px;
+	line-height: 1.35;
+	min-height: 48px;
+}
+
+.LocalMediaProxy .LocalMediaProxy__OverviewBadge {
+	border: 1px solid transparent;
+	border-radius: 999px;
+	flex: 0 0 auto;
+	font-size: 11px;
+	font-weight: 700;
+	line-height: 1;
+	padding: 6px 9px;
+}
+
+.LocalMediaProxy .LocalMediaProxy__OverviewDetail {
+	color: #616166;
+	font-size: 12px;
+}
+
+.LocalMediaProxy .LocalMediaProxy__OverviewStatus--Active .LocalMediaProxy__OverviewBadge {
+	background: #e5f7eb;
+	border-color: #83c89b;
+	color: #176737;
+}
+
+.LocalMediaProxy .LocalMediaProxy__OverviewStatus--Inactive .LocalMediaProxy__OverviewBadge,
+.LocalMediaProxy .LocalMediaProxy__OverviewStatus--Loading .LocalMediaProxy__OverviewBadge,
+.LocalMediaProxy .LocalMediaProxy__OverviewStatus--Unavailable .LocalMediaProxy__OverviewBadge {
+	background: #ececef;
+	border-color: #c9c9ce;
+	color: #55555a;
+}
+
+.LocalMediaProxy .LocalMediaProxy__OverviewStatus--Attention .LocalMediaProxy__OverviewBadge {
+	background: #fff2d4;
+	border-color: #e2b85b;
+	color: #75520a;
+}
+
 .LocalMediaProxy__Banner {
 	border: 1px solid transparent;
 	border-radius: 6px;
@@ -152,8 +205,7 @@
 	justify-content: space-between;
 }
 
-.LocalMediaProxy__DiscoveryHeading p,
-.LocalMediaProxy__DnsAction p {
+.LocalMediaProxy__DiscoveryHeading p {
 	color: #66666b;
 	font-size: 13px;
 	line-height: 1.5;
@@ -172,8 +224,7 @@
 	white-space: nowrap;
 }
 
-.LocalMediaProxy__DiscoveryControls,
-.LocalMediaProxy__DnsAction {
+.LocalMediaProxy__DiscoveryControls {
 	align-items: flex-end;
 	display: flex;
 	gap: 12px;
@@ -184,12 +235,6 @@
 .LocalMediaProxy__Field--Compact {
 	flex: 1 1 auto;
 	max-width: 420px;
-}
-
-.LocalMediaProxy__DnsAction {
-	align-items: center;
-	border-top: 1px solid #e5e5e8;
-	padding-top: 16px;
 }
 
 .LocalMediaProxy__DiscoveryResult {
@@ -254,9 +299,24 @@
 	border-top: 1px solid #e5e5e8;
 	display: grid;
 	gap: 20px;
-	grid-template-columns: repeat(2, minmax(0, 1fr));
+	grid-template-columns: minmax(0, 1fr);
 	margin-top: 20px;
 	padding-top: 20px;
+}
+
+.LocalMediaProxy__OriginIpRow {
+	align-items: center;
+	display: flex;
+	gap: 12px;
+}
+
+.LocalMediaProxy__OriginIpRow .LocalMediaProxy__Input {
+	flex: 1 1 auto;
+}
+
+.LocalMediaProxy__Button--Dns {
+	flex: 0 0 auto;
+	white-space: nowrap;
 }
 
 .LocalMediaProxy__Field label {
@@ -322,6 +382,14 @@
 	gap: 10px;
 	justify-content: flex-end;
 	margin-top: 22px;
+}
+
+.LocalMediaProxy__ActionFeedback {
+	margin: 22px 0 10px;
+}
+
+.LocalMediaProxy__ActionFeedback + .LocalMediaProxy__Actions {
+	margin-top: 0;
 }
 
 .LocalMediaProxy__DraftVerified {
@@ -465,13 +533,11 @@
 	border-top-color: #4a4a50;
 }
 
-.Theme__Dark .LocalMediaProxy__Discovery,
-.Theme__Dark .LocalMediaProxy__DnsAction {
+.Theme__Dark .LocalMediaProxy__Discovery {
 	border-top-color: #4a4a50;
 }
 
-.Theme__Dark .LocalMediaProxy__DiscoveryHeading p,
-.Theme__Dark .LocalMediaProxy__DnsAction p {
+.Theme__Dark .LocalMediaProxy__DiscoveryHeading p {
 	color: #c2c2c7;
 }
 
@@ -511,6 +577,30 @@
 }
 
 .Theme__Dark .LocalMediaProxy__Status--Warning {
+	background: #4c3b16;
+	border-color: #b78c31;
+	color: #ffe2a0;
+}
+
+.Theme__Dark .LocalMediaProxy .LocalMediaProxy__OverviewDetail {
+	color: #c2c2c7;
+}
+
+.Theme__Dark .LocalMediaProxy .LocalMediaProxy__OverviewStatus--Active .LocalMediaProxy__OverviewBadge {
+	background: #173f29;
+	border-color: #4ea774;
+	color: #baf1cc;
+}
+
+.Theme__Dark .LocalMediaProxy .LocalMediaProxy__OverviewStatus--Inactive .LocalMediaProxy__OverviewBadge,
+.Theme__Dark .LocalMediaProxy .LocalMediaProxy__OverviewStatus--Loading .LocalMediaProxy__OverviewBadge,
+.Theme__Dark .LocalMediaProxy .LocalMediaProxy__OverviewStatus--Unavailable .LocalMediaProxy__OverviewBadge {
+	background: #414147;
+	border-color: #66666d;
+	color: #eeeeef;
+}
+
+.Theme__Dark .LocalMediaProxy .LocalMediaProxy__OverviewStatus--Attention .LocalMediaProxy__OverviewBadge {
 	background: #4c3b16;
 	border-color: #b78c31;
 	color: #ffe2a0;
@@ -611,7 +701,7 @@
 	}
 
 	.LocalMediaProxy__DiscoveryControls,
-	.LocalMediaProxy__DnsAction {
+	.LocalMediaProxy__OriginIpRow {
 		align-items: stretch;
 		flex-direction: column;
 	}

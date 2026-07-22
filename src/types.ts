@@ -5,6 +5,8 @@
 
 export type OriginProtocol = 'http:' | 'https:';
 
+export type ServerKind = 'apache' | 'nginx' | 'unsupported';
+
 export type HostingEnvironment = 'production' | 'staging' | 'development';
 
 export type OriginProvider = 'dns' | 'flywheel' | 'none' | 'wpengine';
@@ -63,10 +65,16 @@ export interface PublicOriginProbeResult {
 
 export interface SiteState {
 	applied: boolean;
+	cleanupSupported: boolean;
+	httpsUnavailableReason?: string;
+	needsAttention?: boolean;
 	reason?: string;
+	requiresOriginIp: boolean;
+	serverKind: ServerKind;
 	settings: StoredSettings;
 	siteStatus: string;
 	supported: boolean;
+	supportsHttpsOrigin: boolean;
 }
 
 export interface HostingEnvironmentOption {

@@ -6,6 +6,11 @@
 import type * as Local from '@getflywheel/local';
 import * as LocalMain from '@getflywheel/local/main';
 import {
+	inspectApacheRuntimeCapabilities,
+	refreshApacheService,
+	type ApacheRuntimeService,
+} from './apache';
+import {
 	ADDON_ID,
 	IPC_CHANNELS,
 	SITE_SETTINGS_KEY,
@@ -25,19 +30,26 @@ import {
 } from './hosting';
 import { reloadNginxWithFallback } from './nginx';
 import {
+	cleanupRequiresRefresh,
+	completeUnresolvedServiceCleanup,
+	synchronousCleanupRequiresRefresh,
+} from './lifecycle';
+import {
 	originResponseOutcome,
 	probeOrigin,
 	trustedCertificateAuthoritiesPem,
 } from './origin';
 import {
-	applyManagedFiles,
-	captureManagedFiles,
-	managedArtifactsExist,
-	managedFilesMatch,
-	removeManagedFiles,
-	removeManagedFilesSync,
+	allManagedArtifactsExist,
+	apacheSnapshotHasCompleteManagedConfig,
+	applyServerManagedFiles,
+	captureAllManagedFiles,
+	removeAllManagedFiles,
+	removeAllManagedFilesSync,
 	restoreManagedFiles,
+	serverManagedFilesMatch,
 } from './site-config';
+import { detectSiteServer, type SiteServerAdapter } from './server';
 import {
 	normalizeStoredSettings,
 	originPairMatches,
@@ -64,6 +76,8 @@ type SiteWithSettings = Local.Site & {
 const siteOperationQueues = new Map<string, Promise<void>>();
 const LIFECYCLE_LISTENERS_KEY = Symbol.for('amsive.local-media-proxy.lifecycle-listeners');
 
+class ApacheCapabilityUnavailableError extends Error {}
+
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
@@ -78,17 +92,6 @@ function errorLogMessage(error: unknown): string {
 
 function readStoredSettings(site: Local.Site): StoredSettings {
 	return normalizeStoredSettings((site as SiteWithSettings)[SITE_SETTINGS_KEY]);
-}
-
-function getNginxServiceName(site: Local.Site): string | null {
-	for (const [serviceName, service] of Object.entries(site.services ?? {})) {
-		const normalizedName = `${serviceName} ${(service as { name?: string }).name ?? ''}`.toLowerCase();
-		if (normalizedName.includes('nginx')) {
-			return serviceName;
-		}
-	}
-
-	return null;
 }
 
 async function withSiteLock<T>(siteId: string, operation: () => Promise<T>): Promise<T> {
@@ -126,6 +129,31 @@ export default function main(context: LocalMain.AddonMainContext): void {
 	const logger = localLogger.child({ addon: ADDON_ID, thread: 'main' });
 	const originProbeControllers = new Map<string, AbortController>();
 	let globalLifecycleState: 'disabled' | 'uninstalling' | null = null;
+
+	type RuntimeServer = SiteServerAdapter & {
+		service: ApacheRuntimeService | null;
+	};
+
+	const resolveServer = (site: Local.Site): RuntimeServer => {
+		const adapter = detectSiteServer(site);
+		const service = adapter.serviceName
+			? lightningServices.getSiteService(site, adapter.serviceName) as ApacheRuntimeService | null
+			: null;
+		return { ...adapter, service };
+	};
+
+	const managedFileOptions = (server: RuntimeServer): {
+		apacheHttpdBinary?: string;
+		serverKind: 'apache' | 'nginx';
+	} => {
+		if (server.kind === 'unsupported') {
+			throw new Error(server.reason || 'This site uses an unsupported web server.');
+		}
+		return {
+			apacheHttpdBinary: server.kind === 'apache' ? server.service?.bin?.httpd : undefined,
+			serverKind: server.kind,
+		};
+	};
 
 	const assertGloballyActive = (): void => {
 		if (globalLifecycleState) {
@@ -262,16 +290,32 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		} as unknown as Partial<Local.SiteJSON>);
 	};
 
-	const compileAndReload = async (site: Local.Site, serviceName: string): Promise<boolean> => {
+	const compileAndReload = async (
+		site: Local.Site,
+		server: RuntimeServer,
+		expectManaged: boolean,
+	): Promise<boolean> => {
+		if (!server.serviceName || server.kind === 'unsupported' || !server.service) {
+			throw new Error(server.reason || 'Local could not load the web-server service for this site.');
+		}
+		const serviceName = server.serviceName;
+		if (server.kind === 'apache') {
+			const processName = 'httpd';
+			return refreshApacheService(
+				site,
+				server.service,
+				configTemplates,
+				LocalMain.execFilePromise,
+				expectManaged,
+				() => siteProcessManager.getSiteStatus(site) === 'running',
+				() => siteProcessManager.hasRunningProcess(site, processName),
+			);
+		}
+
 		await configTemplates.compileServiceConfigs(site);
 		if (siteProcessManager.getSiteStatus(site) === 'running') {
-			const service = lightningServices.getSiteService(site, serviceName);
-			if (!service) {
-				throw new Error(`Local could not load the ${serviceName} service for this site.`);
-			}
-
 			const reloadResult = await reloadNginxWithFallback(
-				service,
+				server.service,
 				LocalMain.execFilePromise,
 				async () => {
 					await siteProcessManager.restartSiteService(site, serviceName);
@@ -291,11 +335,42 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		return false;
 	};
 
+	const runtimeCleanupUnavailableReason = (server: RuntimeServer): string => (
+		`${server.reason || `Local could not load this site's ${server.kind} service.`} ` +
+		'Runtime cleanup cannot be verified, so saved settings and managed files were left unchanged. ' +
+		'Stop the site to immediately prevent a previously compiled proxy from serving requests, then restore an unambiguous web-server service and retry.'
+	);
+
+	const requireApacheCapabilities = async (
+		server: RuntimeServer,
+	): Promise<Awaited<ReturnType<typeof inspectApacheRuntimeCapabilities>>> => {
+		const httpdBinary = server.service?.bin?.httpd;
+		if (server.kind !== 'apache' || !httpdBinary) {
+			throw new Error('Local did not provide an Apache httpd binary for this site.');
+		}
+		return inspectApacheRuntimeCapabilities(httpdBinary);
+	};
+
+	const assertApacheOriginCapability = async (
+		server: RuntimeServer,
+		protocol: 'http:' | 'https:',
+	): Promise<void> => {
+		if (server.kind !== 'apache') {
+			return;
+		}
+		const capabilities = await requireApacheCapabilities(server);
+		if (!capabilities.http || (protocol === 'https:' && !capabilities.https)) {
+			throw new ApacheCapabilityUnavailableError(
+				capabilities.reason || 'This Local Apache bundle cannot proxy the selected origin protocol.',
+			);
+		}
+	};
+
 	const rollbackTransaction = async (
 		site: Local.Site,
-		serviceName: string | null,
+		server: RuntimeServer,
 		previousSettings: StoredSettings,
-		snapshots: Awaited<ReturnType<typeof captureManagedFiles>>,
+		snapshots: Awaited<ReturnType<typeof captureAllManagedFiles>>,
 		originalError: unknown,
 	): Promise<never> => {
 		const rollbackErrors: string[] = [];
@@ -312,11 +387,17 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			rollbackErrors.push(`files: ${errorMessage(error)}`);
 		}
 
-		if (serviceName) {
+		if (server.serviceName && server.kind !== 'unsupported') {
 			try {
-				await compileAndReload(site, serviceName);
+				await compileAndReload(
+					site,
+					server,
+					server.kind === 'apache'
+						? apacheSnapshotHasCompleteManagedConfig(site, snapshots)
+						: previousSettings.enabled,
+				);
 			} catch (error) {
-				rollbackErrors.push(`Nginx reload: ${errorMessage(error)}`);
+				rollbackErrors.push(`${server.kind} restore: ${errorMessage(error)}`);
 			}
 		}
 
@@ -333,7 +414,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 
 	const abortForGlobalLifecycle = async (
 		site: Local.Site,
-		serviceName: string | null,
+		server: RuntimeServer,
 		previousSettings: StoredSettings,
 		originalError: unknown,
 	): Promise<never> => {
@@ -349,16 +430,16 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		}
 
 		try {
-			await removeManagedFiles(site);
+			await removeAllManagedFiles(site);
 		} catch (error) {
 			cleanupErrors.push(`files: ${errorMessage(error)}`);
 		}
 
-		if (serviceName) {
+		if (server.serviceName && server.kind !== 'unsupported') {
 			try {
-				await compileAndReload(site, serviceName);
+				await compileAndReload(site, server, false);
 			} catch (error) {
-				cleanupErrors.push(`Nginx reload: ${errorMessage(error)}`);
+				cleanupErrors.push(`${server.kind} cleanup: ${errorMessage(error)}`);
 			}
 		}
 
@@ -370,14 +451,41 @@ export default function main(context: LocalMain.AddonMainContext): void {
 
 	const getSiteState = async (siteId: string): Promise<SiteState> => {
 		const site = requireSite(siteId);
-		const nginxService = getNginxServiceName(site);
+		const server = resolveServer(site);
 		const settings = readStoredSettings(site);
+		const managedArtifactsPresent = await allManagedArtifactsExist(site);
+		const runtimeUnavailable = server.kind === 'unsupported' || !server.service;
+		let apacheCapabilities: Awaited<ReturnType<typeof inspectApacheRuntimeCapabilities>> | undefined;
+		let capabilityInspectionReason: string | undefined;
+		if (server.kind === 'apache' && server.service) {
+			try {
+				apacheCapabilities = await requireApacheCapabilities(server);
+			} catch (error) {
+				capabilityInspectionReason = `Local could not inspect this site's Apache module capabilities: ${errorMessage(error)}`;
+			}
+		}
+		const configuredForHttps = (() => {
+			try {
+				return validateAndNormalizeOrigin(settings, {
+					requiresOriginIp: server.requiresOriginIp,
+				}).protocol === 'https:';
+			} catch {
+				return false;
+			}
+		})();
+		const apacheCapabilityUnavailable = server.kind === 'apache' && (
+			!apacheCapabilities?.http || (configuredForHttps && !apacheCapabilities.https)
+		);
+		const needsAttention = (
+			runtimeUnavailable && (settings.enabled || managedArtifactsPresent)
+		) || Boolean(settings.enabled && apacheCapabilityUnavailable);
 		let applied = false;
 
-		if (nginxService) {
+		if (server.kind !== 'unsupported' && server.service) {
 			if (settings.enabled) {
 				try {
 					if (
+						server.kind === 'nginx' &&
 						settings.originSource === 'wpengine' &&
 						(
 							!settings.originWpEngineInstallId ||
@@ -387,27 +495,52 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					) {
 						throw new Error('The saved WP Engine origin no longer matches this Local site connection.');
 					}
-					const origin = validateAndNormalizeOrigin(settings);
+					const origin = validateAndNormalizeOrigin(settings, {
+						requiresOriginIp: server.requiresOriginIp,
+					});
 					const trustBundle = origin.protocol === 'https:'
 						? trustedCertificateAuthoritiesPem()
 						: undefined;
-					applied = await managedFilesMatch(site, origin, trustBundle);
+					applied = await serverManagedFilesMatch(
+						site,
+						origin,
+						managedFileOptions(server),
+						trustBundle,
+					);
 				} catch {
 					applied = false;
 				}
 			} else {
-				applied = await managedArtifactsExist(site);
+				applied = managedArtifactsPresent;
 			}
 		}
 
 		return {
 			applied,
-			reason: nginxService
-				? undefined
-				: 'Local Media Proxy currently supports Nginx sites only.',
+			cleanupSupported: server.kind !== 'unsupported' && Boolean(server.service),
+			httpsUnavailableReason: apacheCapabilities?.http && !apacheCapabilities.https
+				? apacheCapabilities.reason
+				: undefined,
+			needsAttention,
+			reason: needsAttention
+				? runtimeUnavailable
+					? runtimeCleanupUnavailableReason(server)
+					: apacheCapabilities?.reason || capabilityInspectionReason
+				: server.kind === 'unsupported'
+					? server.reason
+					: !server.service
+						? `Local could not load this site's ${server.kind} service.`
+						: apacheCapabilities && !apacheCapabilities.http
+							? apacheCapabilities.reason
+							: capabilityInspectionReason,
+			requiresOriginIp: server.requiresOriginIp,
+			serverKind: server.kind,
 			settings,
 			siteStatus: siteProcessManager.getSiteStatus(site),
-			supported: Boolean(nginxService),
+			supported: server.kind !== 'unsupported' && Boolean(server.service) && (
+				server.kind !== 'apache' || apacheCapabilities?.http === true
+			),
+			supportsHttpsOrigin: server.kind !== 'apache' || apacheCapabilities?.https === true,
 		};
 	};
 
@@ -416,27 +549,38 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		input: unknown,
 	): Promise<SiteState> => withSiteLock(siteId, async () => {
 		assertGloballyActive();
-		const normalizedInput = validateSettingsInput(input);
 		const site = requireSite(siteId);
-		const nginxService = getNginxServiceName(site);
+		const server = resolveServer(site);
+		const normalizedInput = validateSettingsInput(input, {
+			requiresOriginIp: server.requiresOriginIp,
+		});
 
 		const previousSettings = readStoredSettings(site);
 		let nextSettings: StoredSettings;
 
 		if (normalizedInput.enabled) {
-			const authoritativeWpEngine = await assertAuthoritativeWpEngineIdentity(site, normalizedInput);
-			if (!nginxService) {
-				throw new Error('Local Media Proxy currently supports Nginx sites only.');
+			if (server.kind === 'unsupported' || !server.service) {
+				throw new Error(server.reason || 'Local could not load the web-server service for this site.');
 			}
 
-			const origin = validateAndNormalizeOrigin(normalizedInput);
-			const probe = await probeOrigin(origin);
+			const origin = validateAndNormalizeOrigin(normalizedInput, {
+				requiresOriginIp: server.requiresOriginIp,
+			});
+			await assertApacheOriginCapability(server, origin.protocol);
+			const authoritativeWpEngine = server.kind === 'nginx'
+				? await assertAuthoritativeWpEngineIdentity(site, normalizedInput)
+				: undefined;
+			const probe = await probeOrigin(origin, {
+				allowWpEngineTlsFallback: server.kind === 'nginx',
+			});
 			const verifiedOrigin = {
 				...origin,
-				tlsHostname: probe.verifiedTlsHostname ?? origin.tlsHostname,
+				tlsHostname: server.kind === 'nginx'
+					? probe.verifiedTlsHostname ?? origin.tlsHostname
+					: origin.hostname,
 			};
 			assertGloballyActive();
-			const snapshots = await captureManagedFiles(site);
+			const snapshots = await captureAllManagedFiles(site);
 			assertGloballyActive();
 			nextSettings = {
 				certificate: probe.certificate,
@@ -444,9 +588,9 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				lastOriginStatus: probe.statusCode,
 				lastVerifiedAt: new Date().toISOString(),
 				originEnvironment: normalizedInput.originEnvironment,
-				originIp: verifiedOrigin.originIp,
+				originIp: server.requiresOriginIp ? verifiedOrigin.originIp : '',
 				originSource: normalizedInput.originSource ?? 'manual',
-				originTlsHostname: verifiedOrigin.tlsHostname === verifiedOrigin.hostname
+				originTlsHostname: server.kind === 'apache' || verifiedOrigin.tlsHostname === verifiedOrigin.hostname
 					? undefined
 					: verifiedOrigin.tlsHostname,
 				originWpEngineInstallId: authoritativeWpEngine?.wpEngineInstallId,
@@ -457,28 +601,35 @@ export default function main(context: LocalMain.AddonMainContext): void {
 
 			try {
 				persistSettings(siteId, nextSettings);
-				await applyManagedFiles(
+				await applyServerManagedFiles(
 					site,
 					verifiedOrigin,
+					managedFileOptions(server),
 					probe.trustedCertificateAuthoritiesPem,
 				);
 				assertGloballyActive();
-				const restarted = await compileAndReload(site, nginxService);
+				const restarted = await compileAndReload(site, server, true);
 				assertGloballyActive();
-				logger.log('info', `Enabled media proxy for site ${siteId}${restarted ? ' and reloaded Nginx' : ''}.`);
+				logger.log('info', `Enabled media proxy for site ${siteId}${restarted ? ` and refreshed ${server.kind}` : ''}.`);
 			} catch (error) {
 				if (globalLifecycleState) {
-					return abortForGlobalLifecycle(site, nginxService, previousSettings, error);
+					return abortForGlobalLifecycle(site, server, previousSettings, error);
 				}
 				return rollbackTransaction(
 					site,
-					nginxService,
+					server,
 					previousSettings,
 					snapshots,
 					error,
 				);
 			}
 		} else {
+			if (
+				(server.kind === 'unsupported' || !server.service) &&
+				(previousSettings.enabled || await allManagedArtifactsExist(site))
+			) {
+				throw new Error(runtimeCleanupUnavailableReason(server));
+			}
 			let disabled = sanitizeDisabledSettings(normalizedInput);
 			const matchesPreviouslyValidatedIdentity = previousSettings.originSource === 'wpengine' &&
 				wpEngineOriginIdentityMatches(
@@ -496,6 +647,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				? previousSettings.originWpEngineSiteId
 				: undefined;
 			if (
+				server.kind === 'nginx' &&
 				disabled.originSource === 'wpengine' &&
 				disabled.originEnvironment &&
 				!canReusePreviousProvenance
@@ -518,7 +670,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				}
 			}
 			const preserveVerification = originPairMatches(disabled, previousSettings);
-			const snapshots = await captureManagedFiles(site);
+			const snapshots = await captureAllManagedFiles(site);
 			assertGloballyActive();
 			nextSettings = {
 				...disabled,
@@ -531,20 +683,20 @@ export default function main(context: LocalMain.AddonMainContext): void {
 
 			try {
 				persistSettings(siteId, nextSettings);
-				const changed = await removeManagedFiles(site);
+				const changed = await removeAllManagedFiles(site);
 				assertGloballyActive();
-				if (changed && nginxService) {
-					await compileAndReload(site, nginxService);
+				if ((changed || previousSettings.enabled) && server.kind !== 'unsupported' && server.service) {
+					await compileAndReload(site, server, false);
 					assertGloballyActive();
 				}
 				logger.log('info', `Disabled media proxy for site ${siteId}.`);
 			} catch (error) {
 				if (globalLifecycleState) {
-					return abortForGlobalLifecycle(site, nginxService, previousSettings, error);
+					return abortForGlobalLifecycle(site, server, previousSettings, error);
 				}
 				return rollbackTransaction(
 					site,
-					nginxService,
+					server,
 					previousSettings,
 					snapshots,
 					error,
@@ -565,6 +717,21 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		}
 
 		if (request.mode === 'wpengine') {
+			if (detectSiteServer(site).kind === 'apache') {
+				const metadata = await getAuthoritativeWpEngineOrigin(
+					site,
+					request.environment,
+					wpEngineCapi,
+				);
+				return {
+					addresses: [],
+					environment: metadata.environment,
+					provider: 'wpengine',
+					resolvedAt: new Date().toISOString(),
+					siteUrl: metadata.siteUrl,
+					warning: 'Apache uses the Site URL hostname directly; no remote IP or separate TLS identity is selected.',
+				};
+			}
 			return discoverWpEngineOrigin(
 				site,
 				request.environment,
@@ -573,6 +740,9 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		}
 
 		if (request.mode === 'dns') {
+			if (detectSiteServer(site).kind === 'apache') {
+				throw new Error('Apache resolves the Site URL hostname directly; a remote-IP lookup is not used.');
+			}
 			return discoverDnsOrigin(request.siteUrl);
 		}
 
@@ -584,13 +754,30 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		input: unknown,
 		signal: AbortSignal,
 	): Promise<PublicOriginProbeResult> => {
-		const normalizedInput = validateSettingsInput(input);
-		await assertAuthoritativeWpEngineIdentity(requireSite(siteId), normalizedInput);
-		const origin = validateAndNormalizeOrigin(normalizedInput);
-		const probe = await probeOrigin(origin, { signal });
+		const site = requireSite(siteId);
+		const server = resolveServer(site);
+		if (server.kind === 'unsupported' || !server.service) {
+			throw new Error(server.reason || 'Local could not load the web-server service for this site.');
+		}
+		const normalizedInput = validateSettingsInput(input, {
+			requiresOriginIp: server.requiresOriginIp,
+		});
+		if (server.kind === 'nginx') {
+			await assertAuthoritativeWpEngineIdentity(site, normalizedInput);
+		}
+		const origin = validateAndNormalizeOrigin(normalizedInput, {
+			requiresOriginIp: server.requiresOriginIp,
+		});
+		await assertApacheOriginCapability(server, origin.protocol);
+		const probe = await probeOrigin(origin, {
+			allowWpEngineTlsFallback: server.kind === 'nginx',
+			signal,
+		});
 		const verifiedTlsHostname = probe.verifiedTlsHostname ?? origin.tlsHostname;
 		const security = origin.protocol === 'https:'
-			? verifiedTlsHostname === origin.hostname
+			? server.kind === 'apache'
+				? ` Certificate ${probe.certificate?.subject ?? 'identity'} matched the Site URL hostname ${origin.hostname}; Apache uses that same hostname for DNS, HTTP Host, TLS SNI, and certificate verification.`
+				: verifiedTlsHostname === origin.hostname
 				? ` Certificate ${probe.certificate?.subject ?? 'identity'} matched ${origin.hostname}.`
 				: normalizedInput.originSource === 'wpengine'
 					? ` Certificate ${probe.certificate?.subject ?? 'identity'} matched the WP Engine origin ${verifiedTlsHostname}; requests retain Host ${origin.hostHeader}.`
@@ -601,8 +788,8 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			certificate: probe.certificate,
 			message: originResponseOutcome(probe.statusCode) === 'success'
 				? `The configured remote endpoint responded with HTTP ${probe.statusCode}.${security} This test checks reachability and, for HTTPS, certificate identity and trust—not a media file. After applying, verify an actual missing upload through the Local site.`
-				: `The configured remote endpoint responded with HTTP ${probe.statusCode}, so network reachability was confirmed but media access was not verified.${security} Check the exact remote upload or try another remote IP.`,
-			originTlsHostname: verifiedTlsHostname === origin.hostname
+				: `The configured remote endpoint responded with HTTP ${probe.statusCode}, so network reachability was confirmed but media access was not verified.${security} Check the exact remote upload${server.requiresOriginIp ? ' or try another remote IP' : ''}.`,
+			originTlsHostname: server.kind === 'apache' || verifiedTlsHostname === origin.hostname
 				? undefined
 				: verifiedTlsHostname,
 			outcome: originResponseOutcome(probe.statusCode),
@@ -621,24 +808,33 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				return;
 			}
 
-			const nginxService = getNginxServiceName(site);
-			if (!nginxService) {
-				return;
-			}
+			const server = resolveServer(site);
 
 			const settings = readStoredSettings(site);
 			let normalizedOrigin: ReturnType<typeof validateAndNormalizeOrigin> | undefined;
+			if (server.kind === 'unsupported' || !server.service) {
+				if (!settings.enabled && !await allManagedArtifactsExist(site)) {
+					return;
+				}
+				throw new Error(runtimeCleanupUnavailableReason(server));
+			}
 			if (!settings.enabled) {
-				if (!await managedArtifactsExist(site)) {
+				if (!await allManagedArtifactsExist(site)) {
 					return;
 				}
 			} else {
 				try {
-					await assertStoredWpEngineConnection(site, settings);
-					normalizedOrigin = validateAndNormalizeOrigin(settings);
+					if (server.kind === 'nginx') {
+						await assertStoredWpEngineConnection(site, settings);
+					}
+					normalizedOrigin = validateAndNormalizeOrigin(settings, {
+						requiresOriginIp: server.requiresOriginIp,
+					});
+					await assertApacheOriginCapability(server, normalizedOrigin.protocol);
 				} catch (validationError) {
 					const cleanupErrors: string[] = [];
-					const retainEnabledIntent = shouldRetainWpEngineSettingsAfterVerificationError(validationError);
+					const retainEnabledIntent = validationError instanceof ApacheCapabilityUnavailableError ||
+						shouldRetainWpEngineSettingsAfterVerificationError(validationError);
 					if (!retainEnabledIntent) {
 						try {
 							persistSettings(site.id, { ...settings, enabled: false });
@@ -649,16 +845,16 @@ export default function main(context: LocalMain.AddonMainContext): void {
 
 					let changed = false;
 					try {
-						changed = await removeManagedFiles(site);
+						changed = await removeAllManagedFiles(site);
 					} catch (error) {
 						cleanupErrors.push(`files: ${errorMessage(error)}`);
 					}
 
-					if (changed) {
+					if (cleanupRequiresRefresh(changed, settings.enabled)) {
 						try {
-							await compileAndReload(site, nginxService);
+							await compileAndReload(site, server, false);
 						} catch (error) {
-							cleanupErrors.push(`Nginx reload: ${errorMessage(error)}`);
+							cleanupErrors.push(`${server.kind} cleanup: ${errorMessage(error)}`);
 						}
 					}
 
@@ -679,37 +875,49 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					? trustedCertificateAuthoritiesPem()
 					: undefined;
 
-				if (await managedFilesMatch(site, normalizedOrigin, trustBundle)) {
+				if (await serverManagedFilesMatch(
+					site,
+					normalizedOrigin,
+					managedFileOptions(server),
+					trustBundle,
+				)) {
 					return;
 				}
 			}
 
-			const snapshots = await captureManagedFiles(site);
+			const snapshots = await captureAllManagedFiles(site);
 			try {
 				assertGloballyActive();
 				let changed: boolean;
 				if (settings.enabled) {
-					const origin = normalizedOrigin ?? validateAndNormalizeOrigin(settings);
+					const origin = normalizedOrigin ?? validateAndNormalizeOrigin(settings, {
+						requiresOriginIp: server.requiresOriginIp,
+					});
 					const trustBundle = origin.protocol === 'https:'
 						? trustedCertificateAuthoritiesPem()
 						: undefined;
-					changed = await applyManagedFiles(site, origin, trustBundle);
+					changed = await applyServerManagedFiles(
+						site,
+						origin,
+						managedFileOptions(server),
+						trustBundle,
+					);
 				} else {
-					changed = await removeManagedFiles(site);
+					changed = await removeAllManagedFiles(site);
 				}
 				assertGloballyActive();
 
 				if (changed) {
-					await compileAndReload(site, nginxService);
+					await compileAndReload(site, server, settings.enabled);
 					assertGloballyActive();
 				}
 			} catch (error) {
 				if (globalLifecycleState) {
-					return abortForGlobalLifecycle(site, nginxService, settings, error);
+					return abortForGlobalLifecycle(site, server, settings, error);
 				}
 				return rollbackTransaction(
 					site,
-					nginxService,
+					server,
 					settings,
 					snapshots,
 					error,
@@ -739,39 +947,69 @@ export default function main(context: LocalMain.AddonMainContext): void {
 
 		const cleanups: Promise<unknown>[] = [];
 		for (const site of Object.values(siteData.getSites()) as Local.Site[]) {
-			const nginxService = getNginxServiceName(site);
-
+			let server: RuntimeServer | null = null;
 			try {
-				const changedSynchronously = removeManagedFilesSync(site);
-				if (uninstalling) {
-					persistSettings(site.id, {
-						...readStoredSettings(site),
-						enabled: false,
-					});
+				server = resolveServer(site);
+			} catch (error) {
+				logger.log('warn', `Could not resolve the site service during global cleanup for site ${site.id}; using fail-closed persistent cleanup. ${errorMessage(error)}`);
+			}
+			const settingsBeforeCleanup = readStoredSettings(site);
+			if (uninstalling) {
+				try {
+					persistSettings(site.id, { ...settingsBeforeCleanup, enabled: false });
+				} catch (error) {
+					logger.log('warn', `Initial uninstall intent update failed for site ${site.id}; async cleanup will retry. ${errorMessage(error)}`);
 				}
+			}
+			const changedSynchronously = synchronousCleanupRequiresRefresh(
+				() => removeAllManagedFilesSync(site),
+				(error) => logger.log('warn', `Synchronous global cleanup failed for site ${site.id}; async cleanup will retry and force a runtime refresh. ${errorMessage(error)}`),
+			);
 
-				cleanups.push(withSiteLock(site.id, async () => {
-					const changedAfterPendingOperations = await removeManagedFiles(site);
-					if (uninstalling) {
+			cleanups.push(withSiteLock(site.id, async () => {
+				const errors: string[] = [];
+				try {
+					if (!server || server.kind === 'unsupported' || !server.service) {
+						const result = await completeUnresolvedServiceCleanup({
+							compileAllConfigs: () => configTemplates.compileServiceConfigs(site),
+							hasManagedArtifacts: () => allManagedArtifactsExist(site),
+							isSiteRunning: () => siteProcessManager.getSiteStatus(site) === 'running',
+							removeAllManagedFiles: () => removeAllManagedFiles(site),
+						}, changedSynchronously || settingsBeforeCleanup.enabled);
+						logger.log('warn', `Completed fail-closed persistent cleanup for site ${site.id} without a hard restart${result.changed ? '' : '; no managed files required removal'}.`);
+					} else {
+						const changedAfterPendingOperations = await removeAllManagedFiles(site);
+						if (changedSynchronously || changedAfterPendingOperations || settingsBeforeCleanup.enabled) {
+							await compileAndReload(site, server, false);
+						}
+					}
+				} catch (error) {
+					errors.push(`runtime cleanup: ${errorMessage(error)}`);
+				}
+				if (uninstalling) {
+					try {
 						persistSettings(site.id, {
 							...readStoredSettings(site),
 							enabled: false,
 						});
+					} catch (error) {
+						errors.push(`disabled intent: ${errorMessage(error)}`);
 					}
-					if ((changedSynchronously || changedAfterPendingOperations) && nginxService) {
-						await compileAndReload(site, nginxService);
-					}
-				}));
-			} catch (error) {
-				logger.log('error', `Global cleanup failed for site ${site.id}: ${errorMessage(error)}`);
-			}
+				}
+				if (errors.length > 0) {
+					throw new Error(errors.join('; '));
+				}
+			}));
 		}
 
 		void Promise.allSettled(cleanups).then((results) => {
-			for (const result of results) {
-				if (result.status === 'rejected') {
-					logger.log('error', `Global cleanup reload failed: ${errorMessage(result.reason)}`);
-				}
+			const failures = results.flatMap((result, index) => (
+				result.status === 'rejected'
+					? [`cleanup ${index + 1}: ${errorMessage(result.reason)}`]
+					: []
+			));
+			if (failures.length > 0) {
+				logger.log('error', `Global ${uninstalling ? 'uninstall' : 'disable'} cleanup incomplete; stop affected sites before retrying. ${failures.join('; ')}`);
 			}
 		});
 	};
@@ -843,11 +1081,20 @@ export default function main(context: LocalMain.AddonMainContext): void {
 
 	ipcMain.handle(IPC_CHANNELS.getOriginDiscoveryOptions, async (_event, siteId: string) => {
 		try {
-			return await getOriginDiscoveryOptions(
-				requireSite(siteId),
+			const site = requireSite(siteId);
+			const options = await getOriginDiscoveryOptions(
+				site,
 				wpEngineCapi,
 				(error) => logger.log('warn', `WP Engine environment lookup failed: ${errorLogMessage(error)}`),
 			);
+			return detectSiteServer(site).kind === 'apache'
+				? {
+					...options,
+					message: options.provider === 'wpengine' && options.canAutoPopulate
+						? 'Connected to WP Engine. Select an environment to populate its Site URL; Apache resolves that hostname directly.'
+						: 'Enter the remote Site URL. Apache resolves its hostname directly, so no remote IP or DNS lookup is needed.',
+				}
+				: options;
 		} catch (error) {
 			logger.log('warn', `Unable to load origin discovery options: ${errorMessage(error)}`);
 			throw new Error(errorMessage(error));
@@ -889,7 +1136,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		} catch (error) {
 			logger.log(
 				controller.signal.aborted ? 'info' : 'warn',
-				`Origin test ${controller.signal.aborted ? 'stopped' : 'failed'}: ${errorMessage(error)}`,
+				`Origin test ${controller.signal.aborted ? 'stopped' : 'failed'}: ${errorLogMessage(error)}`,
 			);
 			throw new Error(errorMessage(error));
 		} finally {
@@ -917,7 +1164,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			try {
 				return await applySettings(siteId, input);
 			} catch (error) {
-				logger.log('error', `Unable to apply settings for site ${siteId}: ${errorMessage(error)}`);
+				logger.log('error', `Unable to apply settings for site ${siteId}: ${errorLogMessage(error)}`);
 				throw new Error(errorMessage(error));
 			}
 		},

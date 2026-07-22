@@ -25,6 +25,22 @@ const MAX_TRUSTED_CERTIFICATE_AUTHORITY_INPUT_BYTES = 1024 * 1024;
 const MAX_TRUSTED_CERTIFICATE_AUTHORITIES = 256;
 const MAX_TRUST_BUNDLE_BYTES = 512 * 1024;
 const PEM_CERTIFICATE_PATTERN = /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g;
+const TLS_TRUST_ERROR_CODES = new Set([
+	'CERT_REVOKED',
+	'CERT_UNTRUSTED',
+	'DEPTH_ZERO_SELF_SIGNED_CERT',
+	'INVALID_CA',
+	'SELF_SIGNED_CERT_IN_CHAIN',
+	'UNABLE_TO_GET_ISSUER_CERT',
+	'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+	'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+]);
+const TLS_HANDSHAKE_ERROR_CODES = new Set([
+	'EPROTO',
+	'ERR_SSL_SSLV3_ALERT_HANDSHAKE_FAILURE',
+	'ERR_SSL_TLSV1_ALERT_UNRECOGNIZED_NAME',
+	'ERR_SSL_TLSV1_UNRECOGNIZED_NAME',
+]);
 const CLOUDFLARE_ORIGIN_CA_PATH = path.resolve(
 	__dirname,
 	'../resources/cloudflare-origin-ca.pem',
@@ -124,6 +140,7 @@ const TRUSTED_CERTIFICATE_AUTHORITY_BUNDLE = buildCertificateAuthorityBundle([
 ]);
 
 export interface OriginProbeOptions {
+	allowWpEngineTlsFallback?: boolean;
 	certificateAuthorities?: string[];
 	signal?: AbortSignal;
 	timeoutMs?: number;
@@ -291,24 +308,87 @@ function canRetryWithManualWpEngineIdentity(
 	);
 }
 
-export function originProbeErrorReason(error: unknown): string {
-	const message = error instanceof Error ? error.message : String(error);
-	const code = error && typeof error === 'object' && 'code' in error
-		? String((error as { code?: unknown }).code ?? '')
+function errorCode(error: unknown): string {
+	return error && typeof error === 'object' && 'code' in error
+		? String((error as { code?: unknown }).code ?? '').toUpperCase()
 		: '';
-	if (code === 'ETIMEDOUT' || /\bETIMEDOUT\b/i.test(message)) {
-		return 'Connection timed out.';
-	}
-
-	return message;
 }
 
-function probeTimeoutMessage(timeoutMs: number): string {
+function remoteEndpoint(origin: NormalizedOrigin): string {
+	const address = origin.originIp.includes(':')
+		? `[${origin.originIp}]`
+		: origin.originIp;
+	const defaultPort = origin.protocol === 'https:' ? 443 : 80;
+
+	return origin.port === defaultPort ? address : `${address}:${origin.port}`;
+}
+
+function siteUrlAndRemoteAddress(origin: NormalizedOrigin): string {
+	if (origin.originIp === origin.hostname) {
+		return `Site URL ${origin.siteUrl}`;
+	}
+	return `Site URL ${origin.siteUrl} and Remote IP address ${remoteEndpoint(origin)}`;
+}
+
+export function originProbeErrorReason(
+	error: unknown,
+	origin?: NormalizedOrigin,
+): string {
+	const code = errorCode(error);
+	const secureOrigin = origin?.protocol === 'https:';
+	const context = origin ? siteUrlAndRemoteAddress(origin) : undefined;
+
+	if (secureOrigin && TLS_HANDSHAKE_ERROR_CODES.has(code)) {
+		return `The HTTPS handshake failed for ${context}. Check that the address serves this hostname over HTTPS.`;
+	}
+	if (secureOrigin && code === 'ERR_TLS_CERT_ALTNAME_INVALID') {
+		return `The HTTPS certificate for ${context} does not match the expected hostname. Check that both fields identify the same site.`;
+	}
+	if (secureOrigin && code === 'CERT_HAS_EXPIRED') {
+		return `The HTTPS certificate for ${context} has expired. Renew the remote certificate before trying again.`;
+	}
+	if (secureOrigin && code === 'CERT_NOT_YET_VALID') {
+		return `The HTTPS certificate for ${context} is not valid yet. Check the remote certificate dates and this computer's clock.`;
+	}
+	if (secureOrigin && TLS_TRUST_ERROR_CODES.has(code)) {
+		return `The HTTPS certificate for ${context} is not trusted. Check the certificate chain on the remote server.`;
+	}
+	if (code === 'ECONNREFUSED') {
+		return origin
+			? origin.originIp === origin.hostname
+				? `Site URL ${origin.siteUrl} refused the connection. Check that its hostname and port accept ${secureOrigin ? 'HTTPS' : 'HTTP'} connections.`
+				: `Remote IP address ${remoteEndpoint(origin)} refused the connection for Site URL ${origin.siteUrl}. Check that the address and port accept ${secureOrigin ? 'HTTPS' : 'HTTP'} connections.`
+			: 'The remote endpoint refused the connection.';
+	}
+	if (code === 'EHOSTUNREACH' || code === 'ENETUNREACH') {
+		return origin
+			? origin.originIp === origin.hostname
+				? `Site URL ${origin.siteUrl} is unreachable. Check its hostname and network access.`
+				: `Remote IP address ${remoteEndpoint(origin)} is unreachable for Site URL ${origin.siteUrl}. Check the address and network access.`
+			: 'The remote endpoint is unreachable.';
+	}
+	if (code === 'ECONNRESET') {
+		return origin
+			? `The connection for ${context} was reset before the check completed. Try again or check the remote server.`
+			: 'The connection was reset before the check completed.';
+	}
+	if (code === 'ETIMEDOUT') {
+		return origin
+			? `Connection timed out for ${context}. Check the address, port, and network access.`
+			: 'Connection timed out.';
+	}
+
+	return origin
+		? `Could not reach ${context}. Check both fields and try again.`
+		: 'The remote endpoint could not be reached.';
+}
+
+function probeTimeoutMessage(timeoutMs: number, origin: NormalizedOrigin): string {
 	const seconds = timeoutMs / 1_000;
 	const formatted = Number.isInteger(seconds)
 		? String(seconds)
 		: seconds.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
-	return `Connection timed out after ${formatted} second${seconds === 1 ? '' : 's'}.`;
+	return `Connection timed out after ${formatted} second${seconds === 1 ? '' : 's'}. Check ${siteUrlAndRemoteAddress(origin)}.`;
 }
 
 export async function probeOrigin(
@@ -349,6 +429,7 @@ export async function probeOrigin(
 		} catch (error) {
 			if (
 				!controller.signal.aborted &&
+				options.allowWpEngineTlsFallback !== false &&
 				canRetryWithManualWpEngineIdentity(origin, error)
 			) {
 				return await probeHttpsOrigin(
@@ -360,17 +441,12 @@ export async function probeOrigin(
 			throw error;
 		}
 	} catch (error) {
-		const reason = abortReason === 'timeout'
-			? probeTimeoutMessage(timeoutMs)
+		const message = abortReason === 'timeout'
+			? probeTimeoutMessage(timeoutMs, origin)
 			: abortReason === 'cancelled'
 				? 'Connection test stopped.'
-				: originProbeErrorReason(error);
-		const identity = origin.tlsHostname === origin.hostname
-			? origin.hostname
-			: `${origin.hostname} using TLS identity ${origin.tlsHostname}`;
-		throw new Error(
-			`Could not connect to ${origin.originIp}:${origin.port} for ${identity}. ${reason}`,
-		);
+				: originProbeErrorReason(error, origin);
+		throw new Error(message, { cause: error });
 	} finally {
 		clearTimeout(timeout);
 		options.signal?.removeEventListener('abort', cancel);

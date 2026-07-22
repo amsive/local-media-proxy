@@ -314,3 +314,41 @@ test('validates the renderer settings envelope and sanitizes discovery metadata'
 		},
 	);
 });
+
+test('Apache hostname mode requires only Site URL and discards IP and split TLS identity', () => {
+	assert.deepEqual(validateSettingsInput({
+		enabled: true,
+		originEnvironment: 'production',
+		originIp: '192.0.2.10',
+		originSource: 'wpengine',
+		originTlsHostname: 'example-production.wpengine.com',
+		siteUrl: 'https://media.example.com:8443',
+	}, { requiresOriginIp: false }), {
+		enabled: true,
+		originIp: '',
+		siteUrl: 'https://media.example.com:8443',
+	});
+	assert.deepEqual(validateSettingsInput({
+		enabled: true,
+		siteUrl: 'https://media.example.com',
+	}, { requiresOriginIp: false }), {
+		enabled: true,
+		originIp: '',
+		siteUrl: 'https://media.example.com',
+	});
+	assert.deepEqual(validateAndNormalizeOrigin({
+		originEnvironment: 'production',
+		originIp: '192.0.2.10',
+		originSource: 'wpengine',
+		originTlsHostname: 'example-production.wpengine.com',
+		siteUrl: 'https://media.example.com:8443',
+	}, { requiresOriginIp: false }), {
+		hostHeader: 'media.example.com:8443',
+		hostname: 'media.example.com',
+		originIp: 'media.example.com',
+		port: 8443,
+		protocol: 'https:',
+		siteUrl: 'https://media.example.com:8443',
+		tlsHostname: 'media.example.com',
+	});
+});

@@ -60,6 +60,23 @@ test('builds a local-first, read-only, privacy-preserving HTTPS proxy', () => {
 	assert.match(config, /proxy_set_header Origin "";/);
 	assert.match(config, /proxy_set_header Forwarded "";/);
 	assert.match(config, /proxy_set_header X-Real-IP "";/);
+	for (const header of [
+		'X-Remote-IP',
+		'X-Remote-Addr',
+		'X-Client-IP',
+		'X-Cluster-Client-IP',
+		'X-Originating-IP',
+		'X-Original-Forwarded-For',
+		'True-Client-IP',
+		'CF-Connecting-IP',
+		'Fastly-Client-IP',
+		'X-WP-Nonce',
+		'X-API-Key',
+		'X-Auth-Token',
+		'X-CSRF-Token',
+	]) {
+		assert.match(config, new RegExp(`proxy_set_header ${header} "";`));
+	}
 	assert.match(config, /proxy_hide_header Set-Cookie;/);
 	assert.match(config, /proxy_buffering off;/);
 	assert.doesNotMatch(config, /\$http_/);
@@ -379,7 +396,7 @@ test('main delegates stale-master recovery through the guarded Nginx reload help
 test('main binds separate WP Engine TLS identities to the selected Local site', () => {
 	const mainSource = fs.readFileSync(path.resolve(__dirname, '../src/main.ts'), 'utf8');
 	assert.match(mainSource, /testOrigin = async \([\s\S]{0,160}siteId: string,[\s\S]{0,160}signal: AbortSignal/);
-	assert.match(mainSource, /assertAuthoritativeWpEngineIdentity\(requireSite\(siteId\), normalizedInput\)/);
+	assert.match(mainSource, /if \(server\.kind === 'nginx'\) \{\s*await assertAuthoritativeWpEngineIdentity\(site, normalizedInput\)/);
 	assert.match(mainSource, /authoritative = await getAuthoritativeWpEngineOrigin\(\s*site,/);
 	assert.match(mainSource, /await assertStoredWpEngineConnection\(site, settings\)/);
 	assert.match(mainSource, /shouldRetainWpEngineSettingsAfterVerificationError\(validationError\)/);
@@ -397,12 +414,30 @@ test('main scopes cancellable probes to the renderer, site, and token', () => {
 	assert.match(testHandler, /const validatedSiteId = requireSiteId\(siteId\)/);
 	assert.match(testHandler, /originProbeKey\(event\.sender\.id, validatedSiteId, token\)/);
 	assert.match(testHandler, /testOrigin\(validatedSiteId, input, controller\.signal\)/);
-	assert.match(mainSource, /probeOrigin\(origin, \{ signal \}\)/);
+	assert.match(mainSource, /probeOrigin\(origin, \{[\s\S]{0,120}allowWpEngineTlsFallback: server\.kind === 'nginx',[\s\S]{0,80}signal,/);
 	assert.match(mainSource, /IPC_CHANNELS\.cancelOriginTest/);
 	assert.match(mainSource, /controller\.abort\(\)/);
-	assert.match(mainSource, /tlsHostname: probe\.verifiedTlsHostname \?\? origin\.tlsHostname/);
+	assert.match(mainSource, /tlsHostname: server\.kind === 'nginx'[\s\S]{0,100}probe\.verifiedTlsHostname \?\? origin\.tlsHostname[\s\S]{0,60}origin\.hostname/);
 	assert.match(cancelHandler, /siteId: unknown/);
 	assert.match(cancelHandler, /const validatedSiteId = requireSiteId\(siteId\)/);
 	assert.match(cancelHandler, /originProbeKey\(event\.sender\.id, validatedSiteId, token\)/);
 	assert.doesNotMatch(cancelHandler, /requireSite\(siteId\)/);
+});
+
+test('main logs technical probe causes without returning them over IPC', () => {
+	const mainSource = fs.readFileSync(path.resolve(__dirname, '../src/main.ts'), 'utf8');
+	const testHandler = mainSource.match(
+		/ipcMain\.handle\(IPC_CHANNELS\.testOrigin,[\s\S]+?\n\t\}\);/,
+	)?.[0] ?? '';
+	const applyHandler = mainSource.match(
+		/IPC_CHANNELS\.applySettings,[\s\S]+?\n\t\);/,
+	)?.[0] ?? '';
+
+	assert.match(mainSource, /error\.cause !== undefined[\s\S]{0,120}Cause: \$\{errorMessage\(error\.cause\)\}/);
+	assert.match(testHandler, /Origin test[\s\S]{0,180}errorLogMessage\(error\)/);
+	assert.match(testHandler, /throw new Error\(errorMessage\(error\)\)/);
+	assert.doesNotMatch(testHandler, /throw new Error\(errorLogMessage\(error\)\)/);
+	assert.match(applyHandler, /Unable to apply settings[\s\S]{0,120}errorLogMessage\(error\)/);
+	assert.match(applyHandler, /throw new Error\(errorMessage\(error\)\)/);
+	assert.doesNotMatch(applyHandler, /throw new Error\(errorLogMessage\(error\)\)/);
 });

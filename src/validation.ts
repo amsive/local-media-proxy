@@ -26,6 +26,10 @@ export interface NormalizedSiteUrl {
 	siteUrl: string;
 }
 
+export interface OriginValidationOptions {
+	requiresOriginIp?: boolean;
+}
+
 export function sanitizeOriginSource(value: unknown): OriginSource | undefined {
 	return value === 'dns' || value === 'manual' || value === 'wpengine'
 		? value
@@ -50,7 +54,11 @@ export function sanitizeResolvedAt(value: unknown): string | undefined {
 		: undefined;
 }
 
-export function validateSettingsInput(value: unknown): SettingsInput {
+export function validateSettingsInput(
+	value: unknown,
+	options: OriginValidationOptions = {},
+): SettingsInput {
+	const requiresOriginIp = options.requiresOriginIp ?? true;
 	if (!value || typeof value !== 'object') {
 		throw new Error('Media proxy settings are required.');
 	}
@@ -62,7 +70,14 @@ export function validateSettingsInput(value: unknown): SettingsInput {
 	if (typeof input.siteUrl !== 'string') {
 		throw new Error('Site URL must be a string.');
 	}
-	if (typeof input.originIp !== 'string') {
+	if (!requiresOriginIp) {
+		return {
+			enabled: input.enabled,
+			originIp: '',
+			siteUrl: input.siteUrl,
+		};
+	}
+	if (requiresOriginIp && typeof input.originIp !== 'string') {
 		throw new Error('Remote IP address must be a string.');
 	}
 	const originSource = sanitizeOriginSource(input.originSource);
@@ -73,7 +88,7 @@ export function validateSettingsInput(value: unknown): SettingsInput {
 	if (input.originTlsHostname !== undefined && typeof input.originTlsHostname !== 'string') {
 		throw new Error('Origin TLS hostname must be a string.');
 	}
-	const originTlsHostname = typeof input.originTlsHostname === 'string' && input.originTlsHostname.trim()
+	const originTlsHostname = requiresOriginIp && typeof input.originTlsHostname === 'string' && input.originTlsHostname.trim()
 		? input.enabled
 			? validateWpEngineOriginTlsHostname(input.originTlsHostname)
 			: input.originTlsHostname.trim()
@@ -97,7 +112,7 @@ export function validateSettingsInput(value: unknown): SettingsInput {
 	return {
 		enabled: input.enabled,
 		...(originEnvironment ? { originEnvironment } : {}),
-		originIp: input.originIp,
+		originIp: requiresOriginIp && typeof input.originIp === 'string' ? input.originIp : '',
 		...(originSource ? { originSource } : {}),
 		...(originTlsHostname ? { originTlsHostname } : {}),
 		...(resolvedAt ? { resolvedAt } : {}),
@@ -268,8 +283,21 @@ export function siteUrlsAreEquivalent(left: string, right: string): boolean {
 
 export function validateAndNormalizeOrigin(
 	input: Pick<SettingsInput, 'originEnvironment' | 'originIp' | 'originSource' | 'originTlsHostname' | 'siteUrl'>,
+	options: OriginValidationOptions = {},
 ): NormalizedOrigin {
+	const requiresOriginIp = options.requiresOriginIp ?? true;
 	const site = validateAndNormalizeSiteUrl(input.siteUrl);
+	if (!requiresOriginIp) {
+		return {
+			hostHeader: site.hostHeader,
+			hostname: site.hostname,
+			originIp: site.hostname,
+			port: site.port,
+			protocol: site.protocol,
+			siteUrl: site.siteUrl,
+			tlsHostname: site.hostname,
+		};
+	}
 	const originEnvironment = sanitizeHostingEnvironment(input.originEnvironment);
 	const originTlsHostname = input.originTlsHostname
 		? validateWpEngineOriginTlsHostname(input.originTlsHostname)

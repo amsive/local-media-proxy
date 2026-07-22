@@ -58,12 +58,12 @@ test('builds complete Amsive detail and release metadata', () => {
 		['Mark Davoli', 'Boris Hegedis'],
 	);
 	assert.equal(addon.details.license, 'Apache-2.0');
-	assert.equal(release.version, '0.1.1');
+	assert.equal(release.version, '0.2.0');
 	assert.equal(release.testedUpTo, '10.1.1');
 	assert.equal(release.localRequirement, '>=10.1.1');
 	assert.equal(
 		release.downloadUrl,
-		'https://github.com/amsive/local-media-proxy/releases/download/v0.1.1/local-media-proxy-v0.1.1.tgz',
+		'https://github.com/amsive/local-media-proxy/releases/download/v0.2.0/local-media-proxy-v0.2.0.tgz',
 	);
 	assert.match(addon.avatar.original, /^file:\/\/\/tmp\/Local%20Media%20Proxy\/icon\.svg$/);
 	assert.match(addon.details.overview, /detail-hero\.svg/);
@@ -71,7 +71,8 @@ test('builds complete Amsive detail and release metadata', () => {
 	assert.match(addon.details.overview, /## Scope and safety/);
 	assert.match(addon.details.overview, /Tools → Media Proxy/);
 	assert.match(addon.details.overview, /Auto-populate from WP Engine/);
-	assert.match(addon.details.overview, /Find IP addresses/);
+	assert.match(addon.details.overview, /Find via public DNS/);
+	assert.match(addon.details.overview, /For any provider/);
 	assert.match(addon.details.overview, /remote IP selects the endpoint/);
 	assert.match(addon.details.overview, /compatible proxy, CDN, or load balancer/);
 	assert.match(addon.details.overview, /Test connection/);
@@ -87,15 +88,18 @@ test('builds complete Amsive detail and release metadata', () => {
 	assert.match(addon.details.overview, /trademark policy/);
 
 	const releases = createMarketplaceReleasesPayload().data.addon.releases;
-	assert.equal(releases.length, 1);
+	assert.equal(releases.length, 2);
 	assert.deepEqual(
 		releases.map(({ version }) => version),
-		['0.1.1'],
+		['0.2.0', '0.1.1'],
 	);
-	assert.match(releases[0].changelog, /Version 0\.1\.1 maintenance release/);
-	assert.match(releases[0].changelog, /standard `package\/` root/);
-	assert.match(releases[0].changelog, /exact SemVer tag/);
-	assert.match(releases[0].changelog, /whole-value forms/);
+	assert.match(releases[0].changelog, /Version 0\.2\.0 adds Apache support/);
+	assert.match(releases[0].changelog, /Overview tab/);
+	assert.match(releases[0].changelog, /Site URL hostname for DNS, HTTP Host, TLS SNI, and certificate verification/);
+	assert.match(releases[1].changelog, /Version 0\.1\.1 maintenance release/);
+	assert.match(releases[1].changelog, /standard `package\/` root/);
+	assert.match(releases[1].changelog, /exact SemVer tag/);
+	assert.match(releases[1].changelog, /whole-value forms/);
 });
 
 test('uses packaged detail metadata only when the marketplace has no listing', async () => {
@@ -132,10 +136,10 @@ test('supplies packaged release notes for the native Release notes tab', async (
 	const payload = await response.json();
 	const [currentRelease] = payload.data.addon.releases;
 
-	assert.equal(payload.data.addon.releases.length, 1);
-	assert.equal(currentRelease.version, '0.1.1');
+	assert.equal(payload.data.addon.releases.length, 2);
+	assert.equal(currentRelease.version, '0.2.0');
 	assert.equal(currentRelease.date, '2026-07-21T00:00:00.000Z');
-	assert.match(currentRelease.changelog, /Version 0\.1\.1 maintenance release/);
+	assert.match(currentRelease.changelog, /Version 0\.2\.0 adds Apache support/);
 });
 
 test('supports a single named target operation without operationName', async () => {

@@ -59,13 +59,15 @@ function createOverview(heroUrl: string): string {
 
 ${ADDON_NAME} is an Amsive add-on that keeps cloned WordPress sites lightweight without losing remote imagery. It serves upload images already available in Local and retrieves only missing images from a configured remote site.
 
-Configuration is independent for every site. The Site URL supplies the HTTP hostname, while the remote IP selects the endpoint Local connects to. That endpoint may be a direct origin or a compatible proxy, CDN, or load balancer that serves the Site URL. The add-on can discover WP Engine environments and public-DNS candidates without applying them automatically.
+Configuration is independent for every site. Nginx mode uses a Site URL plus a remote IP and can discover WP Engine or public-DNS candidates without applying them automatically. Apache mode requires only the Site URL and uses its hostname for DNS, HTTP Host, TLS SNI, and certificate verification.
+
+For any provider on Nginx, the Site URL supplies HTTP Host and TLS identity while the remote IP selects the endpoint, which may be the origin itself or a compatible proxy, CDN, or load balancer. Apache intentionally uses one hostname for all of those roles.
 
 ## How it works
 
 1. A browser requests an image under \`/wp-content/uploads/\`.
 2. If the file exists locally, Local serves it normally.
-3. If it is missing, the add-on connects to the configured remote IP using the Site URL as HTTP Host and a verified TLS identity. WP Engine discovery retains the provider's direct CNAME for TLS while using the primary domain as Host.
+3. If it is missing, the add-on connects to the configured endpoint with a verified TLS identity. Nginx can use a separate remote IP and verified WP Engine identity; Apache deliberately uses the Site URL hostname for the complete connection identity.
 4. The response is streamed to the browser and is not permanently cached locally.
 
 ## Install and configure
@@ -74,35 +76,37 @@ Configuration is independent for every site. The Site URL supplies the HTTP host
 2. When replacing an existing installation, disable and remove its Installed Add-ons entry first; Local does not overwrite the same add-on slug.
 3. In Local, open **Add-ons → Installed** and choose **Install from disk**.
 4. Enable **Local Media Proxy** and relaunch Local if prompted.
-5. Start a site that uses Nginx, then open **Tools → Media Proxy**.
-6. For a connected WP Engine site, select Production, Staging, or Development and choose **Auto-populate from WP Engine**. Otherwise enter a Site URL and optionally choose **Find IP addresses**.
-7. Review the suggested remote IPv4 or IPv6 address. A provider-supplied direct origin is preferred, but a compatible proxy or CDN address can also work. Public-DNS addresses may be shared or change.
+5. Start a site that uses Nginx or Apache, then open **Tools → Media Proxy**.
+6. Enter the Site URL or choose **Auto-populate from WP Engine** for a connected environment. On Nginx, also enter a remote IP or choose **Find via public DNS**. Apache intentionally omits the IP and DNS-candidate controls.
+7. On Nginx, review any suggested IPv4 or IPv6 address. On Apache, review the Site URL hostname that will be used for DNS, Host, SNI, and certificate verification.
 8. Select **Test connection**. This checks endpoint reachability and, for HTTPS, certificate identity and trust—not a media file.
 9. Turn on **Enable for this site**, then select **Save & apply**.
 10. Load an actual upload that is missing locally and confirm it succeeds through the Local site.
 
-Auto-populated values remain unsaved suggestions and are never enabled or applied automatically. Test them before explicitly applying them. Flywheel-connected sites retain the manual and DNS-assisted workflow because Local does not publish a supported Flywheel environment API for add-ons.
+Auto-populated values remain unsaved suggestions and are never enabled or applied automatically. Test them before explicitly applying them. Flywheel-connected sites retain the manual setup because Local does not publish a supported Flywheel environment API for add-ons; Nginx also offers DNS-assisted IP discovery, while Apache uses the Site URL hostname directly.
 
 ## Verify and disable
 
 Open a page containing an upload that is missing locally. Remote fallbacks include the response header \`X-Local-Media-Proxy: origin\`; locally served files do not.
 
-To disable the fallback, turn off **Enable for this site** and select **Save & apply**. The URL and IP remain saved for future use while the managed Nginx configuration is removed. Disable configured sites before uninstalling the add-on.
+To disable the fallback, turn off **Enable for this site** and select **Save & apply**. Saved connection fields remain available while managed configuration is removed and the selected service is refreshed. If Local cannot resolve or load that service, cleanup is deferred without changing settings or files and the site reports **Needs attention**. Stop the site, restore the service, and retry before uninstalling.
 
 ## Scope and safety
 
-- Supports Local sites using Nginx.
+- Supports Local sites using Nginx or Apache.
 - Proxies only missing image files beneath \`/wp-content/uploads/\`.
 - Existing local media always takes priority.
 - Allows only \`GET\` and \`HEAD\` requests.
-- Does not forward cookies, credentials, request bodies, or visitor-identifying proxy headers; a fixed add-on User-Agent replaces the browser's identity.
+- Does not forward cookies, credentials, or request bodies; a fixed add-on User-Agent replaces the browser's identity. Nginx suppresses all incoming request headers before adding its allowlist. Apache 2.4 uses a finite denylist for named credential, nonce, CSRF, sensitive, and client-IP headers because its header module cannot wildcard-remove arbitrary custom request-header names.
+- Apache uses a conservative URL-safe filename matcher; upload filenames containing decoded spaces or other characters outside that allowlist remain local-only.
+- Apache HTTPS requires Local's platform bundle to include \`mod_ssl\`. The current official Intel macOS +11 bundle is Apache HTTP-only; the site UI detects and explains this before testing or writing configuration.
 - Does not proxy PDFs, video, audio, themes, plugins, API requests, or arbitrary URLs.
-- HTTPS endpoints require a valid certificate for the Site URL hostname, a narrowly verified provider identity for a manual WP Engine origin, or the validated direct environment CNAME from WP Engine auto-population.
+- Supported HTTPS endpoints require a trusted certificate. Apache always verifies the Site URL hostname; Nginx retains its existing guarded support for separately verified WP Engine identities.
 
 ## Troubleshooting
 
-- **Nginx-only warning:** Change the site's web server to Nginx before enabling.
-- **Connection test fails:** Verify the URL scheme, optional port, and remote IP. For a DNS-discovered address, resolve again and try another candidate.
+- **Unsupported-server warning:** Use an unambiguous Local Nginx or Apache HTTP service.
+- **Connection test fails:** Verify the URL scheme and optional port. On Nginx, also verify the remote IP and retry a suitable DNS candidate when applicable.
 - **Certificate error:** Confirm the endpoint serves the Site URL hostname and uses a public CA or Cloudflare Origin CA certificate.
 - **An image still fails:** Confirm the exact upload exists on the selected remote site and that its origin, proxy, or CDN permits the add-on's stripped, read-only request.
 
@@ -110,6 +114,20 @@ ${ADDON_NAME} is maintained by Amsive LLC and developed by Mark Davoli and Boris
 }
 
 function createCurrentReleaseNotes(): string {
+	return `Version 0.2.0 adds Apache support and improves setup and status feedback.
+
+- Added local-first Apache support with URL-only hostname routing, verified TLS, reversible managed templates, and targeted service validation. ([#12](https://github.com/amsive/local-media-proxy/issues/12))
+- Added clear proxy status to each site's Overview tab. ([#11](https://github.com/amsive/local-media-proxy/issues/11))
+- Reordered connection setup around the Site URL and its related Nginx DNS controls. ([#10](https://github.com/amsive/local-media-proxy/issues/10))
+- Kept action feedback beside the controls that produced it. ([#8](https://github.com/amsive/local-media-proxy/issues/8))
+- Replaced raw connection failures with concise, actionable messages. ([#9](https://github.com/amsive/local-media-proxy/issues/9))
+
+Apache uses the Site URL hostname for DNS, HTTP Host, TLS SNI, and certificate verification. HTTPS remains unavailable when Local's Apache platform bundle does not include \`mod_ssl\`.
+
+[View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
+}
+
+function createPreviousReleaseNotes(): string {
 	return `Version 0.1.1 maintenance release.
 
 - Kept build-job output as validated data across the draft-release permission boundary.
@@ -127,6 +145,12 @@ function createPackagedReleaseHistory(): PackagedRelease[] {
 			date: '2026-07-21T00:00:00.000Z',
 			id: `${ADDON_ID}-${ADDON_VERSION}`,
 			version: ADDON_VERSION,
+		},
+		{
+			changelog: createPreviousReleaseNotes(),
+			date: '2026-07-21T00:00:00.000Z',
+			id: `${ADDON_ID}-0.1.1`,
+			version: '0.1.1',
 		},
 	];
 }

@@ -18,7 +18,7 @@ const { ADDON_VERSION } = require('../lib/constants');
 test('declares the installed add-on card metadata expected by Local', () => {
 	assert.equal(packageJson.productName, 'Local Media Proxy');
 	assert.equal(packageJson.author?.name, 'Amsive');
-	assert.equal(packageJson.version, '0.1.1');
+	assert.equal(packageJson.version, '0.2.0');
 	assert.equal(packageJson.license, 'Apache-2.0');
 	assert.equal(
 		packageJson.description,
@@ -30,15 +30,18 @@ test('declares the installed add-on card metadata expected by Local', () => {
 	assert.equal(packageJson.scripts['package:addon'], 'node scripts/package-addon.js');
 	assert.equal(packageJson.scripts['package:check'], 'npm run package:addon');
 	assert.deepEqual(packageJson.files, [
+		'lib/apache.js',
 		'lib/constants.js',
 		'lib/dns.js',
 		'lib/hosting.js',
+		'lib/lifecycle.js',
 		'lib/main.js',
 		'lib/marketplace.js',
 		'lib/nginx.js',
 		'lib/origin.js',
 		'lib/renderer.js',
 		'lib/settings.js',
+		'lib/server.js',
 		'lib/site-config.js',
 		'lib/validation.js',
 		'LICENSE',

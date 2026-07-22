@@ -38,6 +38,18 @@
       "reviewedForPublicRelease": "Generated light-theme placeholder screenshot uses a documentation IP, fictional sites, and a synthetic timestamp."
     },
     {
+      "path": "docs/screenshots/v0.2.0-apache-overview-dark.png",
+      "sha256": "34c8e2c25b3955e809c8bdca7dbc346f543e2e5edc6e2252ed7fccfa128bb2ec",
+      "kind": "png",
+      "reviewedForPublicRelease": "Rendered from the current v0.2.0 dark Overview styling with one fictional Example Site and Apache state only; no hostnames, addresses, logos, overlays, or timestamps; full-resolution visual and local OCR review completed."
+    },
+    {
+      "path": "docs/screenshots/v0.2.0-nginx-setup-light.png",
+      "sha256": "963823c59d5b0a8ed0e5892b1344f4922c8c79c78010d3ab9bfe88e16f4d712b",
+      "kind": "png",
+      "reviewedForPublicRelease": "Rendered from the current v0.2.0 light Nginx setup styling with one fictional Example Site, example.com hostnames, RFC 5737 address 203.0.113.10, and no logos, overlays, or timestamps; full-resolution visual and local OCR review completed."
+    },
+    {
       "path": "icon.svg",
       "sha256": "f8d6607f96206707efce3c1aff0ac2f4be0b68395360d47dc2d0fd596f1b5924",
       "kind": "svg",
