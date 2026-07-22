@@ -48,6 +48,8 @@ export interface ServerManagedFileOptions {
 
 export interface FileSnapshot {
 	content: Buffer | null;
+	/** Strip only this add-on's block if Local creates the core template after the snapshot. */
+	createdTemplateKind?: 'apache' | 'nginx';
 	filePath: string;
 }
 
@@ -210,9 +212,13 @@ function atomicWriteSync(filePath: string, content: string | Buffer): void {
 
 export async function captureManagedFiles(site: Local.Site): Promise<FileSnapshot[]> {
 	const paths = getManagedPaths(site);
-	return Promise.all(Object.values(paths).map(async (filePath) => ({
-		content: await readOptionalFile(filePath),
-		filePath,
+	return Promise.all([
+		{ filePath: paths.includeTemplate },
+		{ createdTemplateKind: 'nginx' as const, filePath: paths.siteTemplate },
+		{ filePath: paths.trustBundle },
+	].map(async (snapshot) => ({
+		...snapshot,
+		content: await readOptionalFile(snapshot.filePath),
 	})));
 }
 
@@ -221,7 +227,20 @@ export async function restoreManagedFiles(snapshots: FileSnapshot[]): Promise<vo
 	for (const snapshot of snapshots) {
 		try {
 			if (snapshot.content === null) {
-				await fs.rm(snapshot.filePath, { force: true });
+				if (!snapshot.createdTemplateKind) {
+					await fs.rm(snapshot.filePath, { force: true });
+				} else {
+					const createdContent = await readOptionalFile(snapshot.filePath);
+					if (createdContent) {
+						const current = createdContent.toString('utf8');
+						const restored = snapshot.createdTemplateKind === 'nginx'
+							? removeManagedInclude(current)
+							: removeApacheManagedBlock(current);
+						if (restored !== current) {
+							await atomicWrite(snapshot.filePath, restored);
+						}
+					}
+				}
 			} else {
 				await atomicWrite(snapshot.filePath, snapshot.content);
 			}
@@ -241,11 +260,16 @@ export async function captureAllManagedFiles(site: Local.Site): Promise<FileSnap
 	const nginx = getManagedPaths(site);
 	const apache = getApacheManagedPaths(site);
 	return Promise.all([
-		...Object.values(nginx),
-		...Object.values(apache),
-	].map(async (filePath) => ({
-		content: await readOptionalFile(filePath),
-		filePath,
+		{ filePath: nginx.includeTemplate },
+		{ createdTemplateKind: 'nginx' as const, filePath: nginx.siteTemplate },
+		{ filePath: nginx.trustBundle },
+		{ filePath: apache.includeTemplate },
+		{ createdTemplateKind: 'apache' as const, filePath: apache.modulesTemplate },
+		{ createdTemplateKind: 'apache' as const, filePath: apache.siteTemplate },
+		{ filePath: apache.trustBundle },
+	].map(async (snapshot) => ({
+		...snapshot,
+		content: await readOptionalFile(snapshot.filePath),
 	})));
 }
 

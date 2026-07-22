@@ -18,8 +18,62 @@
 }
 
 .LocalMediaProxy--Loading {
+	align-items: center;
 	color: #616166;
+	display: flex;
 	font-size: 14px;
+	min-height: 64px;
+}
+
+/*
+ * Scoped adaptation of the Gray LoadingIndicator from
+ * @getflywheel/local-components 17.8.1, as bundled in Local 10.1.1.
+ * See NOTICE for the Fancy Chap, Inc. MIT attribution.
+ */
+.LocalMediaProxy .LocalMediaProxy__LoadingIndicator {
+	display: inline-block;
+	height: 16px;
+	margin: 0 auto;
+	text-align: center;
+	vertical-align: middle;
+	width: auto;
+}
+
+.LocalMediaProxy .LocalMediaProxy__LoadingIndicator > div {
+	animation: LocalMediaProxy__loadingBounce 1.4s infinite ease-in-out both;
+	border-radius: 100%;
+	display: inline-block;
+	height: 9px;
+	margin: 0 4px;
+	width: 9px;
+}
+
+.LocalMediaProxy .LocalMediaProxy__LoadingIndicator--Gray > div {
+	background-color: #c7c4c4;
+}
+
+.LocalMediaProxy .LocalMediaProxy__LoadingIndicator > div:first-child {
+	animation-delay: -0.32s;
+}
+
+.LocalMediaProxy .LocalMediaProxy__LoadingIndicator > div:nth-child(2) {
+	animation-delay: -0.16s;
+}
+
+.LocalMediaProxy .LocalMediaProxy__LoadingIndicator--Overview {
+	margin: 0 14px 0 0;
+}
+
+@keyframes LocalMediaProxy__loadingBounce {
+	0%,
+	80%,
+	100% {
+		transform: scale(0);
+	}
+
+	40% {
+		transform: scale(1);
+	}
 }
 
 .LocalMediaProxy__Heading {
@@ -86,47 +140,170 @@
 	vertical-align: middle;
 }
 
-.LocalMediaProxy .LocalMediaProxy__OverviewStatus {
+.LocalMediaProxy .LocalMediaProxy__OverviewControls {
 	align-items: center;
 	display: flex;
-	gap: 10px;
-	line-height: 1.35;
+	gap: 0;
 	min-height: 48px;
 }
 
-.LocalMediaProxy .LocalMediaProxy__OverviewBadge {
-	border: 1px solid transparent;
-	border-radius: 999px;
-	flex: 0 0 auto;
+.LocalMediaProxy .LocalMediaProxy__OverviewSwitch {
+	-webkit-appearance: none;
+	appearance: none;
+	background: #c7c4c4;
+	border-width: 0;
+	border-radius: 1.6em;
+	box-shadow: none;
+	box-sizing: border-box;
+	color: #ffffff;
+	cursor: pointer;
+	display: inline-block;
+	flex: 0 0 48px;
+	font-family: "Museo Sans Rounded", sans-serif;
+	font-size: 10px;
+	height: 20px;
+	overflow: hidden;
+	padding: .5em;
+	position: relative;
+	transition: background 200ms ease 0ms;
+	vertical-align: middle;
+	width: 48px;
+}
+
+.LocalMediaProxy .LocalMediaProxy__OverviewSwitch::before {
+	background: #ffffff;
+	border-radius: 50%;
+	box-shadow: none;
+	content: '';
+	display: block;
+	height: 12px;
+	left: 0;
+	position: relative;
+	top: -1px;
+	transition: left 200ms ease 0ms;
+	width: 12px;
+}
+
+.LocalMediaProxy .LocalMediaProxy__OverviewSwitchLabel {
+	display: block;
 	font-size: 11px;
-	font-weight: 700;
-	line-height: 1;
-	padding: 6px 9px;
+	font-weight: 900;
+	left: 20px;
+	line-height: 22px;
+	pointer-events: none;
+	position: absolute;
+	top: 0;
+	transition: left 200ms ease 0ms;
 }
 
-.LocalMediaProxy .LocalMediaProxy__OverviewDetail {
-	color: #616166;
-	font-size: 12px;
+.LocalMediaProxy .LocalMediaProxy__OverviewSwitch--Checked {
+	background: #267048;
 }
 
-.LocalMediaProxy .LocalMediaProxy__OverviewStatus--Active .LocalMediaProxy__OverviewBadge {
-	background: #e5f7eb;
-	border-color: #83c89b;
-	color: #176737;
+.LocalMediaProxy .LocalMediaProxy__OverviewSwitch--Checked::before {
+	left: calc(100% - 12px);
 }
 
-.LocalMediaProxy .LocalMediaProxy__OverviewStatus--Inactive .LocalMediaProxy__OverviewBadge,
-.LocalMediaProxy .LocalMediaProxy__OverviewStatus--Loading .LocalMediaProxy__OverviewBadge,
-.LocalMediaProxy .LocalMediaProxy__OverviewStatus--Unavailable .LocalMediaProxy__OverviewBadge {
-	background: #ececef;
-	border-color: #c9c9ce;
-	color: #55555a;
+.LocalMediaProxy .LocalMediaProxy__OverviewSwitch--Checked .LocalMediaProxy__OverviewSwitchLabel {
+	left: 8px;
+	top: -1px;
 }
 
-.LocalMediaProxy .LocalMediaProxy__OverviewStatus--Attention .LocalMediaProxy__OverviewBadge {
-	background: #fff2d4;
-	border-color: #e2b85b;
-	color: #75520a;
+.LocalMediaProxy .LocalMediaProxy__OverviewSwitch:focus-visible,
+.LocalMediaProxy .LocalMediaProxy__OverviewInfoButton:focus-visible {
+	outline: 5px auto -webkit-focus-ring-color;
+}
+
+.LocalMediaProxy .LocalMediaProxy__OverviewSwitch:disabled {
+	background: #c7c4c4;
+	color: #9f9c9c;
+	cursor: not-allowed;
+}
+
+.LocalMediaProxy .LocalMediaProxy__OverviewSwitch:disabled::before {
+	background: #e7e7e7;
+}
+
+.LocalMediaProxy .LocalMediaProxy__OverviewTooltipAnchor {
+	align-items: center;
+	display: flex;
+	margin-left: 10px;
+	position: relative;
+}
+
+.LocalMediaProxy .LocalMediaProxy__OverviewInfoButton {
+	-webkit-appearance: none;
+	appearance: none;
+	align-items: center;
+	background: transparent;
+	border: 0;
+	color: #5d5e5e;
+	cursor: help;
+	display: inline-flex;
+	height: 18px;
+	justify-content: center;
+	line-height: 0;
+	padding: 0;
+	width: 18px;
+}
+
+.LocalMediaProxy .LocalMediaProxy__OverviewInfoIcon {
+	display: block;
+	fill: currentColor;
+	height: 18px;
+	width: 18px;
+}
+
+.LocalMediaProxy .LocalMediaProxy__OverviewTooltip {
+	animation: LocalMediaProxyTooltipEnter 120ms cubic-bezier(.2, .3, .25, .9) both;
+	background: #ffffff;
+	border: 1px solid #e7e7e7;
+	border-radius: 4px;
+	bottom: calc(100% + 10px);
+	box-shadow: 0 0 5px 0 rgb(0 0 0 / 14%);
+	box-sizing: border-box;
+	color: #434344;
+	font-family: "Museo Sans Rounded", sans-serif;
+	font-size: 14px;
+	font-weight: 300;
+	left: 50%;
+	line-height: normal;
+	max-width: 250px;
+	padding: 10px 15px;
+	position: absolute;
+	text-align: center;
+	transform: translateX(-50%);
+	transform-origin: 50% 100%;
+	will-change: transform;
+	width: max-content;
+	z-index: 10;
+}
+
+.LocalMediaProxy .LocalMediaProxy__OverviewTooltip::after {
+	background: inherit;
+	border: 1px solid #e7e7e7;
+	border-radius: 0 0 4px 0;
+	bottom: -8px;
+	box-shadow: 0 0 5px 0 rgb(0 0 0 / 14%);
+	clip-path: polygon(-100% 200%, 200% -100%, 200% 200%);
+	content: '';
+	height: 16px;
+	left: calc(50% - 8px);
+	position: absolute;
+	transform: rotate(45deg);
+	width: 16px;
+}
+
+@keyframes LocalMediaProxyTooltipEnter {
+	from {
+		opacity: 0;
+		transform: translateX(-50%) scale(0);
+	}
+
+	to {
+		opacity: 1;
+		transform: translateX(-50%) scale(1);
+	}
 }
 
 .LocalMediaProxy__Banner {
@@ -180,6 +357,10 @@
 	display: flex;
 	gap: 20px;
 	justify-content: space-between;
+}
+
+.LocalMediaProxy__EnableRow .LocalMediaProxy__EnableHelp {
+	margin-top: 4px;
 }
 
 .LocalMediaProxy__EnableRow h3,
@@ -293,6 +474,27 @@
 .LocalMediaProxy__Switch:disabled {
 	cursor: not-allowed;
 	opacity: .55;
+}
+
+.LocalMediaProxy__ToggleLoadingSlot {
+	align-items: center;
+	display: inline-flex;
+	flex: 0 0 50px;
+	height: 28px;
+	justify-content: center;
+	width: 50px;
+}
+
+.LocalMediaProxy__ToggleUnavailable {
+	color: #77777d;
+	font-size: 12px;
+	white-space: nowrap;
+}
+
+.LocalMediaProxy__DiscoveryLoadingSlot {
+	align-items: center;
+	display: inline-flex;
+	min-height: 22px;
 }
 
 .LocalMediaProxy__Fields {
@@ -418,6 +620,18 @@
 
 .LocalMediaProxy__Button--Test {
 	min-width: 172px;
+}
+
+.LocalMediaProxy__Button--Save,
+.LocalMediaProxy__ButtonLoadingSlot {
+	min-width: 118px;
+}
+
+.LocalMediaProxy__ButtonLoadingSlot {
+	align-items: center;
+	display: inline-flex;
+	height: 36px;
+	justify-content: center;
 }
 
 .LocalMediaProxy__Button--Test > * {
@@ -582,28 +796,45 @@
 	color: #ffe2a0;
 }
 
-.Theme__Dark .LocalMediaProxy .LocalMediaProxy__OverviewDetail {
-	color: #c2c2c7;
+.Theme__Dark .LocalMediaProxy .LocalMediaProxy__OverviewSwitch {
+	background: #434344;
+	color: #e7e7e7;
 }
 
-.Theme__Dark .LocalMediaProxy .LocalMediaProxy__OverviewStatus--Active .LocalMediaProxy__OverviewBadge {
-	background: #173f29;
-	border-color: #4ea774;
-	color: #baf1cc;
+.Theme__Dark .LocalMediaProxy .LocalMediaProxy__OverviewSwitch::before {
+	background: #e7e7e7;
 }
 
-.Theme__Dark .LocalMediaProxy .LocalMediaProxy__OverviewStatus--Inactive .LocalMediaProxy__OverviewBadge,
-.Theme__Dark .LocalMediaProxy .LocalMediaProxy__OverviewStatus--Loading .LocalMediaProxy__OverviewBadge,
-.Theme__Dark .LocalMediaProxy .LocalMediaProxy__OverviewStatus--Unavailable .LocalMediaProxy__OverviewBadge {
-	background: #414147;
-	border-color: #66666d;
-	color: #eeeeef;
+.Theme__Dark .LocalMediaProxy .LocalMediaProxy__OverviewSwitch--Checked {
+	background: #51bb7b;
+	color: #ffffff;
 }
 
-.Theme__Dark .LocalMediaProxy .LocalMediaProxy__OverviewStatus--Attention .LocalMediaProxy__OverviewBadge {
-	background: #4c3b16;
-	border-color: #b78c31;
-	color: #ffe2a0;
+.Theme__Dark .LocalMediaProxy .LocalMediaProxy__OverviewSwitch--Checked::before {
+	background: #ffffff;
+}
+
+.Theme__Dark .LocalMediaProxy .LocalMediaProxy__OverviewInfoButton {
+	color: #9f9c9c;
+}
+
+.Theme__Dark .LocalMediaProxy .LocalMediaProxy__OverviewSwitch:disabled {
+	background: #434344;
+	color: #9f9c9c;
+}
+
+.Theme__Dark .LocalMediaProxy .LocalMediaProxy__OverviewSwitch:disabled::before {
+	background: #5d5e5e;
+}
+
+.Theme__Dark .LocalMediaProxy .LocalMediaProxy__OverviewTooltip {
+	background: #262727;
+	border-color: #5d5e5e;
+	color: #c7c4c4;
+}
+
+.Theme__Dark .LocalMediaProxy .LocalMediaProxy__OverviewTooltip::after {
+	border-color: #5d5e5e;
 }
 
 .Theme__Dark .LocalMediaProxy__Switch {
@@ -717,6 +948,12 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+	/* Accessibility extension to Local Components' native animation. */
+	.LocalMediaProxy .LocalMediaProxy__LoadingIndicator > div {
+		animation: none;
+		transform: scale(1);
+	}
+
 	.LocalMediaProxy__Spinner {
 		animation: none;
 	}

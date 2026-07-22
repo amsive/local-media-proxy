@@ -7,6 +7,8 @@ export type OriginProtocol = 'http:' | 'https:';
 
 export type ServerKind = 'apache' | 'nginx' | 'unsupported';
 
+export type SupportedServerKind = Exclude<ServerKind, 'unsupported'>;
+
 export type HostingEnvironment = 'production' | 'staging' | 'development';
 
 export type OriginProvider = 'dns' | 'flywheel' | 'none' | 'wpengine';
@@ -38,6 +40,15 @@ export interface StoredSettings extends SettingsInput {
 	originWpEngineSiteId?: string;
 }
 
+export type StoredConnectionProfile = Omit<StoredSettings, 'enabled'>;
+
+export interface StoredSettingsEnvelope {
+	enabled: boolean;
+	lastServerKind?: SupportedServerKind;
+	profiles: Record<SupportedServerKind, StoredConnectionProfile>;
+	schemaVersion: 2;
+}
+
 export interface NormalizedOrigin {
 	hostHeader: string;
 	hostname: string;
@@ -65,7 +76,9 @@ export interface PublicOriginProbeResult {
 
 export interface SiteState {
 	applied: boolean;
+	canEnable: boolean;
 	cleanupSupported: boolean;
+	enableUnavailableReason?: string;
 	httpsUnavailableReason?: string;
 	needsAttention?: boolean;
 	reason?: string;

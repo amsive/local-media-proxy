@@ -27,6 +27,116 @@ import {
 	validateAndNormalizeSiteUrl,
 } from './validation';
 
+export const IPC_READ_DEADLINE_MS = 15_000;
+export const IPC_MUTATION_DEADLINE_MS = 90_000;
+
+const IPC_DEADLINE_ERROR_NAME = 'LocalMediaProxyIpcDeadlineError';
+const OVERVIEW_STATE_TIMEOUT_MESSAGE = 'Media Proxy status could not be confirmed within 15 seconds. Its status is unconfirmed.';
+const TOOLS_STATE_TIMEOUT_MESSAGE = 'Media Proxy settings could not be confirmed within 15 seconds. Their current state is unconfirmed.';
+const DISCOVERY_TIMEOUT_MESSAGE = 'Local hosting connection details could not be confirmed within 15 seconds.';
+const TOGGLE_TIMEOUT_MESSAGE = 'The Media Proxy status change did not finish within 90 seconds. Its outcome is unconfirmed. Reopen this view to refresh the status before trying again.';
+const APPLY_TIMEOUT_MESSAGE = 'Save & apply did not finish within 90 seconds. Its outcome is unconfirmed. Reopen Media Proxy to refresh the settings before trying again.';
+const RECOVERY_TIMEOUT_MESSAGE = 'Media Proxy status recovery could not be confirmed within 15 seconds.';
+
+export function withIpcDeadline<T>(
+	operation: Promise<T>,
+	deadlineMs: number,
+	timeoutMessage: string,
+): Promise<T> {
+	return new Promise((resolve, reject) => {
+		let settled = false;
+		let timer: ReturnType<typeof setTimeout>;
+		const settle = (): boolean => {
+			if (settled) {
+				return false;
+			}
+
+			settled = true;
+			clearTimeout(timer);
+			return true;
+		};
+
+		timer = setTimeout(() => {
+			if (!settle()) {
+				return;
+			}
+			const error = new Error(timeoutMessage);
+			error.name = IPC_DEADLINE_ERROR_NAME;
+			reject(error);
+		}, deadlineMs);
+
+		operation.then(
+			(value) => {
+				if (settle()) {
+					resolve(value);
+				}
+			},
+			(error: unknown) => {
+				if (settle()) {
+					reject(error);
+				}
+			},
+		);
+	});
+}
+
+export function isIpcDeadlineError(error: unknown): boolean {
+	return error instanceof Error && error.name === IPC_DEADLINE_ERROR_NAME;
+}
+
+interface FocusTargetLike {
+	disabled?: boolean;
+	focus?: () => void;
+	isConnected?: boolean;
+}
+
+interface FocusDocumentLike {
+	activeElement?: unknown;
+	body?: unknown;
+}
+
+interface PendingFocusHandoff {
+	identity: string;
+	initiator: FocusTargetLike | null;
+	kind: 'save' | 'toggle';
+}
+
+export function handoffFocusAfterRemovedControl(
+	documentLike: FocusDocumentLike | undefined,
+	initiator: FocusTargetLike | null,
+	preferredTarget: FocusTargetLike | null,
+	fallbackTarget: FocusTargetLike | null,
+): boolean {
+	if (!documentLike) {
+		return false;
+	}
+
+	const activeElement = documentLike.activeElement;
+	if (
+		activeElement &&
+		activeElement !== documentLike.body &&
+		activeElement !== initiator
+	) {
+		return false;
+	}
+
+	for (const target of [preferredTarget, fallbackTarget]) {
+		if (
+			!target ||
+			target.disabled === true ||
+			target.isConnected === false ||
+			typeof target.focus !== 'function'
+		) {
+			continue;
+		}
+
+		target.focus();
+		return true;
+	}
+
+	return false;
+}
+
 interface RendererContext {
 	React: any;
 	electron: {
@@ -44,11 +154,15 @@ interface RendererContext {
 	};
 }
 
+interface RendererSite {
+	id: string;
+	name?: string;
+	services?: Record<string, unknown>;
+	webServer?: unknown;
+}
+
 interface SiteProps {
-	site: {
-		id: string;
-		name?: string;
-	};
+	site: RendererSite;
 }
 
 interface ProxyStatusRowProps extends SiteProps {
@@ -58,6 +172,39 @@ interface ProxyStatusRowProps extends SiteProps {
 interface Notice {
 	message: string;
 	variant: 'error' | 'neutral' | 'success' | 'warning';
+}
+
+interface LoadingIndicatorProps {
+	className?: string;
+}
+
+interface OverviewSiteStateSnapshot {
+	identity: string;
+	value: SiteState | null;
+}
+
+function fingerprintValue(value: unknown): string {
+	return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+		? String(value)
+		: '';
+}
+
+export function siteServerFingerprint(site: RendererSite): string {
+	const services = Object.entries(site.services ?? {})
+		.map(([serviceKey, rawService]) => {
+			const service = rawService && typeof rawService === 'object'
+				? rawService as Record<string, unknown>
+				: {};
+			return [
+				serviceKey,
+				fingerprintValue(service.id),
+				fingerprintValue(service.name),
+				fingerprintValue(service.role),
+				fingerprintValue(service.version),
+			];
+		})
+		.sort((left, right) => left[0].localeCompare(right[0]));
+	return JSON.stringify([fingerprintValue(site.webServer), services]);
 }
 
 export interface SiteStatusPresentation {
@@ -74,7 +221,7 @@ export function proxyPrivacySummary(serverKind: ServerKind): string {
 export interface OverviewProxyStatusPresentation {
 	className: string;
 	detail: string;
-	label: 'Active' | 'Inactive' | 'Needs attention' | 'Unavailable';
+	label: 'Active' | 'Checking…' | 'Inactive' | 'Needs attention' | 'Unavailable';
 }
 
 export function overviewProxyStatusPresentation(
@@ -137,6 +284,51 @@ export function overviewProxyStatusPresentation(
 			: 'Disabled, but proxy configuration is still applied.',
 		label: 'Needs attention',
 	};
+}
+
+function serverProfileLabel(serverKind: ServerKind): string {
+	return serverKind === 'apache'
+		? 'Apache'
+		: serverKind === 'nginx'
+			? 'Nginx'
+			: 'current web server';
+}
+
+export function overviewProxyStatusGuidance(
+	siteState: SiteState | null,
+	presentation: OverviewProxyStatusPresentation,
+	operationError = '',
+): string {
+	if (operationError) {
+		return `${operationError} Open Tools → Media Proxy to review the current profile and retry.`;
+	}
+	if (!siteState) {
+		return presentation.detail;
+	}
+	if (
+		presentation.label === 'Unavailable' &&
+		(!siteState.supported || siteState.serverKind === 'unsupported')
+	) {
+		return `${presentation.detail} ${siteState.enableUnavailableReason || 'Select a supported web server in Local before configuring Media Proxy.'}`;
+	}
+
+	const profileLabel = serverProfileLabel(siteState.serverKind);
+	if (siteState.settings.enabled && !siteState.canEnable) {
+		return `${presentation.detail} The enabled intent is still on, but the ${profileLabel} connection profile is incomplete. ${siteState.enableUnavailableReason || `Configure and save a valid ${profileLabel} connection profile in Tools → Media Proxy before using this control.`}`;
+	}
+	if (siteState.needsAttention) {
+		return `${presentation.detail} Open Tools → Media Proxy to review the ${profileLabel} profile and retry.`;
+	}
+	if (siteState.settings.enabled) {
+		return siteState.cleanupSupported
+			? `${presentation.detail} Turn this off to remove the managed proxy configuration. The saved ${profileLabel} connection profile will be preserved.`
+			: `${presentation.detail} Open Tools → Media Proxy to review cleanup availability.`;
+	}
+	if (!siteState.canEnable) {
+		return `${presentation.detail} ${siteState.enableUnavailableReason || `Configure and save a valid ${profileLabel} connection profile in Tools → Media Proxy before enabling.`}`;
+	}
+
+	return `${presentation.detail} Turn this on to apply the saved ${profileLabel} connection profile.`;
 }
 
 export function siteStatusPresentation(
@@ -296,64 +488,324 @@ export default function renderer(context: RendererContext): void {
 	const { ipcRenderer } = context.electron;
 	const e = React.createElement;
 	const stylesheetPath = path.resolve(__dirname, '../style.css');
+	const loadingIndicator = ({ className = '' }: LoadingIndicatorProps = {}) => e(
+		'div',
+		{
+			'aria-hidden': true,
+			className: `LocalMediaProxy__LoadingIndicator LocalMediaProxy__LoadingIndicator--Gray${className ? ` ${className}` : ''}`,
+		},
+		e('div'),
+		e('div'),
+	);
 
 	installMarketplaceMetadataShim(
 		globalThis as unknown as MarketplaceFetchHost,
 	);
 
 	const ProxyStatusRow = ({ site, siteStatus }: ProxyStatusRowProps) => {
-		const [siteState, setSiteState] = React.useState(undefined as SiteState | null | undefined);
+		const [busy, setBusy] = React.useState(false);
+		const [operationError, setOperationError] = React.useState('');
+		const [siteStateSnapshot, setSiteStateSnapshot] = React.useState(
+			undefined as OverviewSiteStateSnapshot | undefined,
+		);
+		const [tooltipOpen, setTooltipOpen] = React.useState(false);
+		const operationEpoch = React.useRef(0);
+		const overviewInfoRef = React.useRef(null as FocusTargetLike | null);
+		const overviewSwitchRef = React.useRef(null as FocusTargetLike | null);
+		const pendingFocusHandoff = React.useRef(null as PendingFocusHandoff | null);
 		const siteEpoch = React.useRef(0);
+		const tooltipTimer = React.useRef(undefined as ReturnType<typeof setTimeout> | undefined);
+		const serverFingerprint = siteServerFingerprint(site);
+		const statusIdentity = JSON.stringify([site.id, siteStatus, serverFingerprint]);
+		const stateMatchesIdentity = siteStateSnapshot?.identity === statusIdentity;
+		const siteState = stateMatchesIdentity ? siteStateSnapshot.value : undefined;
+		const busyForCurrentIdentity = stateMatchesIdentity && busy;
+		const visibleOperationError = stateMatchesIdentity ? operationError : '';
 
 		React.useEffect(() => {
 			const epoch = ++siteEpoch.current;
-			setSiteState(undefined);
+			operationEpoch.current += 1;
+			pendingFocusHandoff.current = null;
+			setBusy(false);
+			setOperationError('');
+			setSiteStateSnapshot(undefined);
+			setTooltipOpen(false);
+			clearTimeout(tooltipTimer.current);
+			tooltipTimer.current = undefined;
 
-			ipcRenderer.invoke(IPC_CHANNELS.getSiteState, site.id)
+			withIpcDeadline(
+				ipcRenderer.invoke(IPC_CHANNELS.getSiteState, site.id),
+				IPC_READ_DEADLINE_MS,
+				OVERVIEW_STATE_TIMEOUT_MESSAGE,
+			)
 				.then((value: unknown) => {
 					if (siteEpoch.current === epoch) {
-						setSiteState(value as SiteState);
+						setSiteStateSnapshot({
+							identity: statusIdentity,
+							value: value as SiteState,
+						});
 					}
 				})
-				.catch(() => {
+				.catch((error: unknown) => {
 					if (siteEpoch.current === epoch) {
-						setSiteState(null);
+						setSiteStateSnapshot({ identity: statusIdentity, value: null });
+						setOperationError(cleanIpcError(error));
+						setTooltipOpen(true);
 					}
 				});
 
 			return () => {
+				clearTimeout(tooltipTimer.current);
+				tooltipTimer.current = undefined;
 				if (siteEpoch.current === epoch) {
 					siteEpoch.current += 1;
 				}
 			};
-		}, [site.id, siteStatus]);
+		}, [statusIdentity]);
 
-		const presentation = siteState === undefined
+		const presentation: OverviewProxyStatusPresentation = siteState === undefined
 			? {
 				className: 'LocalMediaProxy__OverviewStatus--Loading',
 				detail: 'Loading proxy status.',
 				label: 'Checking…',
 			}
 			: overviewProxyStatusPresentation(siteState);
+		const persistedEnabled = siteState?.settings.enabled === true;
+		const canToggle = siteState?.canEnable === true && (
+			!persistedEnabled || siteState.cleanupSupported
+		);
+		const toggleDisabled = busyForCurrentIdentity || !canToggle;
+		const labelId = `${ADDON_ID}-overview-label-${site.id}`;
+		const tooltipId = `${ADDON_ID}-overview-tooltip-${site.id}`;
+		const guidance = overviewProxyStatusGuidance(
+			siteState === undefined ? null : siteState,
+			presentation,
+			visibleOperationError,
+		);
+		const showProgress = siteState === undefined || busyForCurrentIdentity;
+		const statusAnnouncement = siteState === undefined
+			? 'Checking Media Proxy status.'
+			: busyForCurrentIdentity
+				? 'Toggling Media Proxy status.'
+				: `${presentation.label}: ${presentation.detail}`;
+		const closeTooltip = (): void => {
+			clearTimeout(tooltipTimer.current);
+			tooltipTimer.current = undefined;
+			setTooltipOpen(false);
+		};
+		const openTooltip = (): void => {
+			clearTimeout(tooltipTimer.current);
+			tooltipTimer.current = undefined;
+			setTooltipOpen(true);
+		};
+		const openTooltipAfterDelay = (): void => {
+			clearTimeout(tooltipTimer.current);
+			tooltipTimer.current = setTimeout(() => {
+				tooltipTimer.current = undefined;
+				setTooltipOpen(true);
+			}, 300);
+		};
+
+		React.useEffect(() => {
+			const pending = pendingFocusHandoff.current;
+			if (!pending) {
+				return;
+			}
+			if (pending.identity !== statusIdentity) {
+				pendingFocusHandoff.current = null;
+				return;
+			}
+			if (siteState === undefined || busyForCurrentIdentity) {
+				return;
+			}
+
+			handoffFocusAfterRemovedControl(
+				(globalThis as unknown as { document?: FocusDocumentLike }).document,
+				pending.initiator,
+				overviewSwitchRef.current,
+				overviewInfoRef.current,
+			);
+			pendingFocusHandoff.current = null;
+		}, [busyForCurrentIdentity, siteState, statusIdentity, visibleOperationError]);
+
+		const toggleEnabled = async (initiator: FocusTargetLike | null): Promise<void> => {
+			if (!siteState || siteState.serverKind === 'unsupported' || toggleDisabled) {
+				return;
+			}
+			const requestId = ++operationEpoch.current;
+			const currentSiteEpoch = siteEpoch.current;
+			pendingFocusHandoff.current = {
+				identity: statusIdentity,
+				initiator,
+				kind: 'toggle',
+			};
+			setBusy(true);
+			setOperationError('');
+			try {
+				const nextState = await withIpcDeadline(
+					ipcRenderer.invoke(
+						IPC_CHANNELS.setEnabled,
+						site.id,
+						siteState.serverKind,
+						!persistedEnabled,
+					) as Promise<SiteState>,
+					IPC_MUTATION_DEADLINE_MS,
+					TOGGLE_TIMEOUT_MESSAGE,
+				);
+				if (
+					operationEpoch.current === requestId &&
+					siteEpoch.current === currentSiteEpoch
+				) {
+					setSiteStateSnapshot({ identity: statusIdentity, value: nextState });
+				}
+			} catch (error) {
+				if (
+					operationEpoch.current !== requestId ||
+					siteEpoch.current !== currentSiteEpoch
+				) {
+					return;
+				}
+				const message = cleanIpcError(error);
+				setSiteStateSnapshot({ identity: statusIdentity, value: null });
+				setOperationError(message);
+				setTooltipOpen(true);
+				setBusy(false);
+
+				if (!isIpcDeadlineError(error)) {
+					void withIpcDeadline(
+						ipcRenderer.invoke(
+							IPC_CHANNELS.getSiteState,
+							site.id,
+						) as Promise<SiteState>,
+						IPC_READ_DEADLINE_MS,
+						RECOVERY_TIMEOUT_MESSAGE,
+					)
+						.then((currentState) => {
+							if (
+								operationEpoch.current === requestId &&
+								siteEpoch.current === currentSiteEpoch
+							) {
+								setSiteStateSnapshot({
+									identity: statusIdentity,
+									value: currentState,
+								});
+							}
+						})
+						.catch(() => {
+							if (
+								operationEpoch.current === requestId &&
+								siteEpoch.current === currentSiteEpoch
+							) {
+								setSiteStateSnapshot({ identity: statusIdentity, value: null });
+							}
+						});
+				}
+			} finally {
+				if (
+					operationEpoch.current === requestId &&
+					siteEpoch.current === currentSiteEpoch
+				) {
+					setBusy(false);
+				}
+			}
+		};
 
 		return e(
 			'li',
 			{ className: 'TableListRow LocalMediaProxy LocalMediaProxy--OverviewRow' },
-			e('strong', null, 'Proxy status'),
+			e('strong', { id: labelId }, 'Media Proxy'),
 			e(
 				'div',
 				null,
 				e(
 					'div',
 					{
-						'aria-atomic': true,
-						'aria-label': `${presentation.label}: ${presentation.detail}`,
-						'aria-live': 'polite',
-						className: `LocalMediaProxy__OverviewStatus ${presentation.className}`,
-						role: 'status',
+						'aria-busy': showProgress,
+						className: `LocalMediaProxy__OverviewControls ${presentation.className}`,
 					},
-					e('span', { className: 'LocalMediaProxy__OverviewBadge' }, presentation.label),
-					e('span', { className: 'LocalMediaProxy__OverviewDetail' }, presentation.detail),
+					showProgress && loadingIndicator({
+						className: 'LocalMediaProxy__LoadingIndicator--Overview',
+					}),
+					!showProgress && siteState && e(
+						'button',
+						{
+							'aria-checked': persistedEnabled,
+							'aria-labelledby': labelId,
+							className: `LocalMediaProxy__OverviewSwitch${persistedEnabled ? ' LocalMediaProxy__OverviewSwitch--Checked' : ''}`,
+							disabled: toggleDisabled,
+							onClick: (event?: { currentTarget?: FocusTargetLike }) => void toggleEnabled(
+								event?.currentTarget ?? overviewSwitchRef.current,
+							),
+							ref: overviewSwitchRef,
+							role: 'switch',
+							type: 'button',
+						},
+						e('span', {
+							'aria-hidden': true,
+							className: 'LocalMediaProxy__OverviewSwitchLabel',
+						}, persistedEnabled ? 'On' : 'Off'),
+					),
+					!showProgress && e(
+						'span',
+						{
+							className: 'LocalMediaProxy__OverviewTooltipAnchor',
+							onBlur: closeTooltip,
+							onFocus: openTooltip,
+							onKeyDown: (event: { key: string }) => {
+								if (event.key === 'Escape') {
+									closeTooltip();
+								}
+							},
+							onMouseEnter: openTooltipAfterDelay,
+							onMouseLeave: closeTooltip,
+						},
+						e(
+							'button',
+							{
+								'aria-describedby': tooltipOpen ? tooltipId : undefined,
+								'aria-label': 'Media proxy status details',
+								className: 'LocalMediaProxy__OverviewInfoButton',
+								ref: overviewInfoRef,
+								type: 'button',
+							},
+							e(
+								'svg',
+								{
+									'aria-hidden': true,
+									className: 'LocalMediaProxy__OverviewInfoIcon',
+									focusable: 'false',
+									height: 18,
+									viewBox: '0 0 18 18',
+									width: 18,
+									xmlns: 'http://www.w3.org/2000/svg',
+								},
+								e('path', {
+									clipRule: 'evenodd',
+									d: 'M9 16C12.866 16 16 12.866 16 9C16 5.13401 12.866 2 9 2C5.13403 2 2 5.13401 2 9C2 12.866 5.13403 16 9 16ZM9 18C13.9705 18 18 13.9706 18 9C18 4.02943 13.9705 0 9 0C4.02954 0 0 4.02943 0 9C0 13.9706 4.02954 18 9 18ZM7.875 8C7.32275 8 6.875 8.44772 6.875 9C6.875 9.55228 7.32275 10 7.875 10H8V12.9375C8 13.4898 8.44775 13.9375 9 13.9375C9.55225 13.9375 10 13.4898 10 12.9375V9C10 8.44772 9.55225 8 9 8H7.875ZM9 6.75C9.62134 6.75 10.125 6.24632 10.125 5.625C10.125 5.00368 9.62134 4.5 9 4.5C8.37866 4.5 7.875 5.00368 7.875 5.625C7.875 6.24632 8.37866 6.75 9 6.75Z',
+									fillRule: 'evenodd',
+								}),
+							),
+						),
+						tooltipOpen && e(
+							'span',
+							{
+								className: 'LocalMediaProxy__OverviewTooltip',
+								id: tooltipId,
+								role: 'tooltip',
+							},
+							guidance,
+						),
+					),
+					e('span', {
+						'aria-atomic': true,
+						'aria-live': 'polite',
+						className: 'LocalMediaProxy__VisuallyHidden',
+						role: 'status',
+					}, statusAnnouncement),
+					visibleOperationError && e('span', {
+						className: 'LocalMediaProxy__VisuallyHidden',
+						role: 'alert',
+					}, visibleOperationError),
 				),
 			),
 		);
@@ -364,7 +816,7 @@ export default function renderer(context: RendererContext): void {
 		const [discoveryLoading, setDiscoveryLoading] = React.useState(false);
 		const [discoveryOptions, setDiscoveryOptions] = React.useState(null as OriginDiscoveryOptions | null);
 		const [enabled, setEnabled] = React.useState(false);
-		const [loaded, setLoaded] = React.useState(false);
+		const [loadedIdentity, setLoadedIdentity] = React.useState(null as string | null);
 		const [notice, setNotice] = React.useState(null as Notice | null);
 		const [originEnvironment, setOriginEnvironment] = React.useState(undefined as HostingEnvironment | undefined);
 		const [originIp, setOriginIp] = React.useState('');
@@ -377,10 +829,16 @@ export default function renderer(context: RendererContext): void {
 		const [siteUrl, setSiteUrl] = React.useState('');
 		const [suggestion, setSuggestion] = React.useState(null as OriginSuggestion | null);
 		const [testedDraftKey, setTestedDraftKey] = React.useState(null as string | null);
+		const actionFeedbackRef = React.useRef(null as FocusTargetLike | null);
 		const siteEpoch = React.useRef(0);
 		const discoveryEpoch = React.useRef(0);
+		const enableSwitchRef = React.useRef(null as FocusTargetLike | null);
 		const operationEpoch = React.useRef(0);
 		const activeProbeToken = React.useRef(null as string | null);
+		const pendingFocusHandoff = React.useRef(null as PendingFocusHandoff | null);
+		const saveButtonRef = React.useRef(null as FocusTargetLike | null);
+		const serverFingerprint = siteServerFingerprint(site);
+		const panelIdentity = JSON.stringify([site.id, serverFingerprint]);
 
 		const hydrate = (nextState: SiteState): void => {
 			setSiteState(nextState);
@@ -413,15 +871,30 @@ export default function renderer(context: RendererContext): void {
 			const epoch = ++siteEpoch.current;
 			discoveryEpoch.current += 1;
 			operationEpoch.current += 1;
+			pendingFocusHandoff.current = null;
 			setBusy('');
-			setLoaded(false);
+			setLoadedIdentity(null);
 			setSiteState(null);
 			setDiscoveryLoading(true);
 			setDiscoveryOptions(null);
+			setEnabled(false);
 			setNotice(null);
+			setOriginEnvironment(undefined);
+			setOriginIp('');
+			setOriginSource('manual');
+			setOriginTlsHostname(undefined);
+			setResolvedAt(undefined);
+			setSelectedCandidate('');
+			setSelectedEnvironment('');
+			setSiteUrl('');
 			setSuggestion(null);
+			setTestedDraftKey(null);
 
-			ipcRenderer.invoke(IPC_CHANNELS.getSiteState, site.id)
+			withIpcDeadline(
+				ipcRenderer.invoke(IPC_CHANNELS.getSiteState, site.id),
+				IPC_READ_DEADLINE_MS,
+				TOOLS_STATE_TIMEOUT_MESSAGE,
+			)
 				.then((value: unknown) => {
 					if (siteEpoch.current === epoch) {
 						hydrate(value as SiteState);
@@ -434,11 +907,15 @@ export default function renderer(context: RendererContext): void {
 				})
 				.finally(() => {
 					if (siteEpoch.current === epoch) {
-						setLoaded(true);
+						setLoadedIdentity(panelIdentity);
 					}
 				});
 
-			ipcRenderer.invoke(IPC_CHANNELS.getOriginDiscoveryOptions, site.id)
+			withIpcDeadline(
+				ipcRenderer.invoke(IPC_CHANNELS.getOriginDiscoveryOptions, site.id),
+				IPC_READ_DEADLINE_MS,
+				DISCOVERY_TIMEOUT_MESSAGE,
+			)
 				.then((value: unknown) => {
 					if (siteEpoch.current !== epoch) {
 						return;
@@ -477,7 +954,7 @@ export default function renderer(context: RendererContext): void {
 					operationEpoch.current += 1;
 				}
 			};
-		}, [site.id]);
+		}, [panelIdentity]);
 
 		const settings = (): SettingsInput => ({
 			enabled,
@@ -493,13 +970,38 @@ export default function renderer(context: RendererContext): void {
 			setNotice(null);
 		};
 
-		const invalidateTest = (): void => {
-			setTestedDraftKey(null);
-			clearActionFeedback();
+		const recoverAuthoritativeSiteState = (
+			requestId: number,
+			currentSiteEpoch: number,
+		): void => {
+			void withIpcDeadline(
+				ipcRenderer.invoke(
+					IPC_CHANNELS.getSiteState,
+					site.id,
+				) as Promise<SiteState>,
+				IPC_READ_DEADLINE_MS,
+				RECOVERY_TIMEOUT_MESSAGE,
+			)
+				.then((currentState) => {
+					if (
+						operationEpoch.current === requestId &&
+						siteEpoch.current === currentSiteEpoch
+					) {
+						hydrate(currentState);
+					}
+				})
+				.catch(() => {
+					if (
+						operationEpoch.current === requestId &&
+						siteEpoch.current === currentSiteEpoch
+					) {
+						setSiteState(null);
+					}
+				});
 		};
 
-		const editEnabled = (value: boolean): void => {
-			setEnabled(value);
+		const invalidateTest = (): void => {
+			setTestedDraftKey(null);
 			clearActionFeedback();
 		};
 
@@ -700,17 +1202,96 @@ export default function renderer(context: RendererContext): void {
 			}
 		};
 
-		const saveSettings = async (): Promise<void> => {
+		const saveSettings = async (initiator: FocusTargetLike | null): Promise<void> => {
+			if (!siteState || siteState.serverKind === 'unsupported') {
+				return;
+			}
 			const requestId = ++operationEpoch.current;
 			const currentSiteEpoch = siteEpoch.current;
+			const expectedServerKind = siteState.serverKind;
+			pendingFocusHandoff.current = {
+				identity: panelIdentity,
+				initiator,
+				kind: 'save',
+			};
 			setBusy('saving');
 			setNotice(null);
 			try {
-				const nextState = await ipcRenderer.invoke(
-					IPC_CHANNELS.applySettings,
-					site.id,
-					settings(),
-				) as SiteState;
+				const nextState = await withIpcDeadline(
+					ipcRenderer.invoke(
+						IPC_CHANNELS.applySettings,
+						site.id,
+						settings(),
+						expectedServerKind,
+					) as Promise<SiteState>,
+					IPC_MUTATION_DEADLINE_MS,
+					APPLY_TIMEOUT_MESSAGE,
+				);
+				if (
+					operationEpoch.current === requestId &&
+					siteEpoch.current === currentSiteEpoch
+				) {
+					hydrate(nextState);
+					setNotice({
+						message: nextState.settings.enabled
+							? `Media proxy enabled. ${nextState.serverKind === 'apache' ? 'Apache' : 'Nginx'} now checks local uploads first and fetches only missing images from the configured site.`
+							: `${nextState.serverKind === 'apache' ? 'Apache' : 'Nginx'} connection profile saved. The media proxy remains disabled.`,
+						variant: 'success',
+					});
+				}
+			} catch (error) {
+				const message = cleanIpcError(error);
+				if (
+					operationEpoch.current !== requestId ||
+					siteEpoch.current !== currentSiteEpoch
+				) {
+					return;
+				}
+				setSiteState(null);
+				setNotice({ message, variant: 'error' });
+				setBusy('');
+
+				if (!isIpcDeadlineError(error)) {
+					recoverAuthoritativeSiteState(requestId, currentSiteEpoch);
+				}
+			} finally {
+				if (
+					operationEpoch.current === requestId &&
+					siteEpoch.current === currentSiteEpoch
+				) {
+					setBusy('');
+				}
+			}
+		};
+
+		const toggleEnabled = async (
+			nextEnabled: boolean,
+			initiator: FocusTargetLike | null,
+		): Promise<void> => {
+			if (!siteState || siteState.serverKind === 'unsupported') {
+				return;
+			}
+			const requestId = ++operationEpoch.current;
+			const currentSiteEpoch = siteEpoch.current;
+			const expectedServerKind = siteState.serverKind;
+			pendingFocusHandoff.current = {
+				identity: panelIdentity,
+				initiator,
+				kind: 'toggle',
+			};
+			setBusy('toggling');
+			setNotice(null);
+			try {
+				const nextState = await withIpcDeadline(
+					ipcRenderer.invoke(
+						IPC_CHANNELS.setEnabled,
+						site.id,
+						expectedServerKind,
+						nextEnabled,
+					) as Promise<SiteState>,
+					IPC_MUTATION_DEADLINE_MS,
+					TOGGLE_TIMEOUT_MESSAGE,
+				);
 				if (
 					operationEpoch.current === requestId &&
 					siteEpoch.current === currentSiteEpoch
@@ -731,25 +1312,12 @@ export default function renderer(context: RendererContext): void {
 				) {
 					return;
 				}
-				try {
-					const currentState = await ipcRenderer.invoke(
-						IPC_CHANNELS.getSiteState,
-						site.id,
-					) as SiteState;
-					if (
-						operationEpoch.current === requestId &&
-						siteEpoch.current === currentSiteEpoch
-					) {
-						hydrate(currentState);
-					}
-				} catch {
-					// Preserve the original apply error when state refresh also fails.
-				}
-				if (
-					operationEpoch.current === requestId &&
-					siteEpoch.current === currentSiteEpoch
-				) {
-					setNotice({ message, variant: 'error' });
+				setSiteState(null);
+				setNotice({ message, variant: 'error' });
+				setBusy('');
+
+				if (!isIpcDeadlineError(error)) {
+					recoverAuthoritativeSiteState(requestId, currentSiteEpoch);
 				}
 			} finally {
 				if (
@@ -761,8 +1329,40 @@ export default function renderer(context: RendererContext): void {
 			}
 		};
 
-		if (!loaded) {
-			return e('div', { className: 'LocalMediaProxy LocalMediaProxy--Loading' }, 'Loading media proxy settings…');
+		React.useEffect(() => {
+			const pending = pendingFocusHandoff.current;
+			if (!pending) {
+				return;
+			}
+			if (pending.identity !== panelIdentity) {
+				pendingFocusHandoff.current = null;
+				return;
+			}
+			if (loadedIdentity !== panelIdentity || busy) {
+				return;
+			}
+
+			handoffFocusAfterRemovedControl(
+				(globalThis as unknown as { document?: FocusDocumentLike }).document,
+				pending.initiator,
+				pending.kind === 'toggle' ? enableSwitchRef.current : saveButtonRef.current,
+				actionFeedbackRef.current,
+			);
+			pendingFocusHandoff.current = null;
+		}, [busy, loadedIdentity, notice, panelIdentity, siteState]);
+
+		if (loadedIdentity !== panelIdentity) {
+			return e(
+				'div',
+				{
+					'aria-busy': true,
+					'aria-live': 'polite',
+					className: 'LocalMediaProxy LocalMediaProxy--Loading',
+					role: 'status',
+				},
+				loadingIndicator(),
+				e('span', { className: 'LocalMediaProxy__VisuallyHidden' }, 'Loading media proxy settings…'),
+			);
 		}
 
 		const supported = siteState?.supported === true;
@@ -804,7 +1404,18 @@ export default function renderer(context: RendererContext): void {
 			enabled,
 			capabilityBlocksSave,
 		);
-		const canSave = actionAvailability.canSave;
+		const canSave = draftDirty && actionAvailability.canSave;
+		const canToggleEnabled = siteState?.canEnable === true && (
+			!persistedEnabled || cleanupSupported
+		);
+		const toggleBlockedByDraft = draftDirty;
+		const toggleHelp = toggleBlockedByDraft
+			? 'Save connection changes before changing proxy status.'
+			: siteState?.canEnable !== true
+				? persistedEnabled
+					? `The enabled intent is still on, but this web server profile is incomplete. ${siteState?.enableUnavailableReason || 'Configure and save a valid connection profile before using this switch.'}`
+					: siteState?.enableUnavailableReason || 'Configure and save a valid connection profile for the current web server before enabling.'
+				: 'This switch is saved and applied immediately. Connection profile changes still use Save & apply.';
 		const draftVerified = testedDraftKey === draftOriginKey(
 			siteUrl,
 			originIp,
@@ -824,13 +1435,22 @@ export default function renderer(context: RendererContext): void {
 			supported && !capabilityBlocksTest,
 			Boolean(siteUrl.trim() && (!requiresOriginIp || originIp.trim())),
 		);
+		const toolsBusyAnnouncement = busy === 'toggling'
+			? 'Toggling Media Proxy status.'
+			: busy === 'saving'
+				? 'Saving and applying Media Proxy settings.'
+				: busy === 'testing'
+					? 'Testing connection. Activate Stop test to cancel.'
+					: busy === 'stopping'
+						? 'Stopping connection test.'
+						: busy === 'discovering'
+							? 'Discovering origin connection details.'
+							: '';
 
 		return e(
 			'main',
 			{
-				'aria-busy': Boolean(
-					(busy && busy !== 'testing' && busy !== 'stopping') || discoveryLoading,
-				),
+				'aria-busy': Boolean(busy && busy !== 'testing' && busy !== 'stopping'),
 				'aria-labelledby': `${ADDON_ID}-title`,
 				className: 'LocalMediaProxy',
 			},
@@ -868,16 +1488,38 @@ export default function renderer(context: RendererContext): void {
 					e('div', null,
 						e('h3', { id: `${ADDON_ID}-enable-title` }, 'Enable for this site'),
 						e('p', null, 'This setting is independent for every site in Local.'),
+						e('p', {
+							className: 'LocalMediaProxy__EnableHelp',
+							id: `${ADDON_ID}-enable-help`,
+						}, toggleHelp),
 					),
-					e('button', {
-						'aria-checked': enabled,
-						'aria-labelledby': `${ADDON_ID}-enable-title`,
-						className: `LocalMediaProxy__Switch${enabled ? ' LocalMediaProxy__Switch--Checked' : ''}`,
-						disabled: Boolean(busy) || !actionAvailability.canToggle,
-						onClick: () => editEnabled(!enabled),
-						role: 'switch',
-						type: 'button',
-					}),
+					busy === 'toggling'
+						? e(
+							'div',
+							{
+								'aria-busy': true,
+								className: 'LocalMediaProxy__ToggleLoadingSlot',
+							},
+							loadingIndicator(),
+						)
+						: siteState
+							? e('button', {
+								'aria-checked': enabled,
+								'aria-describedby': `${ADDON_ID}-enable-help`,
+								'aria-labelledby': `${ADDON_ID}-enable-title`,
+								className: `LocalMediaProxy__Switch${enabled ? ' LocalMediaProxy__Switch--Checked' : ''}`,
+								disabled: Boolean(busy) || toggleBlockedByDraft || !canToggleEnabled,
+								onClick: (event?: { currentTarget?: FocusTargetLike }) => void toggleEnabled(
+									!enabled,
+									event?.currentTarget ?? enableSwitchRef.current,
+								),
+								ref: enableSwitchRef,
+								role: 'switch',
+								type: 'button',
+							})
+							: e('span', {
+								className: 'LocalMediaProxy__ToggleUnavailable',
+							}, 'Status unavailable'),
 				),
 				e(
 					'div',
@@ -885,9 +1527,21 @@ export default function renderer(context: RendererContext): void {
 					e('div', { className: 'LocalMediaProxy__DiscoveryHeading' },
 						e('div', null,
 							e('h3', null, 'Connection setup'),
-							e('p', null, discoveryLoading ? 'Checking the Local hosting connection…' : discoveryOptions?.message),
+							e('p', {
+								'aria-live': discoveryLoading ? 'polite' : undefined,
+								role: discoveryLoading ? 'status' : undefined,
+							}, discoveryLoading ? 'Checking the Local hosting connection…' : discoveryOptions?.message),
 						),
-						e('span', { className: 'LocalMediaProxy__Provider' }, providerLabel),
+						discoveryLoading
+							? e(
+								'div',
+								{
+									'aria-busy': true,
+									className: 'LocalMediaProxy__DiscoveryLoadingSlot',
+								},
+								loadingIndicator(),
+							)
+							: e('span', { className: 'LocalMediaProxy__Provider' }, providerLabel),
 					),
 					discoveryLayout === 'wpengine' && e(
 						'div',
@@ -1041,7 +1695,9 @@ export default function renderer(context: RendererContext): void {
 					{
 						'aria-live': notice.variant === 'error' ? undefined : 'polite',
 						className: `LocalMediaProxy__ActionFeedback LocalMediaProxy__Banner LocalMediaProxy__Banner--${notice.variant}`,
+						ref: actionFeedbackRef,
 						role: notice.variant === 'error' ? 'alert' : 'status',
+						tabIndex: -1,
 					},
 					notice.message,
 				),
@@ -1049,13 +1705,11 @@ export default function renderer(context: RendererContext): void {
 					'div',
 					{ className: 'LocalMediaProxy__Actions' },
 					e('span', {
+						'aria-atomic': true,
 						'aria-live': 'polite',
 						className: 'LocalMediaProxy__VisuallyHidden',
-					}, busy === 'testing'
-						? 'Testing connection. Activate Stop test to cancel.'
-						: busy === 'stopping'
-							? 'Stopping connection test.'
-							: ''),
+						role: 'status',
+					}, toolsBusyAnnouncement),
 					draftVerified && e('span', { className: 'LocalMediaProxy__DraftVerified' }, 'Connection test passed'),
 					e('button', {
 						'aria-busy': busy === 'testing' || busy === 'stopping',
@@ -1069,12 +1723,24 @@ export default function renderer(context: RendererContext): void {
 						className: 'LocalMediaProxy__Spinner',
 					}),
 					e('span', null, testControl.label)),
-					e('button', {
-						className: 'LocalMediaProxy__Button LocalMediaProxy__Button--Primary',
-						disabled: !canSave || Boolean(busy) || fieldsMissing,
-						onClick: saveSettings,
-						type: 'button',
-					}, busy === 'saving' ? 'Applying…' : 'Save & apply'),
+					busy === 'saving'
+						? e(
+							'div',
+							{
+								'aria-busy': true,
+								className: 'LocalMediaProxy__ButtonLoadingSlot',
+							},
+							loadingIndicator(),
+						)
+						: e('button', {
+							className: 'LocalMediaProxy__Button LocalMediaProxy__Button--Primary LocalMediaProxy__Button--Save',
+							disabled: !canSave || Boolean(busy) || fieldsMissing,
+							onClick: (event?: { currentTarget?: FocusTargetLike }) => void saveSettings(
+								event?.currentTarget ?? saveButtonRef.current,
+							),
+							ref: saveButtonRef,
+							type: 'button',
+						}, 'Save & apply'),
 				),
 			),
 			e(

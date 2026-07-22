@@ -5,7 +5,7 @@
 
 export const ADDON_ID = 'local-media-proxy';
 export const ADDON_NAME = 'Local Media Proxy';
-export const ADDON_VERSION = '0.2.0';
+export const ADDON_VERSION = '0.2.1';
 export const ORIGIN_REQUEST_USER_AGENT = `${ADDON_NAME}/${ADDON_VERSION}`;
 
 export const MANUAL_WPENGINE_TLS_HOSTNAME = 'origin.wpengine.com';
@@ -16,6 +16,7 @@ export const IPC_CHANNELS = {
 	discoverOrigin: `${ADDON_ID}:discover-origin`,
 	getOriginDiscoveryOptions: `${ADDON_ID}:get-origin-discovery-options`,
 	getSiteState: `${ADDON_ID}:get-site-state`,
+	setEnabled: `${ADDON_ID}:set-enabled`,
 	testOrigin: `${ADDON_ID}:test-origin`,
 } as const;
 

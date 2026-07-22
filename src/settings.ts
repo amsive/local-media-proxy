@@ -6,7 +6,11 @@
 import { DEFAULT_SETTINGS } from './constants';
 import type {
 	CertificateSummary,
+	ServerKind,
+	StoredConnectionProfile,
 	StoredSettings,
+	StoredSettingsEnvelope,
+	SupportedServerKind,
 } from './types';
 import {
 	sanitizeHostingEnvironment,
@@ -30,6 +34,42 @@ type RawStoredSettings = {
 	resolvedAt?: unknown;
 	siteUrl?: unknown;
 };
+
+type RawStoredSettingsEnvelope = {
+	enabled?: unknown;
+	lastServerKind?: unknown;
+	profiles?: unknown;
+	schemaVersion?: unknown;
+};
+
+type SerializedConnectionProfile = StoredConnectionProfile & {
+	productionUrl: string;
+};
+
+type SerializedFlatCompatibilitySettings = Omit<StoredSettings, 'enabled'> & {
+	productionUrl: string;
+};
+
+export type SerializedSettingsEnvelope = Omit<StoredSettingsEnvelope, 'profiles'> &
+	SerializedFlatCompatibilitySettings & {
+	profiles: Record<SupportedServerKind, SerializedConnectionProfile>;
+};
+
+const LEGACY_SETTINGS_KEYS = [
+	'certificate',
+	'enabled',
+	'lastOriginStatus',
+	'lastVerifiedAt',
+	'originEnvironment',
+	'originIp',
+	'originSource',
+	'originTlsHostname',
+	'originWpEngineInstallId',
+	'originWpEngineSiteId',
+	'productionUrl',
+	'resolvedAt',
+	'siteUrl',
+] as const;
 
 function readProviderIdentifier(value: unknown): string | undefined {
 	if (typeof value !== 'string') {
@@ -101,6 +141,217 @@ export function serializeStoredSettings(settings: StoredSettings): StoredSetting
 		...settings,
 		productionUrl: settings.siteUrl,
 	};
+}
+
+function sanitizeSupportedServerKind(value: unknown): SupportedServerKind | undefined {
+	return value === 'apache' || value === 'nginx' ? value : undefined;
+}
+
+function connectionProfileFromSettings(settings: StoredSettings): StoredConnectionProfile {
+	const { enabled: _enabled, ...profile } = settings;
+	return profile;
+}
+
+function normalizeConnectionProfile(value: unknown): StoredConnectionProfile {
+	return connectionProfileFromSettings(normalizeStoredSettings(value));
+}
+
+function defaultConnectionProfile(): StoredConnectionProfile {
+	return normalizeConnectionProfile(undefined);
+}
+
+function serializeConnectionProfile(profile: StoredConnectionProfile): SerializedConnectionProfile {
+	const { enabled: _enabled, ...serialized } = serializeStoredSettings({
+		...profile,
+		enabled: false,
+	});
+	return serialized;
+}
+
+function rawObject(value: unknown): Record<string, unknown> | undefined {
+	return value && typeof value === 'object' && !Array.isArray(value)
+		? value as Record<string, unknown>
+		: undefined;
+}
+
+export function storedSettingsEnvelopeNeedsMigration(value: unknown): boolean {
+	const raw = rawObject(value);
+	if (!raw || raw.schemaVersion === 2) {
+		return false;
+	}
+
+	return hasLegacySettingsData(raw) ||
+		Object.prototype.hasOwnProperty.call(raw, 'schemaVersion') ||
+		Object.prototype.hasOwnProperty.call(raw, 'profiles');
+}
+
+function hasLegacySettingsData(value: unknown): boolean {
+	const raw = rawObject(value);
+	return Boolean(raw && LEGACY_SETTINGS_KEYS.some((key) => Object.prototype.hasOwnProperty.call(raw, key)));
+}
+
+function legacyProfileKind(
+	value: unknown,
+	settings: StoredSettings,
+): SupportedServerKind | undefined {
+	const raw = rawObject(value);
+	if (!raw || !hasLegacySettingsData(raw)) {
+		return undefined;
+	}
+
+	if (
+		settings.originIp.trim() ||
+		settings.originEnvironment ||
+		settings.originSource === 'dns' ||
+		settings.originSource === 'wpengine' ||
+		settings.originTlsHostname ||
+		settings.originWpEngineInstallId ||
+		settings.originWpEngineSiteId ||
+		settings.resolvedAt ||
+		(Object.prototype.hasOwnProperty.call(raw, 'productionUrl') &&
+			!Object.prototype.hasOwnProperty.call(raw, 'siteUrl'))
+	) {
+		return 'nginx';
+	}
+
+	if (settings.enabled) {
+		return 'apache';
+	}
+
+	return undefined;
+}
+
+function migrateLegacySettings(
+	value: unknown,
+	currentServerKind: ServerKind,
+): StoredSettingsEnvelope {
+	const settings = normalizeStoredSettings(value);
+	const profile = connectionProfileFromSettings(settings);
+	const profileKind = legacyProfileKind(value, settings);
+	const hasLegacyData = hasLegacySettingsData(value);
+	const hasAmbiguousDisabledProfile = hasLegacyData && !settings.enabled && !profileKind;
+	const lastServerKind = profileKind ?? (
+		hasAmbiguousDisabledProfile
+			? sanitizeSupportedServerKind(currentServerKind)
+			: !hasLegacyData
+				? sanitizeSupportedServerKind(currentServerKind)
+				: undefined
+	);
+	const profiles: Record<SupportedServerKind, StoredConnectionProfile> = {
+		apache: defaultConnectionProfile(),
+		nginx: defaultConnectionProfile(),
+	};
+
+	if (profileKind) {
+		profiles[profileKind] = profile;
+	} else if (hasAmbiguousDisabledProfile) {
+		profiles.apache = { ...profile };
+		profiles.nginx = { ...profile };
+	}
+
+	return {
+		enabled: settings.enabled,
+		...(lastServerKind ? { lastServerKind } : {}),
+		profiles,
+		schemaVersion: 2,
+	};
+}
+
+export function normalizeStoredSettingsEnvelope(
+	value: unknown,
+	currentServerKind: ServerKind = 'unsupported',
+): StoredSettingsEnvelope {
+	const raw = rawObject(value) as RawStoredSettingsEnvelope | undefined;
+	if (!raw || (raw.schemaVersion === undefined && raw.profiles === undefined)) {
+		return migrateLegacySettings(value, currentServerKind);
+	}
+	if (raw.schemaVersion !== 2) {
+		throw new Error('Saved media proxy settings use an unsupported schema version.');
+	}
+	if (!raw.profiles || typeof raw.profiles !== 'object' || Array.isArray(raw.profiles)) {
+		throw new Error('Saved media proxy connection profiles are invalid.');
+	}
+
+	const profiles = raw.profiles as Partial<Record<SupportedServerKind, unknown>>;
+	return {
+		enabled: raw.enabled === true,
+		...(sanitizeSupportedServerKind(raw.lastServerKind)
+			? { lastServerKind: sanitizeSupportedServerKind(raw.lastServerKind) }
+			: {}),
+		profiles: {
+			apache: normalizeConnectionProfile(profiles.apache),
+			nginx: normalizeConnectionProfile(profiles.nginx),
+		},
+		schemaVersion: 2,
+	};
+}
+
+export function serializeStoredSettingsEnvelope(
+	envelope: StoredSettingsEnvelope,
+): SerializedSettingsEnvelope {
+	const { enabled: _profileEnabled, ...flatCompatibilitySettings } = serializeStoredSettings(
+		fallbackStoredSettings(envelope),
+	);
+	return {
+		...flatCompatibilitySettings,
+		enabled: envelope.enabled,
+		...(envelope.lastServerKind ? { lastServerKind: envelope.lastServerKind } : {}),
+		profiles: {
+			apache: serializeConnectionProfile(envelope.profiles.apache),
+			nginx: serializeConnectionProfile(envelope.profiles.nginx),
+		},
+		schemaVersion: 2,
+	};
+}
+
+export function storedSettingsForServer(
+	envelope: StoredSettingsEnvelope,
+	serverKind: SupportedServerKind,
+): StoredSettings {
+	return {
+		...envelope.profiles[serverKind],
+		enabled: envelope.enabled,
+	};
+}
+
+export function fallbackStoredSettings(envelope: StoredSettingsEnvelope): StoredSettings {
+	const serverKind = envelope.lastServerKind ?? 'nginx';
+	return storedSettingsForServer(envelope, serverKind);
+}
+
+export function replaceStoredSettingsForServer(
+	envelope: StoredSettingsEnvelope,
+	serverKind: SupportedServerKind,
+	settings: StoredSettings,
+): StoredSettingsEnvelope {
+	return {
+		...envelope,
+		enabled: settings.enabled,
+		lastServerKind: serverKind,
+		profiles: {
+			...envelope.profiles,
+			[serverKind]: connectionProfileFromSettings(settings),
+		},
+	};
+}
+
+export function setStoredSettingsEnabled(
+	envelope: StoredSettingsEnvelope,
+	enabled: boolean,
+): StoredSettingsEnvelope {
+	return {
+		...envelope,
+		enabled,
+	};
+}
+
+export function setStoredSettingsLastServer(
+	envelope: StoredSettingsEnvelope,
+	serverKind: SupportedServerKind,
+): StoredSettingsEnvelope {
+	return envelope.lastServerKind === serverKind
+		? envelope
+		: { ...envelope, lastServerKind: serverKind };
 }
 
 export function originPairMatches(

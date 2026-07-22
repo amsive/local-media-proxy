@@ -18,7 +18,7 @@ const { ADDON_VERSION } = require('../lib/constants');
 test('declares the installed add-on card metadata expected by Local', () => {
 	assert.equal(packageJson.productName, 'Local Media Proxy');
 	assert.equal(packageJson.author?.name, 'Amsive');
-	assert.equal(packageJson.version, '0.2.0');
+	assert.equal(packageJson.version, '0.2.1');
 	assert.equal(packageJson.license, 'Apache-2.0');
 	assert.equal(
 		packageJson.description,

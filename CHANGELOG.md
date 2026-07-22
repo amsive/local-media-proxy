@@ -6,6 +6,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-22
+
+### Added
+
+- Added independent saved connection profiles for Nginx and Apache so each server retains the setup appropriate to it when a Local site changes web servers.
+- Added an Overview-tab proxy toggle with an accessible information tooltip, matching Local's compact status controls and reflecting the saved on/off intent even while the site is stopped.
+
+### Changed
+
+- Enabling or disabling the proxy now saves and applies immediately. **Save & apply** is reserved for connection-setup changes.
+- Proxy status checks, enable and disable actions, and **Save & apply** now show Local's native two-dot progress indicator while unresolved controls are hidden.
+
+### Fixed
+
+- Reapplied a valid enabled proxy configuration automatically after Local switches a site between Nginx and Apache, without requiring a manual disable and re-enable cycle.
+- Prevented background reconciliation and rollback from interfering with Local-owned templates while Local is changing web-server services.
+- Disabled proxy activation controls when the active server does not yet have a complete saved connection profile and explained the required setup in the status tooltip.
+- Matched the Overview proxy toggle, information icon, and tooltip to Local's native typography, spacing, motion, and colors in both light and dark themes.
+- Bounded status and apply operations, including their recovery checks, so a stalled Local response cannot leave a loading indicator running indefinitely or later show an unverified state.
+
 ## [0.2.0] - 2026-07-21
 
 ### Added
@@ -55,7 +75,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Prevented slow or cancelled connection probes from hanging the UI and replaced low-level timeout errors with actionable messages.
 - Preserved correct TLS verification when switching between direct WP Engine origins and compatible proxy, CDN, or load-balancer endpoints.
 
-[Unreleased]: https://github.com/amsive/local-media-proxy/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/amsive/local-media-proxy/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/amsive/local-media-proxy/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/amsive/local-media-proxy/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/amsive/local-media-proxy/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/amsive/local-media-proxy/releases/tag/v0.1.0

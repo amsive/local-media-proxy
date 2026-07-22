@@ -257,6 +257,49 @@ test('continues restoring later snapshots after one file fails', async () => {
 	}
 });
 
+test('rollback preserves Local-owned templates created after an absent snapshot', async () => {
+	const fixture = await makeDualServerSite();
+	try {
+		const nginx = getManagedPaths(fixture.site);
+		const apache = getApacheManagedPaths(fixture.site);
+		await Promise.all([
+			fs.rm(nginx.siteTemplate),
+			fs.rm(apache.modulesTemplate),
+			fs.rm(apache.siteTemplate),
+		]);
+		const snapshots = await captureAllManagedFiles(fixture.site);
+		const managedBlock = [
+			'# BEGIN Local Media Proxy (managed)',
+			'# add-on-owned directive',
+			'# END Local Media Proxy (managed)',
+			'',
+		].join('\n');
+		await Promise.all([
+			fs.writeFile(nginx.siteTemplate, `# Local created Nginx template\n${managedBlock}`),
+			fs.writeFile(apache.modulesTemplate, `# Local created Apache modules template\n${managedBlock}`),
+			fs.writeFile(apache.siteTemplate, `# Local created Apache site template\n${managedBlock}`),
+			fs.writeFile(nginx.includeTemplate, '# add-on Nginx include\n'),
+			fs.writeFile(nginx.trustBundle, '# add-on Nginx trust\n'),
+			fs.writeFile(apache.includeTemplate, '# add-on Apache include\n'),
+			fs.writeFile(apache.trustBundle, '# add-on Apache trust\n'),
+		]);
+
+		await restoreManagedFiles(snapshots);
+
+		assert.equal(await fs.readFile(nginx.siteTemplate, 'utf8'), '# Local created Nginx template\n');
+		assert.equal(await fs.readFile(apache.modulesTemplate, 'utf8'), '# Local created Apache modules template\n');
+		assert.equal(await fs.readFile(apache.siteTemplate, 'utf8'), '# Local created Apache site template\n');
+		await Promise.all([
+			assert.rejects(fs.access(nginx.includeTemplate)),
+			assert.rejects(fs.access(nginx.trustBundle)),
+			assert.rejects(fs.access(apache.includeTemplate)),
+			assert.rejects(fs.access(apache.trustBundle)),
+		]);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
 test('removes orphaned managed artifacts when the Nginx site template is absent', async () => {
 	const fixture = await makeSite();
 	try {

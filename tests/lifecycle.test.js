@@ -10,6 +10,8 @@ const test = require('node:test');
 const {
 	cleanupRequiresRefresh,
 	completeUnresolvedServiceCleanup,
+	shouldReconcileManagedFiles,
+	shouldRefreshRuntime,
 	synchronousCleanupRequiresRefresh,
 } = require('../lib/lifecycle');
 
@@ -17,6 +19,42 @@ test('enabled reconciliation intent forces cleanup refresh when persistent files
 	assert.equal(cleanupRequiresRefresh(false, true), true);
 	assert.equal(cleanupRequiresRefresh(true, false), true);
 	assert.equal(cleanupRequiresRefresh(false, false), false);
+});
+
+test('runtime refresh follows the targeted process while rejecting explicit stop states', () => {
+	assert.equal(shouldRefreshRuntime('running', false), true);
+	assert.equal(shouldRefreshRuntime('provisioning', true), true);
+	assert.equal(shouldRefreshRuntime('starting', true), true);
+	assert.equal(shouldRefreshRuntime('restarting', true), true);
+	assert.equal(shouldRefreshRuntime('provisioning', false), false);
+	assert.equal(shouldRefreshRuntime('halted', true), false);
+	assert.equal(shouldRefreshRuntime('stopping', true), false);
+	assert.equal(shouldRefreshRuntime('deleting', true), false);
+	assert.equal(shouldRefreshRuntime('deleting_backup', true), false);
+});
+
+test('background reconciliation waits for stable Local state while siteStarted remains authoritative', () => {
+	assert.equal(shouldReconcileManagedFiles('running', false), true);
+	assert.equal(shouldReconcileManagedFiles('halted', false), true);
+	assert.equal(shouldReconcileManagedFiles('provisioning', false), false);
+	assert.equal(shouldReconcileManagedFiles('starting', false), false);
+	assert.equal(shouldReconcileManagedFiles('restarting', false), false);
+	assert.equal(shouldReconcileManagedFiles('stopping', false), false);
+	assert.equal(shouldReconcileManagedFiles('stalled', false), false);
+	assert.equal(shouldReconcileManagedFiles('provisioning', true), true);
+	assert.equal(shouldReconcileManagedFiles('stopping', true), false);
+	assert.equal(shouldReconcileManagedFiles('deleting', true), false);
+});
+
+test('an ordinary reconciliation guard closes when Local enters a transition after entry', () => {
+	let currentStatus = 'running';
+	const canMutate = () => shouldReconcileManagedFiles(currentStatus, false);
+
+	assert.equal(canMutate(), true);
+	currentStatus = 'provisioning';
+	assert.equal(canMutate(), false);
+	currentStatus = 'restarting';
+	assert.equal(canMutate(), false);
 });
 
 function cleanupFixture({ running = true } = {}) {

@@ -18,6 +18,28 @@ export function cleanupRequiresRefresh(changed: boolean, enabledIntent: boolean)
 	return changed || enabledIntent;
 }
 
+const EXPLICITLY_INACTIVE_SITE_STATUSES = new Set([
+	'deleting',
+	'deleting_backup',
+	'halted',
+	'stopping',
+]);
+
+export function shouldRefreshRuntime(siteStatus: string, targetServiceRunning: boolean): boolean {
+	return siteStatus === 'running' || (
+		targetServiceRunning && !EXPLICITLY_INACTIVE_SITE_STATUSES.has(siteStatus)
+	);
+}
+
+export function shouldReconcileManagedFiles(
+	siteStatus: string,
+	forcedAfterSiteStarted: boolean,
+): boolean {
+	return siteStatus === 'running' || siteStatus === 'halted' || (
+		forcedAfterSiteStarted && !EXPLICITLY_INACTIVE_SITE_STATUSES.has(siteStatus)
+	);
+}
+
 export function synchronousCleanupRequiresRefresh(
 	removeManagedFiles: () => boolean,
 	onError: (error: unknown) => void,

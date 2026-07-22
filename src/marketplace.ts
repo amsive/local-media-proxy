@@ -59,7 +59,7 @@ function createOverview(heroUrl: string): string {
 
 ${ADDON_NAME} is an Amsive add-on that keeps cloned WordPress sites lightweight without losing remote imagery. It serves upload images already available in Local and retrieves only missing images from a configured remote site.
 
-Configuration is independent for every site. Nginx mode uses a Site URL plus a remote IP and can discover WP Engine or public-DNS candidates without applying them automatically. Apache mode requires only the Site URL and uses its hostname for DNS, HTTP Host, TLS SNI, and certificate verification.
+Configuration is independent for every site, with separate saved profiles for Nginx and Apache. Nginx mode uses a Site URL plus a remote IP and can discover WP Engine or public-DNS candidates without applying them automatically. Apache mode requires only the Site URL and uses its hostname for DNS, HTTP Host, TLS SNI, and certificate verification.
 
 For any provider on Nginx, the Site URL supplies HTTP Host and TLS identity while the remote IP selects the endpoint, which may be the origin itself or a compatible proxy, CDN, or load balancer. Apache intentionally uses one hostname for all of those roles.
 
@@ -80,16 +80,18 @@ For any provider on Nginx, the Site URL supplies HTTP Host and TLS identity whil
 6. Enter the Site URL or choose **Auto-populate from WP Engine** for a connected environment. On Nginx, also enter a remote IP or choose **Find via public DNS**. Apache intentionally omits the IP and DNS-candidate controls.
 7. On Nginx, review any suggested IPv4 or IPv6 address. On Apache, review the Site URL hostname that will be used for DNS, Host, SNI, and certificate verification.
 8. Select **Test connection**. This checks endpoint reachability and, for HTTPS, certificate identity and trust—not a media file.
-9. Turn on **Enable for this site**, then select **Save & apply**.
+9. Select **Save & apply** after changing connection setup, then turn on **Enable for this site**. The enable switch saves and applies its on/off state immediately.
 10. Load an actual upload that is missing locally and confirm it succeeds through the Local site.
 
 Auto-populated values remain unsaved suggestions and are never enabled or applied automatically. Test them before explicitly applying them. Flywheel-connected sites retain the manual setup because Local does not publish a supported Flywheel environment API for add-ons; Nginx also offers DNS-assisted IP discovery, while Apache uses the Site URL hostname directly.
+
+The on/off intent is shared across web servers while Nginx and Apache retain their own connection values. When Local changes the server type, an enabled proxy automatically reapplies the destination profile if it is complete. Otherwise, the activation controls remain unavailable; the Overview information tooltip and Tools help explain what still needs setup.
 
 ## Verify and disable
 
 Open a page containing an upload that is missing locally. Remote fallbacks include the response header \`X-Local-Media-Proxy: origin\`; locally served files do not.
 
-To disable the fallback, turn off **Enable for this site** and select **Save & apply**. Saved connection fields remain available while managed configuration is removed and the selected service is refreshed. If Local cannot resolve or load that service, cleanup is deferred without changing settings or files and the site reports **Needs attention**. Stop the site, restore the service, and retry before uninstalling.
+To disable the fallback, turn off either **Enable for this site** or the compact **Media Proxy** switch on the site's Overview tab. The change saves and applies immediately. Saved connection fields remain available while managed configuration is removed and the selected service is refreshed. If Local cannot resolve or load that service, cleanup is deferred without changing settings or files; the Overview information tooltip and Tools help explain the problem. Stop the site, restore the service, and retry before uninstalling.
 
 ## Scope and safety
 
@@ -114,6 +116,20 @@ ${ADDON_NAME} is maintained by Amsive LLC and developed by Mark Davoli and Boris
 }
 
 function createCurrentReleaseNotes(): string {
+	return `Version 0.2.1 makes web-server switching and proxy activation seamless.
+
+- Added separate saved Nginx and Apache connection profiles, with one shared proxy on/off intent.
+- Added a compact Overview-tab proxy toggle with status details in an accessible information tooltip.
+- Enabling or disabling now saves and applies immediately; **Save & apply** is reserved for setup changes.
+- Status checks, enable and disable actions, and **Save & apply** now show Local's native two-dot progress indicator while unresolved controls are hidden.
+- Fixed enabled proxy configurations so they automatically reactivate after Local changes web servers when the destination profile is ready.
+- Prevented activation when the selected server still needs a complete saved setup.
+- Bounded status and apply operations so stalled Local responses cannot leave loading progress stuck or later show an unverified state.
+
+[View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
+}
+
+function createV020ReleaseNotes(): string {
 	return `Version 0.2.0 adds Apache support and improves setup and status feedback.
 
 - Added local-first Apache support with URL-only hostname routing, verified TLS, reversible managed templates, and targeted service validation. ([#12](https://github.com/amsive/local-media-proxy/issues/12))
@@ -127,7 +143,7 @@ Apache uses the Site URL hostname for DNS, HTTP Host, TLS SNI, and certificate v
 [View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
 }
 
-function createPreviousReleaseNotes(): string {
+function createV011ReleaseNotes(): string {
 	return `Version 0.1.1 maintenance release.
 
 - Kept build-job output as validated data across the draft-release permission boundary.
@@ -142,12 +158,18 @@ function createPackagedReleaseHistory(): PackagedRelease[] {
 	return [
 		{
 			changelog: createCurrentReleaseNotes(),
-			date: '2026-07-21T00:00:00.000Z',
+			date: '2026-07-22T00:00:00.000Z',
 			id: `${ADDON_ID}-${ADDON_VERSION}`,
 			version: ADDON_VERSION,
 		},
 		{
-			changelog: createPreviousReleaseNotes(),
+			changelog: createV020ReleaseNotes(),
+			date: '2026-07-21T00:00:00.000Z',
+			id: `${ADDON_ID}-0.2.0`,
+			version: '0.2.0',
+		},
+		{
+			changelog: createV011ReleaseNotes(),
 			date: '2026-07-21T00:00:00.000Z',
 			id: `${ADDON_ID}-0.1.1`,
 			version: '0.1.1',

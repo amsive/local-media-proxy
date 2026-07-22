@@ -50,6 +50,60 @@
       "reviewedForPublicRelease": "Rendered from the current v0.2.0 light Nginx setup styling with one fictional Example Site, example.com hostnames, RFC 5737 address 203.0.113.10, and no logos, overlays, or timestamps; full-resolution visual and local OCR review completed."
     },
     {
+      "path": "docs/screenshots/v0.2.1-nginx-toggle-light.png",
+      "sha256": "d427ebdc4e20b2a7016afc0c3b460b1dc374f994f9211843c5478ec069ff3151",
+      "kind": "png",
+      "reviewedForPublicRelease": "Rendered from the current v0.2.1 light Nginx setup styling with one fictional Example Site, example.com hostnames, RFC 5737 address 203.0.113.10, and no logos, overlays, or timestamps; full-resolution visual and local OCR review completed after PNG re-encoding."
+    },
+    {
+      "path": "docs/screenshots/v0.2.1-overview-loading-dark.png",
+      "sha256": "be73156b53208bf94ff27590f4e0c381ec0035758903f1261bbf85f29d981d4f",
+      "kind": "png",
+      "reviewedForPublicRelease": "Rendered at 1400x925 from the current v0.2.1 dark scoped Overview loading DOM and CSS with one fictional Example Site; the Media Proxy label and both gray loading dots are visible while switch and info controls are absent; no hostnames, addresses, logos, overlays, or timestamps; full-resolution visual and local OCR review completed after lossless ancillary-metadata stripping."
+    },
+    {
+      "path": "docs/screenshots/v0.2.1-overview-loading-light.png",
+      "sha256": "c398478cf78b6ee7984bdb36a86b978e8ff5c7b2840d71f4604e9f937f1026ba",
+      "kind": "png",
+      "reviewedForPublicRelease": "Rendered at 1400x925 from the current v0.2.1 light scoped Overview loading DOM and CSS with one fictional Example Site; the Media Proxy label and both gray loading dots are visible while switch and info controls are absent; no hostnames, addresses, logos, overlays, or timestamps; full-resolution visual and local OCR review completed after lossless ancillary-metadata stripping."
+    },
+    {
+      "path": "docs/screenshots/v0.2.1-overview-toggle-dark.png",
+      "sha256": "f0754290164f7147d21698f03813c95e748a207e0c706d4be1778b819505947b",
+      "kind": "png",
+      "reviewedForPublicRelease": "Rendered from the current v0.2.1 dark Overview styling with one fictional Example Site and Apache state only; no hostnames, addresses, logos, overlays, or timestamps; full-resolution visual and local OCR review completed after PNG re-encoding."
+    },
+    {
+      "path": "docs/screenshots/v0.2.1-overview-toggle-light.png",
+      "sha256": "517fc0190695ca76f86d6f5dff2e5e62eb291cf7f6afa3fc338eab933bab1205",
+      "kind": "png",
+      "reviewedForPublicRelease": "Rendered from the current v0.2.1 light Overview styling with one fictional Example Site and Apache state only; no hostnames, addresses, logos, overlays, or timestamps; full-resolution visual and local OCR review completed after PNG re-encoding."
+    },
+    {
+      "path": "docs/screenshots/v0.2.1-tools-save-loading-dark.png",
+      "sha256": "b8788b5a53aacdd589c0a849b5fee77a49a4980e45153df6228ae92bf882c363",
+      "kind": "png",
+      "reviewedForPublicRelease": "Rendered at 1400x925 from the current v0.2.1 dark scoped Tools save-operation DOM and CSS with one fictional Example Site, media.example.com, and RFC 5737 address 203.0.113.10; both gray loading dots are visible in place of the Save & apply button, which is absent; no logos, overlays, or timestamps; full-resolution visual and local OCR review completed after lossless ancillary-metadata stripping."
+    },
+    {
+      "path": "docs/screenshots/v0.2.1-tools-save-loading-light.png",
+      "sha256": "3a8a51e7cf6c45ff7d77a075488f8caa3a9110aa7692ae3ff07bacd58be12a26",
+      "kind": "png",
+      "reviewedForPublicRelease": "Rendered at 1400x925 from the current v0.2.1 light scoped Tools save-operation DOM and CSS with one fictional Example Site, media.example.com, and RFC 5737 address 203.0.113.10; both gray loading dots are visible in place of the Save & apply button, which is absent; no logos, overlays, or timestamps; full-resolution visual and local OCR review completed after lossless ancillary-metadata stripping."
+    },
+    {
+      "path": "docs/screenshots/v0.2.1-tools-toggle-loading-dark.png",
+      "sha256": "05f3943d2647c52c8a83564eb39f7723c2f68f249e09e7ef553c853bb5b203cc",
+      "kind": "png",
+      "reviewedForPublicRelease": "Rendered at 1400x925 from the current v0.2.1 dark scoped Tools toggle-operation DOM and CSS with one fictional Example Site, media.example.com, and RFC 5737 address 203.0.113.10; both gray loading dots are visible in place of the toggle, which is absent; no logos, overlays, or timestamps; full-resolution visual and local OCR review completed after lossless ancillary-metadata stripping."
+    },
+    {
+      "path": "docs/screenshots/v0.2.1-tools-toggle-loading-light.png",
+      "sha256": "6efa6163e4c4d1085cfac5168987518449a71deb94b86fafd2d78f515d852b7c",
+      "kind": "png",
+      "reviewedForPublicRelease": "Rendered at 1400x925 from the current v0.2.1 light scoped Tools toggle-operation DOM and CSS with one fictional Example Site, media.example.com, and RFC 5737 address 203.0.113.10; both gray loading dots are visible in place of the toggle, which is absent; no logos, overlays, or timestamps; full-resolution visual and local OCR review completed after lossless ancillary-metadata stripping."
+    },
+    {
       "path": "icon.svg",
       "sha256": "f8d6607f96206707efce3c1aff0ac2f4be0b68395360d47dc2d0fd596f1b5924",
       "kind": "svg",

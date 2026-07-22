@@ -388,6 +388,10 @@ test('fails closed when Local does not expose an Nginx binary', async () => {
 test('main delegates stale-master recovery through the guarded Nginx reload helper', () => {
 	const mainSource = fs.readFileSync(path.resolve(__dirname, '../src/main.ts'), 'utf8');
 	assert.match(mainSource, /reloadNginxWithFallback\(/);
+	assert.match(
+		mainSource,
+		/const targetServiceRunning = \(\): boolean => \([\s\S]{0,140}hasRunningProcess\(site, serviceName\)[\s\S]{0,180}if \(shouldRefreshRuntime\(/,
+	);
 	assert.match(mainSource, /await siteProcessManager\.restartSiteService\(site, serviceName\)/);
 	assert.match(mainSource, /return siteProcessManager\.hasRunningProcess\(site, serviceName\)/);
 	assert.match(mainSource, /siteProcessManager\.getSiteStatus\(site\) === 'running'[\s\S]{0,120}siteProcessManager\.hasRunningProcess\(site\)/);
@@ -399,7 +403,7 @@ test('main binds separate WP Engine TLS identities to the selected Local site', 
 	assert.match(mainSource, /if \(server\.kind === 'nginx'\) \{\s*await assertAuthoritativeWpEngineIdentity\(site, normalizedInput\)/);
 	assert.match(mainSource, /authoritative = await getAuthoritativeWpEngineOrigin\(\s*site,/);
 	assert.match(mainSource, /await assertStoredWpEngineConnection\(site, settings\)/);
-	assert.match(mainSource, /shouldRetainWpEngineSettingsAfterVerificationError\(validationError\)/);
+	assert.match(mainSource, /shouldRetainWpEngineSettingsAfterVerificationError\(error\)/);
 });
 
 test('main scopes cancellable probes to the renderer, site, and token', () => {
