@@ -14,6 +14,7 @@ const { execFileSync } = require('node:child_process');
 
 const {
 	allReachableCommits,
+	historicalTrackedTextProblems,
 	signoffEmails,
 	validateCommitIdentity,
 	validateCommitSignoff,
@@ -124,4 +125,38 @@ test('excludes GitHub synthetic pull-request merge refs from advertised history'
 		allReachableCommits(fixture).map(({ hash }) => hash),
 		[advertisedCommit],
 	);
+});
+
+test('detects individual addresses in historical tracked text after removal from HEAD', (t) => {
+	const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'dco-historical-text-'));
+	t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+	const address = ['12345+contributor', 'users.noreply.github.com'].join('@');
+	const individualAddress = ['named-person', 'company.invalid'].join('@');
+	const runGit = (args) => execFileSync('git', args, {
+		cwd: fixture,
+		encoding: 'utf8',
+		stdio: ['ignore', 'pipe', 'pipe'],
+	}).trim();
+	runGit(['init', '--quiet', '--initial-branch=main']);
+	runGit(['config', 'user.name', 'Example Contributor']);
+	runGit(['config', 'user.email', address]);
+	fs.writeFileSync(path.join(fixture, 'fixture.txt'), `${individualAddress}\n`);
+	runGit(['add', 'fixture.txt']);
+	runGit(['commit', '--quiet', '--signoff', '-m', 'test: add historical fixture']);
+	fs.writeFileSync(path.join(fixture, 'fixture.txt'), 'removed\n');
+	runGit(['add', 'fixture.txt']);
+	runGit(['commit', '--quiet', '--signoff', '-m', 'test: remove historical fixture']);
+
+	const problems = historicalTrackedTextProblems(
+		fixture,
+		allReachableCommits(fixture),
+		{
+			allowedEmailAddresses: [],
+			allowedNoreplyEmailDomains: ['users.noreply.github.com'],
+			allowedSyntheticEmailDomains: ['example.com'],
+		},
+	).problems;
+	assert.equal(problems.length, 1);
+	assert.match(problems[0], /historical fixture|fixture\.txt/);
+	assert(!problems[0].includes(individualAddress));
 });

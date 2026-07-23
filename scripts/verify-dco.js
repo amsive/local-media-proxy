@@ -51,8 +51,18 @@ function git(root, args) {
 	return execFileSync('git', args, {
 		cwd: root,
 		encoding: 'utf8',
+		maxBuffer: 16 * 1024 * 1024,
 		stdio: ['ignore', 'pipe', 'pipe'],
 	}).trim();
+}
+
+function gitBuffer(root, args) {
+	return execFileSync('git', args, {
+		cwd: root,
+		encoding: 'buffer',
+		maxBuffer: 16 * 1024 * 1024,
+		stdio: ['ignore', 'pipe', 'pipe'],
+	});
 }
 
 function defaultBase(root, head) {
@@ -131,6 +141,40 @@ function validateTagIdentity(tag, policy) {
 	return problems;
 }
 
+function historicalTrackedTextProblems(root, commits, policy) {
+	const problems = [];
+	const seenBlobs = new Set();
+	for (const commit of commits) {
+		const records = gitBuffer(root, ['ls-tree', '-r', '-z', commit.hash])
+			.toString('utf8')
+			.split('\0')
+			.filter(Boolean);
+		for (const record of records) {
+			const separator = record.indexOf('\t');
+			const metadata = separator === -1 ? record : record.slice(0, separator);
+			const relativePath = separator === -1 ? '' : record.slice(separator + 1);
+			const [, type, objectId] = metadata.split(' ');
+			if (type !== 'blob' || !objectId || seenBlobs.has(objectId)) {
+				continue;
+			}
+			seenBlobs.add(objectId);
+			const buffer = gitBuffer(root, ['cat-file', '-p', objectId]);
+			if (buffer.includes(0)) {
+				continue;
+			}
+			if (emailsInText(buffer.toString('utf8')).some((email) => !isAllowedEmail(email, policy))) {
+				problems.push(
+					`${commit.hash} tracks text containing an individual address at ${relativePath}.`,
+				);
+			}
+		}
+	}
+	return {
+		blobsChecked: seenBlobs.size,
+		problems,
+	};
+}
+
 function verifyDco(options = {}) {
 	const root = path.resolve(options.root ?? REPOSITORY_ROOT);
 	const head = options.head ?? 'HEAD';
@@ -153,7 +197,9 @@ function verifyAllGitIdentities(options = {}) {
 	const policy = options.policy ?? loadPolicy(options.policyPath);
 	const commits = allReachableCommits(root);
 	const tags = annotatedTags(root);
+	const trackedText = historicalTrackedTextProblems(root, commits, policy);
 	return {
+		blobsChecked: trackedText.blobsChecked,
 		commitsChecked: commits.length,
 		problems: [
 			...commits.flatMap((commit) => [
@@ -161,6 +207,7 @@ function verifyAllGitIdentities(options = {}) {
 				validateCommitSignoff(commit),
 			].filter(Boolean)),
 			...tags.flatMap((tag) => validateTagIdentity(tag, policy)),
+			...trackedText.problems,
 		],
 		tagsChecked: tags.length,
 	};
@@ -176,13 +223,14 @@ function runCli(argv = process.argv.slice(2)) {
 				}
 				console.error(
 					`Git identity check failed with ${result.problems.length} problem(s) across `
-					+ `${result.commitsChecked} commit(s) and ${result.tagsChecked} annotated tag(s).`,
+					+ `${result.commitsChecked} commit(s), ${result.tagsChecked} annotated tag(s), `
+					+ `and ${result.blobsChecked} historical blob(s).`,
 				);
 				return 1;
 			}
 			console.log(
 				`Git identity check passed for ${result.commitsChecked} commit(s) `
-				+ `and ${result.tagsChecked} annotated tag(s).`,
+				+ `${result.tagsChecked} annotated tag(s), and ${result.blobsChecked} historical blob(s).`,
 			);
 			return 0;
 		}
@@ -213,6 +261,7 @@ module.exports = {
 	allReachableCommits,
 	annotatedTags,
 	commitsInRange,
+	historicalTrackedTextProblems,
 	runCli,
 	signoffEmails,
 	validateCommitIdentity,
