@@ -15,16 +15,31 @@ const {
 
 const REPOSITORY_ROOT = path.resolve(__dirname, '..');
 const SIGNOFF_PATTERN = /^Signed-off-by:\s+.+?\s+<([^<>\r\n]+)>\s*$/gmi;
+const DEPENDABOT_AUTHOR_EMAIL_PATTERN = /^\d+\+dependabot\[bot\]@users\.noreply\.github\.com$/i;
+const GITHUB_COMMITTER_EMAIL = 'noreply@github.com';
+const GITHUB_SUPPORT_EMAIL = 'support@github.com';
 
 function signoffEmails(message) {
 	return [...message.matchAll(new RegExp(SIGNOFF_PATTERN.source, SIGNOFF_PATTERN.flags))]
 		.map((match) => match[1].trim().toLowerCase());
 }
 
+function isGitHubDependabotCommit(commit, emails = signoffEmails(commit.message)) {
+	return commit.authorName === 'dependabot[bot]'
+		&& DEPENDABOT_AUTHOR_EMAIL_PATTERN.test(commit.authorEmail.trim())
+		&& commit.committerName === 'GitHub'
+		&& commit.committerEmail.trim().toLowerCase() === GITHUB_COMMITTER_EMAIL
+		&& emails.length === 1
+		&& emails[0] === GITHUB_SUPPORT_EMAIL;
+}
+
 function validateCommitSignoff(commit) {
 	const authorEmail = commit.authorEmail.trim().toLowerCase();
 	const emails = signoffEmails(commit.message);
 	if (emails.includes(authorEmail)) {
+		return null;
+	}
+	if (isGitHubDependabotCommit(commit, emails)) {
 		return null;
 	}
 	if (emails.length === 0) {
@@ -100,10 +115,19 @@ function commitsFromOutput(root, output) {
 		return [];
 	}
 	return output.split('\n').map((hash) => {
+		const authorName = git(root, ['show', '-s', '--format=%an', hash]);
 		const authorEmail = git(root, ['show', '-s', '--format=%ae', hash]);
+		const committerName = git(root, ['show', '-s', '--format=%cn', hash]);
 		const committerEmail = git(root, ['show', '-s', '--format=%ce', hash]);
 		const message = git(root, ['show', '-s', '--format=%B', hash]);
-		return { authorEmail, committerEmail, hash, message };
+		return {
+			authorEmail,
+			authorName,
+			committerEmail,
+			committerName,
+			hash,
+			message,
+		};
 	});
 }
 
@@ -262,6 +286,7 @@ module.exports = {
 	annotatedTags,
 	commitsInRange,
 	historicalTrackedTextProblems,
+	isGitHubDependabotCommit,
 	runCli,
 	signoffEmails,
 	validateCommitIdentity,
