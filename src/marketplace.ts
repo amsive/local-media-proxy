@@ -116,6 +116,17 @@ ${ADDON_NAME} is maintained by Amsive LLC and developed by Mark Davoli and Boris
 }
 
 function createCurrentReleaseNotes(): string {
+	return `Version 0.2.3 prepares the project for public open-source collaboration without changing proxy or TLS behavior.
+
+- Added machine-readable third-party provenance and an offline release gate that pins both bundled Cloudflare Origin CA roots, their fingerprints, and the exact trust-file hash.
+- Added project-specific issue forms, security scope, contributor conduct and DCO guidance, and monthly npm dependency updates.
+- Simplified the installation and usage landing page while moving advanced proxy, TLS, and managed-file details into dedicated technical documentation.
+- Preserved standard public CA trust, both Cloudflare Origin CA roots, strict hostname and chain verification, and the exact minimal installer boundary.
+
+[View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
+}
+
+function createV022ReleaseNotes(): string {
 	return `Version 0.2.2 makes server changes and origin discovery recover safely.
 
 - Closed apply, disable, toggle, rollback, and background-reconciliation race windows when Local changes a site's web server, service identity, configuration paths, or lifecycle status mid-operation. ([#16](https://github.com/amsive/local-media-proxy/issues/16))
@@ -169,9 +180,15 @@ function createPackagedReleaseHistory(): PackagedRelease[] {
 	return [
 		{
 			changelog: createCurrentReleaseNotes(),
-			date: '2026-07-22T00:00:00.000Z',
+			date: '2026-07-23T00:00:00.000Z',
 			id: `${ADDON_ID}-${ADDON_VERSION}`,
 			version: ADDON_VERSION,
+		},
+		{
+			changelog: createV022ReleaseNotes(),
+			date: '2026-07-22T00:00:00.000Z',
+			id: `${ADDON_ID}-0.2.2`,
+			version: '0.2.2',
 		},
 		{
 			changelog: createV021ReleaseNotes(),
