@@ -1,0 +1,98 @@
+name: Bug report
+description: Report a reproducible problem with Local Media Proxy
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Local Media Proxy. Do not include client data, credentials, private certificates, access tokens, cookies, or production secrets.
+
+        Suspected security vulnerabilities must be reported through the confidential process in [SECURITY.md](https://github.com/amsive/local-media-proxy/blob/main/SECURITY.md), not through this form.
+  - type: input
+    id: addon-version
+    attributes:
+      label: Local Media Proxy version
+      description: Find this on the installed add-on card or release archive.
+      placeholder: "0.2.3"
+    validations:
+      required: true
+  - type: input
+    id: local-version
+    attributes:
+      label: Local version
+      placeholder: "10.1.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Windows
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: web-server
+    attributes:
+      label: Local site web server
+      options:
+        - Nginx
+        - Apache
+        - Unknown
+    validations:
+      required: true
+  - type: dropdown
+    id: origin-scheme
+    attributes:
+      label: Remote Site URL scheme
+      options:
+        - HTTPS
+        - HTTP
+        - Not applicable
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Use example.com hostnames and documentation IP addresses when a value is needed.
+      placeholder: |
+        1. Configure...
+        2. Select...
+        3. Observe...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: sanitized-evidence
+    attributes:
+      label: Sanitized evidence
+      description: Optional logs, response headers, or screenshots with all client and private information removed.
+      render: shell
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety checks
+      options:
+        - label: I tested the latest available release.
+          required: true
+        - label: I removed client data, domains, IP addresses, credentials, cookies, tokens, and private certificates.
+          required: true
+        - label: This report does not describe a suspected security vulnerability.
+          required: true

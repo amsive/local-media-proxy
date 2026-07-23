@@ -7,6 +7,11 @@
 
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const {
+	emailsInText,
+	isAllowedEmail,
+	loadPolicy,
+} = require('./verify-public-release');
 
 const REPOSITORY_ROOT = path.resolve(__dirname, '..');
 const SIGNOFF_PATTERN = /^Signed-off-by:\s+.+?\s+<([^<>\r\n]+)>\s*$/gmi;
@@ -23,17 +28,41 @@ function validateCommitSignoff(commit) {
 		return null;
 	}
 	if (emails.length === 0) {
-		return `${commit.hash} is missing a Signed-off-by trailer for ${commit.authorEmail}.`;
+		return `${commit.hash} is missing a Signed-off-by trailer matching its author identity.`;
 	}
-	return `${commit.hash} has Signed-off-by trailer(s), but none match author ${commit.authorEmail}.`;
+	return `${commit.hash} has Signed-off-by trailer(s), but none match author identity.`;
+}
+
+function validateCommitIdentity(commit, policy) {
+	const problems = [];
+	if (!isAllowedEmail(commit.authorEmail, policy)) {
+		problems.push(`${commit.hash} uses an author address that is not an approved GitHub noreply or role address.`);
+	}
+	if (!isAllowedEmail(commit.committerEmail, policy)) {
+		problems.push(`${commit.hash} uses a committer address that is not an approved GitHub noreply or role address.`);
+	}
+	if (emailsInText(commit.message).some((email) => !isAllowedEmail(email, policy))) {
+		problems.push(`${commit.hash} contains an individual address in its commit message or trailers.`);
+	}
+	return problems;
 }
 
 function git(root, args) {
 	return execFileSync('git', args, {
 		cwd: root,
 		encoding: 'utf8',
+		maxBuffer: 16 * 1024 * 1024,
 		stdio: ['ignore', 'pipe', 'pipe'],
 	}).trim();
+}
+
+function gitBuffer(root, args) {
+	return execFileSync('git', args, {
+		cwd: root,
+		encoding: 'buffer',
+		maxBuffer: 16 * 1024 * 1024,
+		stdio: ['ignore', 'pipe', 'pipe'],
+	});
 }
 
 function defaultBase(root, head) {
@@ -49,31 +78,162 @@ function defaultBase(root, head) {
 
 function commitsInRange(root, base, head) {
 	const output = git(root, ['rev-list', '--reverse', `${base}..${head}`]);
+	return commitsFromOutput(root, output);
+}
+
+function allReachableCommits(root) {
+	const refs = git(root, [
+		'for-each-ref',
+		'--format=%(refname)',
+		'refs/heads',
+		'refs/remotes/origin',
+		'refs/tags',
+	]).split('\n').filter(Boolean);
+	if (refs.length === 0) {
+		return [];
+	}
+	return commitsFromOutput(root, git(root, ['rev-list', '--reverse', ...refs]));
+}
+
+function commitsFromOutput(root, output) {
 	if (!output) {
 		return [];
 	}
 	return output.split('\n').map((hash) => {
 		const authorEmail = git(root, ['show', '-s', '--format=%ae', hash]);
+		const committerEmail = git(root, ['show', '-s', '--format=%ce', hash]);
 		const message = git(root, ['show', '-s', '--format=%B', hash]);
-		return { authorEmail, hash, message };
+		return { authorEmail, committerEmail, hash, message };
 	});
+}
+
+function annotatedTags(root) {
+	const refs = git(root, ['for-each-ref', '--format=%(refname)', 'refs/tags']);
+	if (!refs) {
+		return [];
+	}
+	return refs.split('\n').flatMap((ref) => {
+		if (git(root, ['cat-file', '-t', ref]) !== 'tag') {
+			return [];
+		}
+		const object = git(root, ['cat-file', '-p', ref]);
+		const separator = object.indexOf('\n\n');
+		const headers = separator === -1 ? object : object.slice(0, separator);
+		const message = separator === -1 ? '' : object.slice(separator + 2);
+		const tagger = headers.split('\n').find((line) => line.startsWith('tagger ')) ?? '';
+		const emailMatch = /<([^<>\r\n]+)>/.exec(tagger);
+		return [{
+			email: emailMatch?.[1] ?? '',
+			message,
+			ref,
+		}];
+	});
+}
+
+function validateTagIdentity(tag, policy) {
+	const problems = [];
+	if (!tag.email || !isAllowedEmail(tag.email, policy)) {
+		problems.push(`${tag.ref} uses a tagger address that is not an approved GitHub noreply or role address.`);
+	}
+	if (emailsInText(tag.message).some((email) => !isAllowedEmail(email, policy))) {
+		problems.push(`${tag.ref} contains an individual address in its annotated tag message.`);
+	}
+	return problems;
+}
+
+function historicalTrackedTextProblems(root, commits, policy) {
+	const problems = [];
+	const seenBlobs = new Set();
+	for (const commit of commits) {
+		const records = gitBuffer(root, ['ls-tree', '-r', '-z', commit.hash])
+			.toString('utf8')
+			.split('\0')
+			.filter(Boolean);
+		for (const record of records) {
+			const separator = record.indexOf('\t');
+			const metadata = separator === -1 ? record : record.slice(0, separator);
+			const relativePath = separator === -1 ? '' : record.slice(separator + 1);
+			const [, type, objectId] = metadata.split(' ');
+			if (type !== 'blob' || !objectId || seenBlobs.has(objectId)) {
+				continue;
+			}
+			seenBlobs.add(objectId);
+			const buffer = gitBuffer(root, ['cat-file', '-p', objectId]);
+			if (buffer.includes(0)) {
+				continue;
+			}
+			if (emailsInText(buffer.toString('utf8')).some((email) => !isAllowedEmail(email, policy))) {
+				problems.push(
+					`${commit.hash} tracks text containing an individual address at ${relativePath}.`,
+				);
+			}
+		}
+	}
+	return {
+		blobsChecked: seenBlobs.size,
+		problems,
+	};
 }
 
 function verifyDco(options = {}) {
 	const root = path.resolve(options.root ?? REPOSITORY_ROOT);
 	const head = options.head ?? 'HEAD';
 	const base = options.base ?? defaultBase(root, head);
+	const policy = options.policy ?? loadPolicy(options.policyPath);
 	const commits = commitsInRange(root, base, head);
 	return {
 		base,
 		commitsChecked: commits.length,
 		head,
-		problems: commits.map(validateCommitSignoff).filter(Boolean),
+		problems: commits.flatMap((commit) => [
+			...validateCommitIdentity(commit, policy),
+			validateCommitSignoff(commit),
+		].filter(Boolean)),
+	};
+}
+
+function verifyAllGitIdentities(options = {}) {
+	const root = path.resolve(options.root ?? REPOSITORY_ROOT);
+	const policy = options.policy ?? loadPolicy(options.policyPath);
+	const commits = allReachableCommits(root);
+	const tags = annotatedTags(root);
+	const trackedText = historicalTrackedTextProblems(root, commits, policy);
+	return {
+		blobsChecked: trackedText.blobsChecked,
+		commitsChecked: commits.length,
+		problems: [
+			...commits.flatMap((commit) => [
+				...validateCommitIdentity(commit, policy),
+				validateCommitSignoff(commit),
+			].filter(Boolean)),
+			...tags.flatMap((tag) => validateTagIdentity(tag, policy)),
+			...trackedText.problems,
+		],
+		tagsChecked: tags.length,
 	};
 }
 
 function runCli(argv = process.argv.slice(2)) {
 	try {
+		if (argv[0] === '--all-reachable') {
+			const result = verifyAllGitIdentities();
+			if (result.problems.length > 0) {
+				for (const problem of result.problems) {
+					console.error(problem);
+				}
+				console.error(
+					`Git identity check failed with ${result.problems.length} problem(s) across `
+					+ `${result.commitsChecked} commit(s), ${result.tagsChecked} annotated tag(s), `
+					+ `and ${result.blobsChecked} historical blob(s).`,
+				);
+				return 1;
+			}
+			console.log(
+				`Git identity check passed for ${result.commitsChecked} commit(s) `
+				+ `${result.tagsChecked} annotated tag(s), and ${result.blobsChecked} historical blob(s).`,
+			);
+			return 0;
+		}
 		const result = verifyDco({
 			base: argv[0] || process.env.DCO_BASE_SHA || undefined,
 			head: argv[1] || process.env.DCO_HEAD_SHA || undefined,
@@ -98,9 +258,15 @@ if (require.main === module) {
 }
 
 module.exports = {
+	allReachableCommits,
+	annotatedTags,
 	commitsInRange,
+	historicalTrackedTextProblems,
 	runCli,
 	signoffEmails,
+	validateCommitIdentity,
 	validateCommitSignoff,
+	validateTagIdentity,
 	verifyDco,
+	verifyAllGitIdentities,
 };

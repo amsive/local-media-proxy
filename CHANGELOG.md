@@ -6,6 +6,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Security
+
+- Blocked individually assigned email addresses from source, package contents, commit metadata and trailers, annotated tags, and release automation; contributors now use GitHub `noreply` identities or exact approved organization role addresses.
+
+## [0.2.3] - 2026-07-23
+
+### Added
+
+- Added machine-readable third-party provenance for the bundled Cloudflare Origin CA roots, the adapted Local loading indicator, and all direct development and peer dependencies.
+- Added a deterministic offline release gate that detects changed Cloudflare hashes or fingerprints, missing attribution, undeclared direct dependencies or distributed materials, host-only dependency leakage, stale provenance, and installer trust-file drift.
+- Added Local Media Proxy-specific bug and feature forms, a Contributor Covenant 2.1 code of conduct, clearer security scope and DCO email guidance, and monthly npm dependency updates.
+
+### Changed
+
+- Required third-party provenance verification during validation, continuous integration, release creation, promotion, and exact installer-package verification.
+- Shortened the README into an installation and usage landing page and moved advanced proxy, TLS, Apache/Nginx, lifecycle, and managed-file details into dedicated technical documentation.
+- Preserved the exact installer boundary and both unmodified Cloudflare Origin CA roots without weakening hostname, expiry, or certificate-chain validation.
+
 ## [0.2.2] - 2026-07-22
 
 ### Fixed
@@ -82,7 +100,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Prevented slow or cancelled connection probes from hanging the UI and replaced low-level timeout errors with actionable messages.
 - Preserved correct TLS verification when switching between direct WP Engine origins and compatible proxy, CDN, or load-balancer endpoints.
 
-[Unreleased]: https://github.com/amsive/local-media-proxy/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/amsive/local-media-proxy/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/amsive/local-media-proxy/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/amsive/local-media-proxy/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/amsive/local-media-proxy/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/amsive/local-media-proxy/compare/v0.1.1...v0.2.0

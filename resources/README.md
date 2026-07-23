@@ -19,4 +19,4 @@ The add-on combines these roots with Node’s standard CA roots. Review and refr
 
 Amsive-authored artwork in this directory is distributed under the repository’s Apache License 2.0. That copyright license does not grant permission to use Amsive trademarks beyond customary attribution; see `TRADEMARKS.md` at the package root.
 
-`cloudflare-origin-ca.pem` is third-party certificate material and is not represented as Amsive-authored Apache-licensed artwork. Its exact upstream provenance is recorded above and in `NOTICE`; explicit redistribution clearance remains a prerequisite for public release.
+`cloudflare-origin-ca.pem` is third-party certificate material and is not represented as Amsive-authored Apache-licensed artwork. Its exact upstream provenance, hash, and certificate fingerprints are recorded in `third-party-materials.json`, `docs/third-party-provenance.md`, and `NOTICE`. The attribution does not imply Cloudflare affiliation, endorsement, or a separate trademark license.

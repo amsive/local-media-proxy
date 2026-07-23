@@ -1,0 +1,130 @@
+{
+  "schemaVersion": 1,
+  "reviewedOn": "2026-07-23",
+  "materials": [
+    {
+      "id": "cloudflare-origin-ca-roots",
+      "kind": "certificate-bundle",
+      "publisher": "Cloudflare, Inc.",
+      "distributed": true,
+      "sourceUrls": [
+        "https://developers.cloudflare.com/ssl/static/origin_ca_rsa_root.pem",
+        "https://developers.cloudflare.com/ssl/static/origin_ca_ecc_root.pem"
+      ],
+      "licenseBasis": {
+        "name": "Creative Commons Attribution 4.0 International",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "publisherStatementUrl": "https://github.com/cloudflare/cloudflare-docs#license-and-legal-notices"
+      },
+      "repositoryPaths": [
+        "resources/cloudflare-origin-ca.pem"
+      ],
+      "packagePaths": [
+        "resources/cloudflare-origin-ca.pem"
+      ],
+      "sha256": "01d12a7c938de82b3b264458a24dd2cda139814393a920d8b5b9d0aa6a54d8f3",
+      "certificateFingerprintsSha256": [
+        "AA:63:69:7A:22:76:4B:67:B2:13:4C:E1:4C:B5:69:0E:A3:36:94:0B:93:98:61:13:F4:95:45:91:78:32:D8:0D",
+        "D3:C7:E8:5C:91:70:7F:C0:A1:2A:BC:5D:88:26:67:47:AA:4F:A8:E7:B1:62:F6:33:FF:B3:C9:D9:89:94:76:20"
+      ],
+      "modifications": "The two published PEM certificates are concatenated into one bundle. Their certificate bytes are otherwise unchanged.",
+      "purpose": "Trust Cloudflare Origin Certificates while retaining standard certificate-chain and hostname verification.",
+      "noticeRequired": true
+    },
+    {
+      "id": "local-components-loading-indicator",
+      "kind": "adapted-source",
+      "publisher": "Fancy Chap, Inc.",
+      "distributed": true,
+      "sourcePackage": "@getflywheel/local-components",
+      "sourceVersion": "17.8.1",
+      "sourceUrls": [
+        "https://github.com/getflywheel/local-components"
+      ],
+      "licenseBasis": {
+        "name": "MIT",
+        "url": "https://github.com/getflywheel/local-components/blob/master/LICENSE"
+      },
+      "repositoryPaths": [
+        "src/renderer.ts",
+        "style.css"
+      ],
+      "packagePaths": [
+        "lib/renderer.js",
+        "style.css"
+      ],
+      "modifications": "Adapted to a scoped two-dot indicator, Local Media Proxy class names, accessible status text, bounded waits, and reduced-motion behavior.",
+      "purpose": "Match Local's native loading presentation without adding a runtime package dependency.",
+      "noticeRequired": true
+    }
+  ],
+  "dependencies": [
+    {
+      "name": "@getflywheel/local",
+      "declared": {
+        "dev": "10.1.1",
+        "peer": ">=10.1.1"
+      },
+      "resolvedVersion": "10.1.1",
+      "license": null,
+      "licenseStatus": "metadata-unavailable",
+      "distributed": false,
+      "relationship": "Local host API and type surface supplied by the Local application; no package bytes are included in the installer."
+    },
+    {
+      "name": "@types/node",
+      "declared": {
+        "dev": "^22.15.0"
+      },
+      "resolvedVersion": "22.20.1",
+      "license": "MIT",
+      "licenseStatus": "declared",
+      "distributed": false,
+      "relationship": "Development-only TypeScript declarations."
+    },
+    {
+      "name": "react",
+      "declared": {
+        "peer": ">=16.14.0 <17"
+      },
+      "resolvedVersion": "16.14.0",
+      "license": "MIT",
+      "licenseStatus": "declared",
+      "distributed": false,
+      "relationship": "Optional peer supplied by Local at runtime."
+    },
+    {
+      "name": "react-dom",
+      "declared": {
+        "peer": ">=16.14.0 <17"
+      },
+      "resolvedVersion": "16.14.0",
+      "license": "MIT",
+      "licenseStatus": "declared",
+      "distributed": false,
+      "relationship": "Optional peer supplied by Local at runtime."
+    },
+    {
+      "name": "selfsigned",
+      "declared": {
+        "dev": "^3.0.1"
+      },
+      "resolvedVersion": "3.0.1",
+      "license": "MIT",
+      "licenseStatus": "declared",
+      "distributed": false,
+      "relationship": "Development-only TLS test fixture generator."
+    },
+    {
+      "name": "typescript",
+      "declared": {
+        "dev": "^5.8.3"
+      },
+      "resolvedVersion": "5.9.3",
+      "license": "Apache-2.0",
+      "licenseStatus": "declared",
+      "distributed": false,
+      "relationship": "Development-only compiler."
+    }
+  ]
+}

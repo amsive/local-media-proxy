@@ -58,12 +58,12 @@ test('builds complete Amsive detail and release metadata', () => {
 		['Mark Davoli', 'Boris Hegedis'],
 	);
 	assert.equal(addon.details.license, 'Apache-2.0');
-	assert.equal(release.version, '0.2.2');
+	assert.equal(release.version, '0.2.3');
 	assert.equal(release.testedUpTo, '10.1.1');
 	assert.equal(release.localRequirement, '>=10.1.1');
 	assert.equal(
 		release.downloadUrl,
-		'https://github.com/amsive/local-media-proxy/releases/download/v0.2.2/local-media-proxy-v0.2.2.tgz',
+		'https://github.com/amsive/local-media-proxy/releases/download/v0.2.3/local-media-proxy-v0.2.3.tgz',
 	);
 	assert.match(addon.avatar.original, /^file:\/\/\/tmp\/Local%20Media%20Proxy\/icon\.svg$/);
 	assert.match(addon.details.overview, /detail-hero\.svg/);
@@ -88,22 +88,26 @@ test('builds complete Amsive detail and release metadata', () => {
 	assert.match(addon.details.overview, /trademark policy/);
 
 	const releases = createMarketplaceReleasesPayload().data.addon.releases;
-	assert.equal(releases.length, 4);
+	assert.equal(releases.length, 5);
 	assert.deepEqual(
 		releases.map(({ version }) => version),
-		['0.2.2', '0.2.1', '0.2.0', '0.1.1'],
+		['0.2.3', '0.2.2', '0.2.1', '0.2.0', '0.1.1'],
 	);
-	assert.match(releases[0].changelog, /Version 0\.2\.2 makes server changes and origin discovery recover safely/);
-	assert.match(releases[0].changelog, /lifecycle status mid-operation/);
-	assert.match(releases[0].changelog, /currently selected service/);
-	assert.match(releases[0].changelog, /30 seconds/);
-	assert.match(releases[1].changelog, /Version 0\.2\.1 makes web-server switching and proxy activation seamless/);
-	assert.match(releases[1].changelog, /separate saved Nginx and Apache connection profiles/);
-	assert.match(releases[1].changelog, /Local's native two-dot progress indicator/);
-	assert.match(releases[2].changelog, /Version 0\.2\.0 adds Apache support/);
-	assert.match(releases[2].changelog, /Overview tab/);
-	assert.match(releases[3].changelog, /Version 0\.1\.1 maintenance release/);
-	assert.match(releases[3].changelog, /standard `package\/` root/);
+	assert.match(releases[0].changelog, /Version 0\.2\.3 prepares the project for public open-source collaboration/);
+	assert.match(releases[0].changelog, /without changing proxy or TLS behavior/);
+	assert.match(releases[0].changelog, /both bundled Cloudflare Origin CA roots/);
+	assert.match(releases[0].changelog, /strict hostname and chain verification/);
+	assert.match(releases[1].changelog, /Version 0\.2\.2 makes server changes and origin discovery recover safely/);
+	assert.match(releases[1].changelog, /lifecycle status mid-operation/);
+	assert.match(releases[1].changelog, /currently selected service/);
+	assert.match(releases[1].changelog, /30 seconds/);
+	assert.match(releases[2].changelog, /Version 0\.2\.1 makes web-server switching and proxy activation seamless/);
+	assert.match(releases[2].changelog, /separate saved Nginx and Apache connection profiles/);
+	assert.match(releases[2].changelog, /Local's native two-dot progress indicator/);
+	assert.match(releases[3].changelog, /Version 0\.2\.0 adds Apache support/);
+	assert.match(releases[3].changelog, /Overview tab/);
+	assert.match(releases[4].changelog, /Version 0\.1\.1 maintenance release/);
+	assert.match(releases[4].changelog, /standard `package\/` root/);
 });
 
 test('uses packaged detail metadata only when the marketplace has no listing', async () => {
@@ -140,10 +144,10 @@ test('supplies packaged release notes for the native Release notes tab', async (
 	const payload = await response.json();
 	const [currentRelease] = payload.data.addon.releases;
 
-	assert.equal(payload.data.addon.releases.length, 4);
-	assert.equal(currentRelease.version, '0.2.2');
-	assert.equal(currentRelease.date, '2026-07-22T00:00:00.000Z');
-	assert.match(currentRelease.changelog, /Version 0\.2\.2 makes server changes and origin discovery recover safely/);
+	assert.equal(payload.data.addon.releases.length, 5);
+	assert.equal(currentRelease.version, '0.2.3');
+	assert.equal(currentRelease.date, '2026-07-23T00:00:00.000Z');
+	assert.match(currentRelease.changelog, /Version 0\.2\.3 prepares the project for public open-source collaboration/);
 });
 
 test('supports a single named target operation without operationName', async () => {

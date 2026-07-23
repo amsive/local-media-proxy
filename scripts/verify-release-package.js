@@ -14,6 +14,7 @@ const {
 	formatFinding,
 	scanPublicRelease,
 } = require('./verify-public-release');
+const { verifyThirdParty } = require('./verify-third-party');
 
 const TAR_BLOCK_SIZE = 512;
 const MAX_ARCHIVE_SIZE = 25 * 1024 * 1024;
@@ -141,6 +142,10 @@ function verifyReleasePackage(tag, archiveArgument) {
 		);
 	}
 
+	verifyThirdParty({
+		packagedFiles: actualNames.map((name) => name.slice(PACKAGE_ROOT.length)),
+		root: repositoryRoot,
+	});
 	verifyArchiveContentSafety(entries);
 
 	const packedPackageEntry = entries.find(

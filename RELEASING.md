@@ -8,14 +8,15 @@ Releases are built by GitHub Actions from an exact `v<SemVer>` tag. A read-only 
 2. Set the same version in `package.json`, `package-lock.json`, and `src/constants.ts`, then refresh the changelog comparison links.
 3. Add the new entry first in the packaged history in `src/marketplace.ts`. Keep only the five newest versions and preserve prior entries until they age out.
 4. Follow `PUBLIC_RELEASE_SAFETY.md`: run `npm run verify:public-release`, review all exact policy exceptions, visually inspect and locally OCR each screenshot, and confirm every binary hash and review reason in `public-release-assets.json`.
-5. Review new code, assets, dependencies, and notices for license compatibility, contributor authorization, client information, secrets, and trademark concerns. Confirm every contribution made after DCO adoption carries the required sign-off.
-6. Confirm the package still contains the exact Apache `LICENSE`, `NOTICE`, support policy, and trademark policy and that release messaging does not promise a warranty or service level. Obtain explicit clearance for third-party material, including the bundled Cloudflare Origin CA roots and use of Local APIs, before the first public release.
-7. Review changed filenames, commit messages, pull-request and issue text, comments, and generated release notes for identifying context that the source scanner cannot recognize.
-8. Run `npm ci`, `npm run validate`, and `npm run package:addon` from a clean checkout.
-9. Run `node scripts/verify-release-package.js v<version> dist/local-media-proxy-v<version>.tgz`. The verifier enforces the exact asset name, npm's single `package/` root, and the minimal packaged-file manifest.
-10. Create clean Git ZIP and TAR archives for the release commit and scan their extracted contents with `node scripts/verify-public-release.js --root <directory> --require-manifest-completeness`.
-11. Select that exact TGZ directly in Local's **Install from disk** flow without extracting it, then complete the end-to-end checklist in `CONTRIBUTING.md` against the minimum supported Local version, including the Installed Add-ons card, Overview and Release notes tabs, and both renderer themes.
-12. Merge the release-ready commit to `main` and confirm the Validate workflow passes.
+5. Run `npm run verify:third-party`. Review `third-party-materials.json`, `docs/third-party-provenance.md`, and `NOTICE` whenever a dependency, packaged file, trust root, or adapted component changes. A changed certificate is a new trust decision and cannot be approved by updating a hash alone.
+6. Review new code, assets, dependencies, and notices for license compatibility, contributor authorization, client information, secrets, and trademark concerns. Confirm every contribution made after DCO adoption carries the required sign-off.
+7. Confirm the package still contains the exact Apache `LICENSE` and `NOTICE`, that repository support and trademark policies remain present, and that release messaging does not promise a warranty, service level, third-party affiliation, endorsement, or legal approval.
+8. Review changed filenames, commit messages, pull-request and issue text, comments, and generated release notes for identifying context that the source scanner cannot recognize.
+9. Run `npm ci`, `npm run validate`, and `npm run package:addon` from a clean checkout.
+10. Run `node scripts/verify-release-package.js v<version> dist/local-media-proxy-v<version>.tgz`. The verifier enforces the exact asset name, npm's single `package/` root, the minimal packaged-file manifest, and the declared third-party material contract.
+11. Create clean Git ZIP and TAR archives for the release commit and scan their extracted contents with `node scripts/verify-public-release.js --root <directory> --require-manifest-completeness`.
+12. Select that exact TGZ directly in Local's **Install from disk** flow without extracting it, then complete the end-to-end checklist in `CONTRIBUTING.md` against the minimum supported Local version, including the Installed Add-ons card, Overview and Release notes tabs, both renderer themes, and a Cloudflare Origin CA HTTPS fallback check against an authorized non-client fixture.
+13. Merge the release-ready commit to `main` and confirm the Validate workflow passes.
 
 ## Create the draft
 

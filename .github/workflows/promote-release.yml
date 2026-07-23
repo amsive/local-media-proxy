@@ -85,6 +85,12 @@ jobs:
           git archive --format=tar HEAD | tar -xf - -C "${source_root}"
           node scripts/verify-public-release.js --root "${source_root}" --require-manifest-completeness
 
+      - name: Reverify third-party provenance
+        run: npm run verify:third-party
+
+      - name: Audit reachable Git identities
+        run: npm run verify:git-identities
+
       - name: Rebuild distributable files from tagged source
         run: |
           npm ci --ignore-scripts

@@ -1,5 +1,17 @@
 version: 2
 updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
+    groups:
+      npm:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: chore
   - package-ecosystem: github-actions
     directory: /
     schedule:

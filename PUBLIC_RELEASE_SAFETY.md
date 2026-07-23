@@ -10,11 +10,12 @@ Run this before every commit or push:
 npm run verify:public-release
 ```
 
-`npm run validate` runs the same check first. Repository-mode scans inspect both staged Git-index bytes and any different working-tree bytes, so an unstaged edit cannot conceal sensitive content already prepared for commit. The validation, release, and promotion workflows repeat the check against the tracked tree. Release validation also builds and scans both Git-generated ZIP and TAR source archives, while the package verifier scans every file in the exact `local-media-proxy-v<version>.tgz` installer before upload or promotion. It rejects any installer that does not use npm's single top-level `package/` folder or that contains files outside the exact minimal runtime manifest.
+`npm run validate` runs the same check first and then runs the offline `npm run verify:third-party` provenance gate. Repository-mode scans inspect both staged Git-index bytes and any different working-tree bytes, so an unstaged edit cannot conceal sensitive content already prepared for commit. The validation, release, and promotion workflows repeat these checks against the tracked tree. Release validation also builds and scans both Git-generated ZIP and TAR source archives, while the package verifier scans every file in the exact `local-media-proxy-v<version>.tgz` installer before upload or promotion. It rejects any installer that does not use npm's single top-level `package/` folder, contains files outside the exact minimal runtime manifest, or violates the declared third-party material contract.
 
 The gate rejects:
 
 - common credentials, tokens, private keys, credential-bearing URLs, and suspicious secret assignments;
+- individually assigned email addresses; only GitHub-provided `noreply` identities, synthetic fixture domains, and exact allowlisted organization role addresses are accepted;
 - personal workstation paths, unapproved URL hostnames, common domains, high-confidence bare hostname values (including Nginx/config assignments), and any infrastructure IP address that is not an exact reviewed fixture;
 - symlinks, disguised binary formats, archives, office documents, databases, and unreviewed binary assets;
 - binary assets whose SHA-256 does not match `public-release-assets.json`;
@@ -22,11 +23,17 @@ The gate rejects:
 
 `public-release-policy.json` is intentionally exact. Add a narrow exception only when a synthetic test requires it. Every exception must identify the path, rule, exact finding hash, and review reason. Never allow a customer domain suffix, an entire hosting tenant namespace, a broad directory, or an unrestricted public IP range.
 
+## Identity and comment privacy
+
+Individual email addresses must not appear in files, source or code comments, fixtures, authorship or committer metadata, DCO trailers, commit or annotated-tag messages, pull requests, issues, reviews, discussion comments, or release text. Contributors must use the GitHub-provided `noreply` identity. An organization role address is acceptable only when it is not assigned to an individual and is added as an exact `allowedEmailAddresses` entry in `public-release-policy.json`; never allow an entire company domain.
+
+`npm run verify:public-release` enforces this rule for tracked and packaged text. `npm run verify:dco` enforces it for the exact pull-request commit range, while `npm run verify:git-identities` audits commit identities, messages, annotated tags, and every historical tracked-text blob reachable from advertised branch, `origin/*`, and tag history. GitHub-generated pull-request merge refs are excluded because they are transient platform commits rather than submitted contribution history. GitHub does not provide a pre-submit hook that can guarantee a human-authored comment is clean before it is posted, so maintainers and automated agents must inspect GitHub-bound text before submission. If an address is posted, edit or delete the text promptly, preserve an internal incident record without the address, and complete the publication-boundary review before making the repository public.
+
 ## Client and diagnostic data
 
 Never copy a client-supplied screenshot, configuration file, log, database, export, domain, IP address, path, or reproduction bundle into the repository. Use supplied evidence only for local diagnosis, then create a minimal synthetic regression with `example.com` hostnames, RFC documentation IP ranges, generic IDs, and fictional dates.
 
-Client names can be ordinary words and may evade pattern matching. A maintainer must therefore review every changed filename, diff, commit message, pull-request title and body, comment, release note, and asset in context before publication.
+Client names can be ordinary words and may evade pattern matching. A maintainer must therefore review every changed filename, diff, commit message, pull-request title and body, comment, release note, identity field, and asset in context before publication.
 
 ## Screenshots and other assets
 

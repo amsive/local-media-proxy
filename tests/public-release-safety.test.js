@@ -47,6 +47,36 @@ test('accepts reviewed assets and synthetic public-safe network data', (t) => {
 	assert.deepEqual(result.findings, []);
 });
 
+test('permits only synthetic, GitHub noreply, and explicitly approved role addresses', (t) => {
+	const fixture = createFixture(t);
+	const syntheticAddress = ['fixture-contributor', 'example.com'].join('@');
+	const noreplyAddress = ['12345+fixture-contributor', 'users.noreply.github.com'].join('@');
+	const roleAddress = ['open-source', 'company.invalid'].join('@');
+	const individualAddress = ['individual-contributor', 'company.invalid'].join('@');
+	const policy = {
+		...basePolicy,
+		allowedEmailAddresses: [...basePolicy.allowedEmailAddresses, roleAddress],
+	};
+	writeFixture(fixture, 'approved.txt', [
+		syntheticAddress,
+		noreplyAddress,
+		roleAddress,
+	].join('\n'));
+	writeFixture(fixture, 'individual.txt', individualAddress);
+
+	const findings = scanFixture(fixture, [], policy).findings;
+	assert.equal(
+		findings.filter(({ path: findingPath, rule }) =>
+			findingPath === 'approved.txt' && rule === 'INDIVIDUAL_EMAIL_NOT_ALLOWED').length,
+		0,
+	);
+	assert.equal(
+		findings.filter(({ path: findingPath, rule }) =>
+			findingPath === 'individual.txt' && rule === 'INDIVIDUAL_EMAIL_NOT_ALLOWED').length,
+		1,
+	);
+});
+
 test('rejects common secret patterns, URL credentials, and personal paths', (t) => {
 	const fixture = createFixture(t);
 	const awsKey = 'AKIA' + 'A'.repeat(16);

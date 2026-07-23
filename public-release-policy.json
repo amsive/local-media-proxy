@@ -1,33 +1,47 @@
 {
   "version": 1,
+  "allowedEmailAddresses": [
+    "noreply@github.com"
+  ],
   "allowedHostnames": [
     "amsive.com",
     "api.localbyflywheel.com",
     "creativecommons.org",
     "developers.cloudflare.com",
     "example-development.wpengine.com",
+    "example.net",
+    "example.org",
     "example-production.wpengine.com",
     "example-site.wpengine.com",
     "example-staging.wpengine.com",
     "example.wpenginepowered.com",
     "feross.org",
     "github.com",
-    "izs.me",
     "keepachangelog.com",
     "localwp.com",
     "origin.wpengine.com",
     "raw.githubusercontent.com",
     "registry.npmjs.org",
     "semver.org",
+    "users.noreply.github.com",
     "wpengine.com",
     "wpenginepowered.com",
     "wpeproxy.com",
     "www.amsive.com",
     "www.apache.org",
+    "www.contributor-covenant.org",
     "www.patreon.com",
     "www.w3.org"
   ],
+  "allowedNoreplyEmailDomains": [
+    "users.noreply.github.com"
+  ],
   "allowedPublicIps": [],
+  "allowedSyntheticEmailDomains": [
+    "example.com",
+    "example.net",
+    "example.org"
+  ],
   "exactFindingAllowlist": [
     {
       "path": "src/dns.ts",

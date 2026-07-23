@@ -16,6 +16,10 @@ Runtime TypeScript lives in `src/`. `main.ts` owns Local IPC and lifecycle work;
 
 Symlink the repository into Local’s add-ons directory for live development, then restart Local.
 
+## Release Audit Workflow
+
+When a new `vX.Y.Z` release tag or draft release is produced, or when asked to review changes since the last audit, read and follow `skills/audit-local-media-proxy-release/SKILL.md`. Keep the audit diff-focused and read-only, present complete issue drafts before creating anything, and require explicit approval before publishing GitHub issues. Follow `SECURITY.md` for confidential vulnerability reporting.
+
 ## Coding Style & Naming Conventions
 
 Use tabs in TypeScript, JavaScript, and CSS; use two spaces in JSON. Follow strict TypeScript, small modules, `camelCase` functions, `PascalCase` interfaces, and uppercase constants. Never interpolate unvalidated renderer input into Nginx. Scope UI rules below `.LocalMediaProxy` and support `.Theme__Light` and `.Theme__Dark`.
@@ -26,11 +30,11 @@ All future loading animations must use Local’s native two-dot `LoadingIndicato
 
 Use `node:test` and `node:assert/strict`; name files `*.test.js`. Add regressions for validation, generated Nginx, marker idempotency, rollback, and security headers. Release installers use the exact name `local-media-proxy-v<version>.tgz`, with a matching `.tgz.sha256`, and use npm's standard single top-level `package/` folder. The TGZ must contain only the compiled runtime, package metadata, CSS, runtime artwork and trust material, `LICENSE`, `NOTICE`, and the packaged `README`; source, tests, source maps, development configuration, and repository-only process documents are excluded. CI and promotion verification must enforce this contract. Before release, select the TGZ directly in Local without extracting it: existing uploads remain local, a missing image returns `200` with `X-Local-Media-Proxy: origin`, and disabling restores the prior `404`.
 
-Every pull request and release must pass `npm run verify:public-release`. Do not commit client names, domains, infrastructure addresses, workstation paths, credentials, diagnostic configuration, or unreviewed binary assets. Use only `example.com` hostnames and RFC documentation IPs in fixtures. Screenshots must use fictional data, show only the minimum useful sites, contain no automation overlays, pass local OCR review, and have an exact reviewed hash in `public-release-assets.json`. See `PUBLIC_RELEASE_SAFETY.md` for the complete process and its human-review limits.
+Every pull request and release must pass `npm run verify:public-release`. Do not commit client names, domains, infrastructure addresses, workstation paths, credentials, diagnostic configuration, individual email addresses, or unreviewed binary assets. This prohibition covers source and code comments, commit and tag metadata or messages, pull requests, issues, reviews, discussion comments, and release text. Individual contributors must use their GitHub-provided `noreply` identity; exact organization role addresses are allowed only through `public-release-policy.json`. Use only `example.com` hostnames and RFC documentation IPs in fixtures. Screenshots must use fictional data, show only the minimum useful sites, contain no automation overlays, pass local OCR review, and have an exact reviewed hash in `public-release-assets.json`. See `PUBLIC_RELEASE_SAFETY.md` for the complete process and its human-review limits.
 
 ## Commit & Pull Request Guidelines
 
-Never commit directly to `main`. Use `feature/<slug>` for planned work or `issue/<id>-<slug>` for issue work. Every change to `main` requires a pull request and human review. Use short Conventional Commit subjects, explain behavior and risk, link issues, include validation output, and add light/dark screenshots for UI changes.
+Never commit directly to `main`. Use `feature/<slug>` for planned work or `issue/<id>-<slug>` for issue work. Every change to `main` requires a pull request and human review. Use short Conventional Commit subjects, explain behavior and risk, link issues, include validation output, and add light/dark screenshots for UI changes. Inspect every GitHub-bound title, body, and comment before posting and never include an individually assigned email address.
 
 For screenshots committed to this repository, embed them in PR descriptions and comments with an absolute, commit-pinned same-host URL: `![alt text](https://github.com/amsive/local-media-proxy/raw/<head-commit-sha>/docs/screenshots/<file>.png)`. Use a commit SHA that contains the image. Do not use repository-relative paths, which GitHub can preserve unresolved in PR HTML, or direct `raw.githubusercontent.com` URLs. After saving the PR, inspect the rendered conversation and confirm the images themselves display; visible alt-text links are not sufficient verification.
 

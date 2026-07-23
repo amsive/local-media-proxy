@@ -1,0 +1,127 @@
+# Technical details
+
+This document describes Local Media Proxy's operating, security, compatibility, and lifecycle model. Start with the project [README](../README.md) for installation and normal configuration.
+
+## Operating model
+
+Local Media Proxy inserts bounded managed configuration into the selected Local site's persistent Nginx or Apache templates. The generated rules check the local uploads directory first and proxy only an eligible image when the file is missing.
+
+The response header `X-Local-Media-Proxy: origin` identifies a remote fallback. Locally served files do not receive that header. Remote responses are streamed without a persistent media cache; Nginx proxy buffering is disabled.
+
+Saved Nginx and Apache connection profiles are separate because the servers have different routing models. The enabled intent is shared. When a Local site changes web-server type, the add-on reapplies the saved profile for the new server only when that profile is complete and valid.
+
+## Nginx connection identity
+
+Nginx mode intentionally separates the public URL from the network address:
+
+- The Site URL provides the HTTP virtual-host identity and default TLS identity.
+- The remote IP determines where Nginx sends the connection.
+- A guarded WP Engine connection may preserve a provider-returned direct `.wpengine.com` hostname as the TLS SNI and certificate identity while retaining the primary domain in HTTP `Host`.
+
+The split allows a direct origin, CDN edge, reverse proxy, or load balancer to work when it serves the configured Site URL and passes connection, certificate, and missing-upload tests. Provider-returned direct origins are usually more stable than public DNS results. Public addresses may be shared or change.
+
+When provider discovery is unavailable, **Find via public DNS** can suggest Nginx address candidates. The add-on warns about non-public or otherwise unusual addresses, but the user must still understand and test the selected route.
+
+## Apache connection identity
+
+Apache uses the Site URL hostname as its DNS target, HTTP `Host`, TLS SNI, and certificate identity. It does not accept a separate remote IP or a split WP Engine TLS identity.
+
+This constraint avoids presenting a configuration that Apache 2.4.43 cannot safely represent with its reverse-proxy hostname behavior. Apache therefore performs normal DNS resolution for the validated Site URL.
+
+`mod_proxy_http` and `mod_headers` are required for every Apache origin. HTTPS additionally requires `mod_ssl`. The add-on checks the modules exposed by the selected Local platform bundle before connection testing or persistent writes and reports an unsupported bundle without applying partial configuration.
+
+## Origin discovery
+
+For a Local site connected to WP Engine, the add-on uses Local's supported host-connection surface to enumerate Production, Staging, and Development environments:
+
+- Both Nginx and Apache use the selected environment's primary domain as the Site URL suggestion.
+- Nginx can use provider stable IP data or a direct `.wpengine.com` CNAME for routing and provider-verified TLS identity.
+- Apache uses only the primary Site URL hostname.
+
+The tested Local API does not expose an equivalent supported Flywheel environment interface. Flywheel and other hosting connections therefore use manual entry; Nginx may additionally use public DNS suggestions.
+
+Discovery never saves settings or enables the proxy automatically. Every suggestion remains editable and must pass explicit testing and apply actions.
+
+## Request boundary
+
+Fallback rules are deliberately narrow:
+
+- Requests must remain below `/wp-content/uploads/`.
+- Only the project's allowlisted image extensions are eligible.
+- Only `GET` and `HEAD` are allowed.
+- Request bodies are not forwarded.
+- The remote request receives a fixed, non-visitor-identifying add-on `User-Agent`.
+- The configured Site URL supplies the upstream HTTP `Host`.
+
+Nginx suppresses incoming request headers before adding a small allowlist. Apache removes named credential, cookie, authorization, nonce, CSRF, and proxy-identity headers. Apache 2.4 `mod_headers` cannot wildcard-remove arbitrary custom header names, so its conservative URL-safe filename matcher and fixed upload-image boundary remain important.
+
+Apache upload filenames containing decoded spaces or characters outside its allowlist remain local-only rather than broadening the proxy matcher.
+
+## TLS trust model
+
+Connection testing requires a valid certificate chain and verifies the expected hostname. Persistent Nginx and Apache configurations require the same verification.
+
+The trusted authority bundle contains:
+
+1. Node's standard public certificate authorities.
+2. Cloudflare's published RSA Origin CA root.
+3. Cloudflare's published ECC Origin CA root.
+
+Roots are parsed, normalized, deduplicated by SHA-256 fingerprint, and bounded by certificate count and total byte size. The Cloudflare bundle must contain exactly the two reviewed fingerprints. Its source-file SHA-256 is recorded in `third-party-materials.json`.
+
+The trust extension is limited to those two roots. A certificate is not trusted because a peer presented it, and arbitrary self-signed certificates remain rejected. Certificate identity, validity dates, chain signatures, and SNI behavior are still enforced.
+
+The generated site trust file contains the complete standard-plus-Cloudflare bundle. It is atomically replaced rather than appended, identical reapplications do not rewrite it, and disabling removes it.
+
+## Managed Local files
+
+For Nginx, the add-on:
+
+- inserts one marked include in `conf/nginx/site.conf.hbs`;
+- writes `conf/nginx/includes/local-media-proxy.conf.hbs`; and
+- writes `conf/nginx/local-media-proxy-origin-ca.pem` for HTTPS.
+
+For Apache, the add-on:
+
+- inserts guarded module loads in `conf/apache/modules.conf.hbs`;
+- inserts one marked include inside each virtual host in `conf/apache/site.conf.hbs`;
+- writes `conf/apache/includes/local-media-proxy.conf.hbs`; and
+- writes `conf/apache/local-media-proxy-origin-ca.pem` for HTTPS.
+
+Only content between `# BEGIN Local Media Proxy (managed)` and `# END Local Media Proxy (managed)` belongs to the add-on. It does not edit Local's generated runtime configuration under the application-support `run/` directory.
+
+## Validation, apply, rollback, and cleanup
+
+Before activation, the add-on validates user input, builds the managed configuration, compiles the selected Local server templates, and runs the available server syntax checks.
+
+Running Nginx sites receive a graceful reload, with a targeted Nginx-service restart only for a stale master PID. Apache performs a bounded, site-scoped graceful reload using the selected site configuration. Stopped sites are compiled and validated without being started.
+
+Writes use snapshots and rollback. If apply fails, the add-on restores previous settings and managed files before attempting to return the service to its prior configuration.
+
+Disabling removes managed includes, generated proxy rules, and trust files while retaining saved connection fields for later reuse. If Local cannot resolve the selected service, cleanup is deferred without falsely reporting that a running proxy was removed.
+
+The global Installed Add-ons switch also performs cleanup as a Local 10 compatibility safeguard. Per-site disable remains the preferred uninstall preparation because Local does not expose a public awaited uninstall hook.
+
+## Installed add-on details
+
+Local normally loads installed add-on details from its public marketplace. A manually installed add-on may not have a marketplace entry, so the renderer provides packaged metadata only when the marketplace has no `local-media-proxy` result or is unavailable.
+
+The fallback is scoped to this add-on's detail queries. Other add-ons and GraphQL operations pass through unchanged, and a future official marketplace listing takes precedence. This compatibility behavior is tested against Local 10.1.1 and should be revalidated when Local's marketplace implementation changes.
+
+## Troubleshooting
+
+- **Unsupported server:** Select a Local site whose explicit HTTP service is Nginx or Apache. Ambiguous service metadata is rejected rather than guessed.
+- **WP Engine discovery unavailable:** Confirm the Local site is connected to WP Engine and Local is signed in. Manual entry remains available.
+- **Flywheel requires manual setup:** Enter the Site URL manually. Nginx additionally needs a trusted remote IP or tested public DNS candidate.
+- **DNS results look unfamiliar:** CDN and proxy addresses can be shared or change. Select an address only when you understand its routing, then test a real missing upload.
+- **Connection test fails:** Verify the Site URL scheme, hostname, and optional port. For Nginx, also verify the remote IP and retry another reviewed candidate if appropriate.
+- **Certificate error:** Confirm the certificate matches the expected identity and chains to a standard public CA or Cloudflare Origin CA. Apache HTTPS also requires `mod_ssl`.
+- **Remote error response:** Test the exact remote upload path. Authentication, hotlink protection, or origin/CDN access rules can still block it.
+- **Add-on already exists:** Disable and remove the installed add-on before selecting a replacement TGZ.
+- **Configuration refresh fails:** Disable the proxy and review Local's logs for the underlying syntax or reload error. Failed apply operations restore their previous snapshots.
+
+## Release package
+
+The installable TGZ uses npm's single `package/` root and an exact 25-file allowlist. It contains compiled runtime JavaScript, package metadata, CSS, runtime artwork, the Cloudflare trust material, `LICENSE`, `NOTICE`, and the packaged README.
+
+Source TypeScript, tests, source maps, `node_modules`, development configuration, provenance documents, and repository process files are excluded. CI, release creation, and promotion independently verify the package structure, source equivalence, public-release safety, and third-party material contract.
