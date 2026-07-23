@@ -16,6 +16,8 @@ git config user.email "123456+your-handle@users.noreply.github.com"
 git commit --amend --reset-author --signoff
 ```
 
+GitHub-authored Dependabot commits are the sole automated exception to human author/sign-off matching. The gate recognizes only the exact Dependabot author, GitHub committer, and GitHub support role-identity pattern emitted by the platform; it does not allow general bot identities or the full `github.com` email domain.
+
 Do not submit client information, credentials, private certificates, access tokens, individual email addresses, proprietary code, or material you do not have the right to license. This includes source and code comments, fixtures, commit metadata and trailers, annotated tags, pull requests, issues, review comments, discussion comments, and release text. Synthetic `example.com` addresses are allowed in tests, and exact organization role addresses may be allowlisted. License, copyright, `NOTICE`, and trademark-policy changes require explicit maintainer and legal review.
 
 ## Branch and review policy
