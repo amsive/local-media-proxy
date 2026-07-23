@@ -72,6 +72,10 @@ test('accepts only the exact GitHub Dependabot role-identity pattern', () => {
 		...commit,
 		authorName: 'dependabot',
 	}), false);
+	assert.equal(isGitHubDependabotCommit({
+		...commit,
+		authorEmail: ['99999999+dependabot[bot]', 'users.noreply.github.com'].join('@'),
+	}), false);
 	assert.match(validateCommitSignoff({
 		...commit,
 		committerEmail: dependabotAddress,
@@ -80,6 +84,78 @@ test('accepts only the exact GitHub Dependabot role-identity pattern', () => {
 		...commit,
 		message: `chore: update dependencies\n\nSigned-off-by: GitHub <${githubCommitterAddress}>`,
 	}), /none match author/);
+});
+
+test('accepts only coauthor-matched sign-offs on a GitHub Dependabot squash commit', () => {
+	const dependabotAddress = ['49699333+dependabot[bot]', 'users.noreply.github.com'].join('@');
+	const contributorAddress = ['12345+contributor', 'users.noreply.github.com'].join('@');
+	const githubCommitterAddress = ['noreply', 'github.com'].join('@');
+	const githubSupportAddress = ['support', 'github.com'].join('@');
+	const message = [
+		'chore: update dependencies (#20)',
+		'',
+		`Signed-off-by: dependabot[bot] <${githubSupportAddress}>`,
+		`Signed-off-by: Example Contributor <${contributorAddress}>`,
+		'',
+		`Signed-off-by: dependabot[bot] <${githubSupportAddress}>`,
+		`Signed-off-by: Example Contributor <${contributorAddress}>`,
+		`Co-authored-by: dependabot[bot] <${dependabotAddress}>`,
+		`Co-authored-by: Example Contributor <${contributorAddress}>`,
+	].join('\n');
+	const commit = {
+		authorEmail: dependabotAddress,
+		authorName: 'dependabot[bot]',
+		committerEmail: githubCommitterAddress,
+		committerName: 'GitHub',
+		hash: 'abc1234',
+		message,
+	};
+
+	assert.equal(isGitHubDependabotCommit(commit), true);
+	assert.equal(validateCommitSignoff(commit), null);
+	assert.equal(isGitHubDependabotCommit({
+		...commit,
+		message: `${message}\nSigned-off-by: Unrelated Contributor <${[
+			'67890+unrelated',
+			'users.noreply.github.com',
+		].join('@')}>`,
+	}), false);
+	assert.equal(isGitHubDependabotCommit({
+		...commit,
+		message: message.replace(
+			`Signed-off-by: Example Contributor <${contributorAddress}>`,
+			'',
+		),
+	}), true);
+	assert.equal(isGitHubDependabotCommit({
+		...commit,
+		message: message.replaceAll(
+			`Signed-off-by: Example Contributor <${contributorAddress}>`,
+			'',
+		),
+	}), false);
+
+	const quotedIndividualAddress = [
+		`"${['named', 'person'].join('.')}"`,
+		'company.invalid',
+	].join('@');
+	const quotedAddressMessage = [
+		message,
+		`Signed-off-by: Example Contributor <${quotedIndividualAddress}>`,
+		`Co-authored-by: Example Contributor <${quotedIndividualAddress}>`,
+	].join('\n');
+	assert.equal(isGitHubDependabotCommit({
+		...commit,
+		message: quotedAddressMessage,
+	}), true);
+	assert.equal(validateCommitIdentity({
+		...commit,
+		message: quotedAddressMessage,
+	}, {
+		allowedEmailAddresses: [githubCommitterAddress, githubSupportAddress],
+		allowedNoreplyEmailDomains: ['users.noreply.github.com'],
+		allowedSyntheticEmailDomains: ['example.com'],
+	}).length, 1);
 });
 
 test('rejects individual addresses in commit identities, messages, and annotated tags', () => {
