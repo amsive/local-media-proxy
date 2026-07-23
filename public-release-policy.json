@@ -45,6 +45,12 @@
   ],
   "exactFindingAllowlist": [
     {
+      "path": "package-lock.json",
+      "rule": "HOST_NOT_ALLOWED",
+      "matchSha256": "0520e77b1b08cffaeeaf7f7d6b2cc023c4c22509145c52e132defe5199d8c1b3",
+      "reason": "Reviewed funding metadata for the transitive development-only @noble/hashes package; the hostname is not used by runtime code or included in the installer."
+    },
+    {
       "path": "src/dns.ts",
       "rule": "PUBLIC_IP_NOT_ALLOWED",
       "matchSha256": "b0d56c1d28390f7e4ece0ae355b30ebe8c8618788c2d769736a939a7e0bb4dd4",

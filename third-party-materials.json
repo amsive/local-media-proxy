@@ -74,9 +74,9 @@
     {
       "name": "@types/node",
       "declared": {
-        "dev": "^22.15.0"
+        "dev": "^26.1.1"
       },
-      "resolvedVersion": "22.20.1",
+      "resolvedVersion": "26.1.1",
       "license": "MIT",
       "licenseStatus": "declared",
       "distributed": false,
@@ -98,18 +98,18 @@
       "declared": {
         "peer": ">=16.14.0 <17"
       },
-      "resolvedVersion": "16.14.0",
-      "license": "MIT",
-      "licenseStatus": "declared",
+      "resolvedVersion": null,
+      "license": null,
+      "licenseStatus": "host-provided-unresolved",
       "distributed": false,
       "relationship": "Optional peer supplied by Local at runtime."
     },
     {
       "name": "selfsigned",
       "declared": {
-        "dev": "^3.0.1"
+        "dev": "^5.5.0"
       },
-      "resolvedVersion": "3.0.1",
+      "resolvedVersion": "5.5.0",
       "license": "MIT",
       "licenseStatus": "declared",
       "distributed": false,
@@ -118,9 +118,9 @@
     {
       "name": "typescript",
       "declared": {
-        "dev": "^5.8.3"
+        "dev": "^7.0.2"
       },
-      "resolvedVersion": "5.9.3",
+      "resolvedVersion": "7.0.2",
       "license": "Apache-2.0",
       "licenseStatus": "declared",
       "distributed": false,

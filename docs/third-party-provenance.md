@@ -29,7 +29,7 @@ The machine-readable manifest covers every direct development and peer dependenc
 
 `@getflywheel/local` supplies the host API and type surface used during development. Version 10.1.1 does not expose explicit license metadata in the installed package or lockfile. It is therefore recorded as `metadata-unavailable`, host-provided, and non-distributed. This exception does not authorize copying that package's source or type declarations into the release.
 
-React and React DOM are optional peers supplied by Local. TypeScript, `@types/node`, and `selfsigned` are development-only tools. Their resolved versions and declared licenses are pinned in the lockfile and checked against the provenance manifest.
+React and React DOM are optional peers supplied by Local. TypeScript, `@types/node`, and `selfsigned` are development-only tools. Resolved versions and declared licenses are pinned in the lockfile and checked against the provenance manifest when npm resolves the package locally. An optional host-provided peer that npm omits from the lockfile must instead be recorded explicitly as unresolved without invented version or license metadata.
 
 ## Review and update rules
 

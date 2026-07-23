@@ -105,6 +105,33 @@ test('rejects an undeclared direct dependency', (context) => {
 	);
 });
 
+test('allows an unresolved optional peer supplied by the host', (context) => {
+	const root = createFixture(context);
+	const packageLock = readJson(root, 'package-lock.json');
+	delete packageLock.packages['node_modules/react'];
+	writeJson(root, 'package-lock.json', packageLock);
+	const provenance = readJson(root, 'third-party-materials.json');
+	const react = provenance.dependencies.find(({ name }) => name === 'react');
+	react.resolvedVersion = null;
+	react.license = null;
+	react.licenseStatus = 'host-provided-unresolved';
+	writeJson(root, 'third-party-materials.json', provenance);
+
+	assert.doesNotThrow(() => verifyThirdParty({ now: REVIEW_DATE, root }));
+});
+
+test('rejects a missing locked development dependency', (context) => {
+	const root = createFixture(context);
+	const packageLock = readJson(root, 'package-lock.json');
+	delete packageLock.packages['node_modules/typescript'];
+	writeJson(root, 'package-lock.json', packageLock);
+
+	assert.throws(
+		() => verifyThirdParty({ now: REVIEW_DATE, root }),
+		/package-lock\.json is missing direct dependency typescript/,
+	);
+});
+
 test('rejects missing required attribution', (context) => {
 	const root = createFixture(context);
 	const noticePath = path.join(root, 'NOTICE');
