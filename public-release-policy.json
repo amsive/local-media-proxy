@@ -1,7 +1,8 @@
 {
   "version": 1,
   "allowedEmailAddresses": [
-    "noreply@github.com"
+    "noreply@github.com",
+    "support@github.com"
   ],
   "allowedHostnames": [
     "amsive.com",

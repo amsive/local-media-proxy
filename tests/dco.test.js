@@ -15,6 +15,7 @@ const { execFileSync } = require('node:child_process');
 const {
 	allReachableCommits,
 	historicalTrackedTextProblems,
+	isGitHubDependabotCommit,
 	signoffEmails,
 	validateCommitIdentity,
 	validateCommitSignoff,
@@ -49,6 +50,35 @@ test('rejects missing or mismatched DCO trailers', () => {
 		authorEmail: authorAddress,
 		hash: 'def5678',
 		message: `fix: wrong signer\n\nSigned-off-by: Someone Else <${otherAddress}>`,
+	}), /none match author/);
+});
+
+test('accepts only the exact GitHub Dependabot role-identity pattern', () => {
+	const dependabotAddress = ['49699333+dependabot[bot]', 'users.noreply.github.com'].join('@');
+	const githubCommitterAddress = ['noreply', 'github.com'].join('@');
+	const githubSupportAddress = ['support', 'github.com'].join('@');
+	const commit = {
+		authorEmail: dependabotAddress,
+		authorName: 'dependabot[bot]',
+		committerEmail: githubCommitterAddress,
+		committerName: 'GitHub',
+		hash: 'abc1234',
+		message: `chore: update dependencies\n\nSigned-off-by: dependabot[bot] <${githubSupportAddress}>`,
+	};
+
+	assert.equal(isGitHubDependabotCommit(commit), true);
+	assert.equal(validateCommitSignoff(commit), null);
+	assert.equal(isGitHubDependabotCommit({
+		...commit,
+		authorName: 'dependabot',
+	}), false);
+	assert.match(validateCommitSignoff({
+		...commit,
+		committerEmail: dependabotAddress,
+	}), /none match author/);
+	assert.match(validateCommitSignoff({
+		...commit,
+		message: `chore: update dependencies\n\nSigned-off-by: GitHub <${githubCommitterAddress}>`,
 	}), /none match author/);
 });
 
