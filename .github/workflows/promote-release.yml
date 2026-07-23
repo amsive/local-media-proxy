@@ -88,6 +88,9 @@ jobs:
       - name: Reverify third-party provenance
         run: npm run verify:third-party
 
+      - name: Audit reachable Git identities
+        run: npm run verify:git-identities
+
       - name: Rebuild distributable files from tagged source
         run: |
           npm ci --ignore-scripts

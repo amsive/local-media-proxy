@@ -40,6 +40,8 @@ jobs:
           DCO_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           DCO_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: node scripts/verify-dco.js "${DCO_BASE_SHA}" "${DCO_HEAD_SHA}"
+      - name: Audit reachable Git identities
+        run: npm run verify:git-identities
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Validate add-on

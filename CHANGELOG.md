@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Security
+
+- Blocked individually assigned email addresses from source, package contents, commit metadata and trailers, annotated tags, and release automation; contributors now use GitHub `noreply` identities or exact approved organization role addresses.
+
 ## [0.2.3] - 2026-07-23
 
 ### Added

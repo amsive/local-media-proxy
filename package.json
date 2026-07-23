@@ -74,6 +74,7 @@
     "typecheck": "tsc --noEmit",
     "validate": "npm run verify:public-release && npm run verify:third-party && npm run typecheck && npm test && npm run package:check",
     "verify:dco": "node scripts/verify-dco.js",
+    "verify:git-identities": "node scripts/verify-dco.js --all-reachable",
     "verify:public-release": "node scripts/verify-public-release.js",
     "verify:third-party": "node scripts/verify-third-party.js",
     "watch": "tsc --watch"

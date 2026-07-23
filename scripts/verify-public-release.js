@@ -33,6 +33,7 @@ const HOSTNAME_CANDIDATE_PATTERN = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)
 const URL_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'`<>()[\]{},;]+/gi;
 const IPV4_PATTERN = /(?:^|[^0-9])((?:[0-9]{1,3}\.){3}[0-9]{1,3})(?=$|[^0-9])/g;
 const IPV6_CANDIDATE_PATTERN = /(?:^|[^0-9A-Za-z:])([0-9A-Fa-f]*:[0-9A-Fa-f:]+)(?=$|[^0-9A-Za-z:])/g;
+const EMAIL_PATTERN = /\b[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+\b/gi;
 const PERSONAL_PATH_PATTERNS = [
 	/(?:file:\/\/)?\/Users\/[^/\s"'<>]+(?:\/[^\s"'<>]*)?/g,
 	/(?:file:\/\/)?\/home\/[^/\s"'<>]+(?:\/[^\s"'<>]*)?/g,
@@ -200,8 +201,11 @@ function validatePolicy(policy) {
 		throw new Error('Public-release policy must have version 1.');
 	}
 	for (const key of [
+		'allowedEmailAddresses',
 		'allowedHostnames',
+		'allowedNoreplyEmailDomains',
 		'allowedPublicIps',
+		'allowedSyntheticEmailDomains',
 		'exactFindingAllowlist',
 		'manifestedExtensions',
 		'dangerousExtensions',
@@ -213,8 +217,11 @@ function validatePolicy(policy) {
 	if (!Number.isSafeInteger(policy.maxFileSizeBytes) || policy.maxFileSizeBytes <= 0) {
 		throw new Error('Public-release policy maxFileSizeBytes must be a positive integer.');
 	}
+	assertUniqueNormalized(policy.allowedEmailAddresses, 'allowed email address', normalizeEmail);
 	assertUniqueNormalized(policy.allowedHostnames, 'allowed hostname', normalizeHostname);
+	assertUniqueNormalized(policy.allowedNoreplyEmailDomains, 'allowed noreply email domain', normalizeHostname);
 	assertUniqueNormalized(policy.allowedPublicIps, 'allowed public IP', (value) => String(value));
+	assertUniqueNormalized(policy.allowedSyntheticEmailDomains, 'allowed synthetic email domain', normalizeHostname);
 	assertUniqueNormalized(policy.manifestedExtensions, 'manifested extension', normalizeExtension);
 	assertUniqueNormalized(policy.dangerousExtensions, 'dangerous extension', normalizeExtension);
 	for (const exception of policy.exactFindingAllowlist) {
@@ -426,6 +433,21 @@ function verifyManifestedAsset({
 }
 
 function scanText(relativePath, text, findings, policy) {
+	for (const match of text.matchAll(cloneGlobalRegularExpression(EMAIL_PATTERN))) {
+		if (!isAllowedEmail(match[0], policy)) {
+			addTextFinding(
+				findings,
+				policy,
+				relativePath,
+				text,
+				match.index,
+				match[0],
+				'INDIVIDUAL_EMAIL_NOT_ALLOWED',
+				'Individual email addresses are not permitted; use a GitHub noreply identity, synthetic fixture, or explicitly approved role address.',
+			);
+		}
+	}
+
 	for (const secret of SECRET_PATTERNS) {
 		for (const match of text.matchAll(cloneGlobalRegularExpression(secret.pattern))) {
 			addTextFinding(findings, policy, relativePath, text, match.index, match[0], secret.rule, secret.message);
@@ -577,6 +599,28 @@ function scanText(relativePath, text, findings, policy) {
 			);
 		}
 	}
+}
+
+function normalizeEmail(value) {
+	return String(value).trim().toLowerCase();
+}
+
+function emailDomain(value) {
+	const normalized = normalizeEmail(value);
+	return normalized.slice(normalized.lastIndexOf('@') + 1);
+}
+
+function isAllowedEmail(value, policy) {
+	const normalized = normalizeEmail(value);
+	const domain = emailDomain(normalized);
+	return policy.allowedEmailAddresses.map(normalizeEmail).includes(normalized)
+		|| policy.allowedNoreplyEmailDomains.map(normalizeHostname).includes(domain)
+		|| policy.allowedSyntheticEmailDomains.map(normalizeHostname).includes(domain);
+}
+
+function emailsInText(text) {
+	return [...String(text).matchAll(cloneGlobalRegularExpression(EMAIL_PATTERN))]
+		.map((match) => match[0]);
 }
 
 function inspectPng(buffer) {
@@ -1111,9 +1155,11 @@ if (require.main === module) {
 
 module.exports = {
 	crc32,
+	emailsInText,
 	formatFinding,
 	inspectPng,
 	inspectSvg,
+	isAllowedEmail,
 	loadAssetManifest,
 	loadPolicy,
 	runCli,

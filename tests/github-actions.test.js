@@ -79,6 +79,16 @@ test('enforces DCO sign-offs across the exact pull-request commit range', () => 
 	assert.match(workflow, /node scripts\/verify-dco\.js "\$\{DCO_BASE_SHA\}" "\$\{DCO_HEAD_SHA\}"/);
 });
 
+test('audits reachable commit and tag identities in validation and release workflows', () => {
+	for (const name of ['ci.yml', 'release.yml', 'promote-release.yml']) {
+		const workflow = fs.readFileSync(
+			path.resolve(__dirname, '../.github/workflows', name),
+			'utf8',
+		);
+		assert.match(workflow, /npm run verify:git-identities/);
+	}
+});
+
 test('groups future GitHub Actions updates into one Dependabot pull request', () => {
 	const config = fs.readFileSync(
 		path.resolve(__dirname, '../.github/dependabot.yml'),

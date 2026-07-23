@@ -10,33 +10,86 @@ const test = require('node:test');
 
 const {
 	signoffEmails,
+	validateCommitIdentity,
 	validateCommitSignoff,
+	validateTagIdentity,
 } = require('../scripts/verify-dco');
 
 test('accepts a DCO trailer matching the commit author email', () => {
+	const address = ['12345+contributor', 'users.noreply.github.com'].join('@');
 	const message = [
 		'feat: add a safe example',
 		'',
-		'Signed-off-by: Example Contributor <contributor@example.com>',
+		`Signed-off-by: Example Contributor <${address}>`,
 	].join('\n');
 
-	assert.deepEqual(signoffEmails(message), ['contributor@example.com']);
+	assert.deepEqual(signoffEmails(message), [address]);
 	assert.equal(validateCommitSignoff({
-		authorEmail: 'Contributor@Example.com',
+		authorEmail: address.toUpperCase(),
 		hash: 'abc1234',
 		message,
 	}), null);
 });
 
 test('rejects missing or mismatched DCO trailers', () => {
+	const authorAddress = ['12345+contributor', 'users.noreply.github.com'].join('@');
+	const otherAddress = ['67890+someone-else', 'users.noreply.github.com'].join('@');
 	assert.match(validateCommitSignoff({
-		authorEmail: 'contributor@example.com',
+		authorEmail: authorAddress,
 		hash: 'abc1234',
 		message: 'fix: missing trailer',
 	}), /missing a Signed-off-by/);
 	assert.match(validateCommitSignoff({
-		authorEmail: 'contributor@example.com',
+		authorEmail: authorAddress,
 		hash: 'def5678',
-		message: 'fix: wrong signer\n\nSigned-off-by: Someone Else <else@example.com>',
+		message: `fix: wrong signer\n\nSigned-off-by: Someone Else <${otherAddress}>`,
 	}), /none match author/);
+});
+
+test('rejects individual addresses in commit identities, messages, and annotated tags', () => {
+	const allowedAddress = ['12345+contributor', 'users.noreply.github.com'].join('@');
+	const individualAddress = ['named-person', 'company.invalid'].join('@');
+	const policy = {
+		allowedEmailAddresses: [],
+		allowedNoreplyEmailDomains: ['users.noreply.github.com'],
+		allowedSyntheticEmailDomains: ['example.com'],
+	};
+	const commitProblems = validateCommitIdentity({
+		authorEmail: individualAddress,
+		committerEmail: allowedAddress,
+		hash: 'abc1234',
+		message: `Co-authored-by: Named Person <${individualAddress}>`,
+	}, policy);
+	assert.equal(commitProblems.length, 2);
+	assert(commitProblems.every((problem) => !problem.includes(individualAddress)));
+
+	const tagProblems = validateTagIdentity({
+		email: individualAddress,
+		message: `Contact: ${individualAddress}`,
+		ref: 'refs/tags/v1.0.0',
+	}, policy);
+	assert.equal(tagProblems.length, 2);
+	assert(tagProblems.every((problem) => !problem.includes(individualAddress)));
+});
+
+test('allows an exact role address without allowing its entire domain', () => {
+	const roleAddress = ['open-source', 'company.invalid'].join('@');
+	const individualAddress = ['named-person', 'company.invalid'].join('@');
+	const policy = {
+		allowedEmailAddresses: [roleAddress],
+		allowedNoreplyEmailDomains: [],
+		allowedSyntheticEmailDomains: ['example.com'],
+	};
+	assert.deepEqual(validateCommitIdentity({
+		authorEmail: roleAddress,
+		committerEmail: roleAddress,
+		hash: 'abc1234',
+		message: `Signed-off-by: Open Source Team <${roleAddress}>`,
+	}, policy), []);
+	assert.equal(validateCommitIdentity({
+		authorEmail: individualAddress,
+		committerEmail: roleAddress,
+		hash: 'def5678',
+		message: `Signed-off-by: Named Person <${individualAddress}>`,
+	}, policy).length, 2);
 });
