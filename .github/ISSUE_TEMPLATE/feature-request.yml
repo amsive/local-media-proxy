@@ -1,0 +1,49 @@
+name: Feature request
+description: Propose a focused improvement to Local Media Proxy
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the user problem before proposing an implementation. Do not include client data, private infrastructure, credentials, or proprietary material.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow or limitation should the project improve?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe the observable behavior you would like.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Include current workarounds or narrower approaches.
+  - type: dropdown
+    id: affected-server
+    attributes:
+      label: Affected Local web server
+      options:
+        - Both Nginx and Apache
+        - Nginx
+        - Apache
+        - Not server-specific
+    validations:
+      required: true
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Project boundaries
+      options:
+        - label: The request preserves the local-first, read-only, uploads-image-only proxy model, or clearly explains why that model would need discussion.
+          required: true
+        - label: I removed client data, domains, IP addresses, credentials, and proprietary material.
+          required: true

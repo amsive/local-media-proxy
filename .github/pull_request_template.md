@@ -12,8 +12,9 @@
 - [ ] New code, assets, dependencies, and notices have compatible licensing and known provenance.
 - [ ] The change contains no credentials, client data, private certificates, access tokens, or proprietary material.
 - [ ] `npm run verify:public-release` passes; any policy exception is exact and documented.
+- [ ] `npm run verify:third-party` passes; dependency, trust, package, and attribution changes are documented.
 - [ ] Filenames, commits, PR text, comments, and release notes received a human client-data review.
-- [ ] License, copyright, `NOTICE`, or trademark changes have explicit maintainer and legal approval, when applicable.
+- [ ] License, copyright, `NOTICE`, or trademark changes have explicit maintainer review, and any remaining legal review is identified without claiming approval.
 
 ## Screenshots
 

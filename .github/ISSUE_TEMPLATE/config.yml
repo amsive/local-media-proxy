@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/amsive/local-media-proxy/security/advisories/new
+    about: Use GitHub's private vulnerability reporting form. Do not disclose security details publicly.
+  - name: Community support policy
+    url: https://github.com/amsive/local-media-proxy/blob/main/SUPPORT.md
+    about: Review the project's best-effort support scope before opening an issue.

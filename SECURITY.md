@@ -2,13 +2,26 @@
 
 Security reports are reviewed on a best-effort basis under the project’s [community support policy](SUPPORT.md). This policy does not create a service-level agreement, warranty, or guaranteed response or remediation time.
 
+## Scope
+
+Security-sensitive behavior includes:
+
+- bypassing the `/wp-content/uploads/` image-only, `GET`/`HEAD`, or local-first request boundaries;
+- forwarding credentials, cookies, request bodies, or unapproved incoming headers;
+- bypassing TLS chain, hostname, or configured-origin verification;
+- writing outside the selected Local site or modifying files outside managed markers;
+- failing to restore settings or managed files after a rejected apply, disable, or rollback; and
+- exposing secrets, private certificates, client information, or unsafe release artifacts through the project.
+
+General configuration help, unsupported Local versions, remote-site availability, third-party access rules, and feature requests are not vulnerabilities unless they demonstrate a security-boundary failure. Report reproducible non-security defects through the project’s bug form.
+
 ## Supported versions
 
 Security fixes are applied to the latest released version. Upgrade before reporting an issue that is already fixed in a newer release.
 
 ## Reporting a vulnerability
 
-Do not open a public issue for a suspected vulnerability. Use GitHub’s private [Report a vulnerability](https://github.com/amsive/local-media-proxy/security/advisories/new) form. If that form is unavailable, use the [Amsive contact form](https://www.amsive.com/contact-us/) to request a confidential security contact before sending technical details. Include:
+Do not open a public issue for a suspected vulnerability. Use GitHub’s private [Report a vulnerability](https://github.com/amsive/local-media-proxy/security/advisories/new) form. If that form is unavailable, use the [Amsive contact form](https://www.amsive.com/contact-us/) to request a confidential security contact before sending technical details. Begin the request with `Local Media Proxy security report`. Include:
 
 - the affected add-on and Local versions;
 - the relevant site web-server type;
