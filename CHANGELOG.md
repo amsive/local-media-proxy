@@ -19,6 +19,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Required third-party provenance verification during validation, continuous integration, release creation, promotion, and exact installer-package verification.
 - Shortened the README into an installation and usage landing page and moved advanced proxy, TLS, Apache/Nginx, lifecycle, and managed-file details into dedicated technical documentation.
 - Preserved the exact installer boundary and both unmodified Cloudflare Origin CA roots without weakening hostname, expiry, or certificate-chain validation.
+- Updated the development-only TypeScript, Node declaration, and TLS fixture toolchain and migrated compiler resolution to NodeNext without adding runtime dependencies.
 
 ### Security
 

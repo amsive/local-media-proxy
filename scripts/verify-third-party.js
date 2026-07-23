@@ -167,6 +167,35 @@ function verifyDependencies(manifest, packageJson, packageLock) {
 		assert.deepEqual(dependency.declared, declared, `Declared versions have changed for ${name}.`);
 		assert.equal(dependency.distributed, false, `${name} must remain non-distributed.`);
 		const locked = packageLock.packages?.[`node_modules/${name}`];
+		const isUnresolvedOptionalPeer = (
+			!Object.hasOwn(packageJson.devDependencies ?? {}, name)
+			&& Object.hasOwn(packageJson.peerDependencies ?? {}, name)
+			&& packageJson.peerDependenciesMeta?.[name]?.optional === true
+			&& !locked
+		);
+		if (isUnresolvedOptionalPeer) {
+			assert.equal(
+				dependency.resolvedVersion,
+				null,
+				`Unresolved optional peer ${name} must not claim a resolved version.`,
+			);
+			assert.equal(
+				dependency.license,
+				null,
+				`Unresolved optional peer ${name} must not claim lockfile license metadata.`,
+			);
+			assert.equal(
+				dependency.licenseStatus,
+				'host-provided-unresolved',
+				`${name} must record that its host-provided metadata is unresolved.`,
+			);
+			assert.match(
+				dependency.relationship,
+				/host|supplied/i,
+				`${name} must document that the optional peer is supplied by the host.`,
+			);
+			continue;
+		}
 		assert(locked, `package-lock.json is missing direct dependency ${name}.`);
 		assert.equal(dependency.resolvedVersion, locked.version, `Resolved version has changed for ${name}.`);
 		if (locked.license) {

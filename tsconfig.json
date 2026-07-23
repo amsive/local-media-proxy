@@ -7,8 +7,8 @@
       "ES2022",
       "DOM"
     ],
-    "module": "commonjs",
-    "moduleResolution": "node",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
     "noImplicitReturns": true,
     "outDir": "lib",
     "resolveJsonModule": true,
@@ -16,7 +16,10 @@
     "skipLibCheck": true,
     "sourceMap": true,
     "strict": true,
-    "target": "ES2020"
+    "target": "ES2020",
+    "types": [
+      "node"
+    ]
   },
   "include": [
     "src/**/*.ts"
