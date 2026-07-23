@@ -81,6 +81,18 @@ test('rejects stale provenance', (context) => {
 	);
 });
 
+test('rejects future-dated provenance', (context) => {
+	const root = createFixture(context);
+	const provenance = readJson(root, 'third-party-materials.json');
+	provenance.reviewedOn = '2026-07-24';
+	writeJson(root, 'third-party-materials.json', provenance);
+
+	assert.throws(
+		() => verifyThirdParty({ now: REVIEW_DATE, root }),
+		/third-party-materials\.json reviewedOn cannot be in the future/,
+	);
+});
+
 test('rejects an undeclared direct dependency', (context) => {
 	const root = createFixture(context);
 	const packageJson = readJson(root, 'package.json');

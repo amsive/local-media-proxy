@@ -77,7 +77,7 @@ function verifyReviewDate(reviewedOn, now) {
 	const reviewedAt = new Date(`${reviewedOn}T00:00:00.000Z`);
 	assert(!Number.isNaN(reviewedAt.valueOf()), 'third-party-materials.json reviewedOn is invalid.');
 	const ageMs = now.valueOf() - reviewedAt.valueOf();
-	assert(ageMs >= -DAY_MS, 'third-party-materials.json reviewedOn cannot be in the future.');
+	assert(ageMs >= 0, 'third-party-materials.json reviewedOn cannot be in the future.');
 	assert(
 		ageMs <= MAX_REVIEW_AGE_DAYS * DAY_MS,
 		`Third-party provenance is older than ${MAX_REVIEW_AGE_DAYS} days and must be reviewed.`,
