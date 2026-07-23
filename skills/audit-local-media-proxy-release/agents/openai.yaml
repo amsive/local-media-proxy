@@ -1,0 +1,4 @@
+interface:
+  display_name: "Audit Local Media Proxy Release"
+  short_description: "Audit new release changes before issue publication"
+  default_prompt: "Use $audit-local-media-proxy-release to audit the latest Local Media Proxy release against its approved baseline and prepare evidence-backed issue drafts."

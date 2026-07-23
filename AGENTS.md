@@ -16,6 +16,10 @@ Runtime TypeScript lives in `src/`. `main.ts` owns Local IPC and lifecycle work;
 
 Symlink the repository into Local’s add-ons directory for live development, then restart Local.
 
+## Release Audit Workflow
+
+When a new `vX.Y.Z` release tag or draft release is produced, or when asked to review changes since the last audit, read and follow `skills/audit-local-media-proxy-release/SKILL.md`. Keep the audit diff-focused and read-only, present complete issue drafts before creating anything, and require explicit approval before publishing GitHub issues. Follow `SECURITY.md` for confidential vulnerability reporting.
+
 ## Coding Style & Naming Conventions
 
 Use tabs in TypeScript, JavaScript, and CSS; use two spaces in JSON. Follow strict TypeScript, small modules, `camelCase` functions, `PascalCase` interfaces, and uppercase constants. Never interpolate unvalidated renderer input into Nginx. Scope UI rules below `.LocalMediaProxy` and support `.Theme__Light` and `.Theme__Dark`.
