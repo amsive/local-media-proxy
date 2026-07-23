@@ -24,6 +24,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Security
 
 - Blocked individually assigned email addresses from source, package contents, commit metadata and trailers, annotated tags, and release automation; contributors now use GitHub `noreply` identities or exact approved organization role addresses.
+- Preserved strict human author/sign-off matching while recognizing GitHub-generated Dependabot squash metadata only when every additional sign-off matches a recorded coauthor.
 
 ## [0.2.2] - 2026-07-22
 

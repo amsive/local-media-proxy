@@ -14,23 +14,58 @@ const {
 } = require('./verify-public-release');
 
 const REPOSITORY_ROOT = path.resolve(__dirname, '..');
-const SIGNOFF_PATTERN = /^Signed-off-by:\s+.+?\s+<([^<>\r\n]+)>\s*$/gmi;
-const DEPENDABOT_AUTHOR_EMAIL_PATTERN = /^\d+\+dependabot\[bot\]@users\.noreply\.github\.com$/i;
+const DEPENDABOT_AUTHOR_EMAIL = '49699333+dependabot[bot]@users.noreply.github.com';
 const GITHUB_COMMITTER_EMAIL = 'noreply@github.com';
 const GITHUB_SUPPORT_EMAIL = 'support@github.com';
 
-function signoffEmails(message) {
-	return [...message.matchAll(new RegExp(SIGNOFF_PATTERN.source, SIGNOFF_PATTERN.flags))]
-		.map((match) => match[1].trim().toLowerCase());
+function identityTrailers(message, label) {
+	const pattern = new RegExp(
+		`^${label}:\\s+(.+?)\\s+<([^<>\\r\\n]+)>\\s*$`,
+		'gmi',
+	);
+	return [...message.matchAll(pattern)].map((match) => ({
+		email: match[2].trim().toLowerCase(),
+		name: match[1].trim(),
+	}));
 }
 
-function isGitHubDependabotCommit(commit, emails = signoffEmails(commit.message)) {
-	return commit.authorName === 'dependabot[bot]'
-		&& DEPENDABOT_AUTHOR_EMAIL_PATTERN.test(commit.authorEmail.trim())
+function signoffEmails(message) {
+	return identityTrailers(message, 'Signed-off-by').map(({ email }) => email);
+}
+
+function identityKey({ email, name }) {
+	return `${name}\0${email}`;
+}
+
+function isGitHubDependabotCommit(commit) {
+	const hasPlatformIdentity = commit.authorName === 'dependabot[bot]'
+		&& commit.authorEmail.trim().toLowerCase() === DEPENDABOT_AUTHOR_EMAIL
 		&& commit.committerName === 'GitHub'
-		&& commit.committerEmail.trim().toLowerCase() === GITHUB_COMMITTER_EMAIL
-		&& emails.length === 1
-		&& emails[0] === GITHUB_SUPPORT_EMAIL;
+		&& commit.committerEmail.trim().toLowerCase() === GITHUB_COMMITTER_EMAIL;
+	if (!hasPlatformIdentity) {
+		return false;
+	}
+
+	const signoffs = identityTrailers(commit.message, 'Signed-off-by');
+	const coauthors = identityTrailers(commit.message, 'Co-authored-by');
+	const hasDependabotRoleSignoff = signoffs.some(({ email, name }) =>
+		name === 'dependabot[bot]' && email === GITHUB_SUPPORT_EMAIL);
+	if (!hasDependabotRoleSignoff) {
+		return false;
+	}
+
+	const coauthorKeys = new Set(coauthors.map(identityKey));
+	const signoffKeys = new Set(signoffs.map(identityKey));
+	const signoffsAreExpected = signoffs.every((signoff) =>
+		(signoff.name === 'dependabot[bot]' && signoff.email === GITHUB_SUPPORT_EMAIL)
+		|| coauthorKeys.has(identityKey(signoff)));
+	const coauthorsAreSigned = coauthors.every((coauthor) =>
+		(
+			coauthor.name === 'dependabot[bot]'
+			&& coauthor.email === DEPENDABOT_AUTHOR_EMAIL
+		)
+		|| signoffKeys.has(identityKey(coauthor)));
+	return signoffsAreExpected && coauthorsAreSigned;
 }
 
 function validateCommitSignoff(commit) {
@@ -39,7 +74,7 @@ function validateCommitSignoff(commit) {
 	if (emails.includes(authorEmail)) {
 		return null;
 	}
-	if (isGitHubDependabotCommit(commit, emails)) {
+	if (isGitHubDependabotCommit(commit)) {
 		return null;
 	}
 	if (emails.length === 0) {
@@ -50,13 +85,20 @@ function validateCommitSignoff(commit) {
 
 function validateCommitIdentity(commit, policy) {
 	const problems = [];
+	const parsedTrailerEmails = [
+		...identityTrailers(commit.message, 'Signed-off-by'),
+		...identityTrailers(commit.message, 'Co-authored-by'),
+	].map(({ email }) => email);
 	if (!isAllowedEmail(commit.authorEmail, policy)) {
 		problems.push(`${commit.hash} uses an author address that is not an approved GitHub noreply or role address.`);
 	}
 	if (!isAllowedEmail(commit.committerEmail, policy)) {
 		problems.push(`${commit.hash} uses a committer address that is not an approved GitHub noreply or role address.`);
 	}
-	if (emailsInText(commit.message).some((email) => !isAllowedEmail(email, policy))) {
+	if (
+		[...emailsInText(commit.message), ...parsedTrailerEmails]
+			.some((email) => !isAllowedEmail(email, policy))
+	) {
 		problems.push(`${commit.hash} contains an individual address in its commit message or trailers.`);
 	}
 	return problems;

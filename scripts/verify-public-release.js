@@ -33,7 +33,7 @@ const HOSTNAME_CANDIDATE_PATTERN = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)
 const URL_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'`<>()[\]{},;]+/gi;
 const IPV4_PATTERN = /(?:^|[^0-9])((?:[0-9]{1,3}\.){3}[0-9]{1,3})(?=$|[^0-9])/g;
 const IPV6_CANDIDATE_PATTERN = /(?:^|[^0-9A-Za-z:])([0-9A-Fa-f]*:[0-9A-Fa-f:]+)(?=$|[^0-9A-Za-z:])/g;
-const EMAIL_PATTERN = /\b[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+\b/gi;
+const EMAIL_PATTERN = /(?:\b[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+|"(?:[^"\\\r\n]|\\.)+")@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+\b/gi;
 const PERSONAL_PATH_PATTERNS = [
 	/(?:file:\/\/)?\/Users\/[^/\s"'<>]+(?:\/[^\s"'<>]*)?/g,
 	/(?:file:\/\/)?\/home\/[^/\s"'<>]+(?:\/[^\s"'<>]*)?/g,

@@ -53,6 +53,10 @@ test('permits only synthetic, GitHub noreply, and explicitly approved role addre
 	const noreplyAddress = ['12345+fixture-contributor', 'users.noreply.github.com'].join('@');
 	const roleAddress = ['open-source', 'company.invalid'].join('@');
 	const individualAddress = ['individual-contributor', 'company.invalid'].join('@');
+	const quotedIndividualAddress = [
+		`"${['individual', 'contributor'].join('.')}"`,
+		'company.invalid',
+	].join('@');
 	const policy = {
 		...basePolicy,
 		allowedEmailAddresses: [...basePolicy.allowedEmailAddresses, roleAddress],
@@ -62,7 +66,10 @@ test('permits only synthetic, GitHub noreply, and explicitly approved role addre
 		noreplyAddress,
 		roleAddress,
 	].join('\n'));
-	writeFixture(fixture, 'individual.txt', individualAddress);
+	writeFixture(fixture, 'individual.txt', [
+		individualAddress,
+		quotedIndividualAddress,
+	].join('\n'));
 
 	const findings = scanFixture(fixture, [], policy).findings;
 	assert.equal(
@@ -73,7 +80,7 @@ test('permits only synthetic, GitHub noreply, and explicitly approved role addre
 	assert.equal(
 		findings.filter(({ path: findingPath, rule }) =>
 			findingPath === 'individual.txt' && rule === 'INDIVIDUAL_EMAIL_NOT_ALLOWED').length,
-		1,
+		2,
 	);
 });
 
