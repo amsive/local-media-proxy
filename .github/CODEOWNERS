@@ -6,9 +6,12 @@
 /.github/CODEOWNERS @mdavoli @amsive/amsive-web-developers
 /public-release-policy.json @mdavoli @amsive/amsive-web-developers
 /public-release-assets.json @mdavoli @amsive/amsive-web-developers
+/third-party-materials.json @mdavoli @amsive/amsive-web-developers
 /scripts/verify-public-release.js @mdavoli @amsive/amsive-web-developers
 /scripts/verify-release-package.js @mdavoli @amsive/amsive-web-developers
+/scripts/verify-third-party.js @mdavoli @amsive/amsive-web-developers
 /resources/ @mdavoli @amsive/amsive-web-developers
+/docs/third-party-provenance.md @mdavoli @amsive/amsive-web-developers
 /docs/screenshots/ @mdavoli @amsive/amsive-web-developers
 /LICENSE @mdavoli @amsive/amsive-web-developers
 /NOTICE @mdavoli @amsive/amsive-web-developers

@@ -32,6 +32,8 @@ jobs:
           mkdir -p "${source_root}"
           git archive --format=tar HEAD | tar -xf - -C "${source_root}"
           node scripts/verify-public-release.js --root "${source_root}" --require-manifest-completeness
+      - name: Verify third-party provenance
+        run: npm run verify:third-party
       - name: Enforce Developer Certificate of Origin
         if: github.event_name == 'pull_request'
         env:

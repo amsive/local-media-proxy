@@ -10,7 +10,7 @@ Run this before every commit or push:
 npm run verify:public-release
 ```
 
-`npm run validate` runs the same check first. Repository-mode scans inspect both staged Git-index bytes and any different working-tree bytes, so an unstaged edit cannot conceal sensitive content already prepared for commit. The validation, release, and promotion workflows repeat the check against the tracked tree. Release validation also builds and scans both Git-generated ZIP and TAR source archives, while the package verifier scans every file in the exact `local-media-proxy-v<version>.tgz` installer before upload or promotion. It rejects any installer that does not use npm's single top-level `package/` folder or that contains files outside the exact minimal runtime manifest.
+`npm run validate` runs the same check first and then runs the offline `npm run verify:third-party` provenance gate. Repository-mode scans inspect both staged Git-index bytes and any different working-tree bytes, so an unstaged edit cannot conceal sensitive content already prepared for commit. The validation, release, and promotion workflows repeat these checks against the tracked tree. Release validation also builds and scans both Git-generated ZIP and TAR source archives, while the package verifier scans every file in the exact `local-media-proxy-v<version>.tgz` installer before upload or promotion. It rejects any installer that does not use npm's single top-level `package/` folder, contains files outside the exact minimal runtime manifest, or violates the declared third-party material contract.
 
 The gate rejects:
 

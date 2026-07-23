@@ -57,6 +57,9 @@ jobs:
           node scripts/verify-public-release.js --root "${tar_root}" --require-manifest-completeness
           node scripts/verify-public-release.js --root "${zip_root}" --require-manifest-completeness
 
+      - name: Verify third-party provenance
+        run: npm run verify:third-party
+
       - name: Install locked dependencies
         run: npm ci --ignore-scripts
 

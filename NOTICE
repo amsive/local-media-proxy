@@ -5,10 +5,12 @@ This product includes software developed by Amsive LLC.
 https://www.amsive.com/
 
 This distribution includes Cloudflare Origin CA root certificates published by
-Cloudflare, Inc. Cloudflare documentation content is licensed under the Creative
-Commons Attribution 4.0 International license:
+Cloudflare, Inc. Cloudflare's public documentation repository identifies its
+documentation and other content, except where otherwise noted, as available
+under the Creative Commons Attribution 4.0 International license:
 
 https://creativecommons.org/licenses/by/4.0/
+https://github.com/cloudflare/cloudflare-docs#license-and-legal-notices
 
 The certificate sources are:
 
@@ -18,6 +20,9 @@ https://developers.cloudflare.com/ssl/static/origin_ca_ecc_root.pem
 The distributed resources/cloudflare-origin-ca.pem file concatenates those two
 published certificates into one bundle; the certificate bytes are otherwise
 unchanged.
+
+Cloudflare is not affiliated with this project. Nothing in this notice implies
+Cloudflare endorsement or grants a separate license to Cloudflare trademarks.
 
 This product includes a scoped adaptation of the LoadingIndicator from
 @getflywheel/local-components 17.8.1:

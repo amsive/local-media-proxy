@@ -29,6 +29,7 @@ test('declares the installed add-on card metadata expected by Local', () => {
 	assert.equal(ADDON_VERSION, packageJson.version);
 	assert.equal(packageJson.scripts['package:addon'], 'node scripts/package-addon.js');
 	assert.equal(packageJson.scripts['package:check'], 'npm run package:addon');
+	assert.equal(packageJson.scripts['verify:third-party'], 'node scripts/verify-third-party.js');
 	assert.deepEqual(packageJson.files, [
 		'lib/apache.js',
 		'lib/constants.js',
@@ -55,6 +56,9 @@ test('declares the installed add-on card metadata expected by Local', () => {
 		'resources/mark-davoli-avatar.svg',
 		'style.css',
 	]);
+	// npm adds package.json to these 24 explicit files, producing the
+	// release verifier's exact 25-entry archive.
+	assert.equal(packageJson.files.length, 24);
 	for (const asset of [
 		'amsive-avatar.svg',
 		'boris-hegedis-avatar.svg',
