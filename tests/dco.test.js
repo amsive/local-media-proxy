@@ -6,9 +6,14 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const test = require('node:test');
+const { execFileSync } = require('node:child_process');
 
 const {
+	allReachableCommits,
 	signoffEmails,
 	validateCommitIdentity,
 	validateCommitSignoff,
@@ -92,4 +97,31 @@ test('allows an exact role address without allowing its entire domain', () => {
 		hash: 'def5678',
 		message: `Signed-off-by: Named Person <${individualAddress}>`,
 	}, policy).length, 2);
+});
+
+test('excludes GitHub synthetic pull-request merge refs from advertised history', (t) => {
+	const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'dco-merge-ref-'));
+	t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+	const address = ['12345+contributor', 'users.noreply.github.com'].join('@');
+	const runGit = (args) => execFileSync('git', args, {
+		cwd: fixture,
+		encoding: 'utf8',
+		stdio: ['ignore', 'pipe', 'pipe'],
+	}).trim();
+	runGit(['init', '--quiet', '--initial-branch=main']);
+	runGit(['config', 'user.name', 'Example Contributor']);
+	runGit(['config', 'user.email', address]);
+	fs.writeFileSync(path.join(fixture, 'fixture.txt'), 'advertised\n');
+	runGit(['add', 'fixture.txt']);
+	runGit(['commit', '--quiet', '--signoff', '-m', 'test: add advertised commit']);
+	const advertisedCommit = runGit(['rev-parse', 'HEAD']);
+	runGit(['commit', '--quiet', '--allow-empty', '-m', 'Merge pull request']);
+	const syntheticMergeCommit = runGit(['rev-parse', 'HEAD']);
+	runGit(['update-ref', 'refs/remotes/pull/19/merge', syntheticMergeCommit]);
+	runGit(['update-ref', 'refs/heads/main', advertisedCommit, syntheticMergeCommit]);
+
+	assert.deepEqual(
+		allReachableCommits(fixture).map(({ hash }) => hash),
+		[advertisedCommit],
+	);
 });

@@ -72,7 +72,17 @@ function commitsInRange(root, base, head) {
 }
 
 function allReachableCommits(root) {
-	return commitsFromOutput(root, git(root, ['rev-list', '--reverse', '--all']));
+	const refs = git(root, [
+		'for-each-ref',
+		'--format=%(refname)',
+		'refs/heads',
+		'refs/remotes/origin',
+		'refs/tags',
+	]).split('\n').filter(Boolean);
+	if (refs.length === 0) {
+		return [];
+	}
+	return commitsFromOutput(root, git(root, ['rev-list', '--reverse', ...refs]));
 }
 
 function commitsFromOutput(root, output) {
