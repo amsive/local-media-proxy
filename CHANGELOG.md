@@ -6,6 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-07-24
+
+### Changed
+
+- Added consistent campaign attribution to Amsive links in the public README and installed add-on metadata, distinguishing GitHub README, Local add-on detail, and package-author referrals.
+
+### Fixed
+
+- Restored the reviewed origin-discovery screenshot in the public and packaged README without linking to the removed commit history.
+
 ## [0.2.3] - 2026-07-23
 
 ### Added
@@ -102,7 +112,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Prevented slow or cancelled connection probes from hanging the UI and replaced low-level timeout errors with actionable messages.
 - Preserved correct TLS verification when switching between direct WP Engine origins and compatible proxy, CDN, or load-balancer endpoints.
 
-[Unreleased]: https://github.com/amsive/local-media-proxy/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/amsive/local-media-proxy/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/amsive/local-media-proxy/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/amsive/local-media-proxy/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/amsive/local-media-proxy/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/amsive/local-media-proxy/compare/v0.2.0...v0.2.1

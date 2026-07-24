@@ -116,6 +116,15 @@ ${ADDON_NAME} is maintained by Amsive LLC and developed by Mark Davoli and Boris
 }
 
 function createCurrentReleaseNotes(): string {
+	return `Version 0.2.4 restores the README screenshot and adds link attribution without changing Local Media Proxy behavior.
+
+- Restored the reviewed origin-discovery screenshot in both the public and packaged README without linking to removed repository history.
+- Added consistent campaign attribution to Amsive links in the public README and installed add-on metadata.
+
+[View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
+}
+
+function createV023ReleaseNotes(): string {
 	return `Version 0.2.3 prepares the project for public open-source collaboration without changing proxy or TLS behavior.
 
 - Added machine-readable third-party provenance and an offline release gate that pins both bundled Cloudflare Origin CA roots, their fingerprints, and the exact trust-file hash.
@@ -165,24 +174,19 @@ Apache uses the Site URL hostname for DNS, HTTP Host, TLS SNI, and certificate v
 [View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
 }
 
-function createV011ReleaseNotes(): string {
-	return `Version 0.1.1 maintenance release.
-
-- Kept build-job output as validated data across the draft-release permission boundary.
-- Bound the publisher's version, installer filename, checksum filename, and visible release title to the exact SemVer tag.
-- Restricted credential placeholders to explicit whole-value forms in both source and installer checks.
-- Preserved the Local-installable TGZ format, npm's standard \`package/\` root, and exact minimal runtime manifest.
-
-[View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
-}
-
 function createPackagedReleaseHistory(): PackagedRelease[] {
 	return [
 		{
 			changelog: createCurrentReleaseNotes(),
-			date: '2026-07-23T00:00:00.000Z',
+			date: '2026-07-24T00:00:00.000Z',
 			id: `${ADDON_ID}-${ADDON_VERSION}`,
 			version: ADDON_VERSION,
+		},
+		{
+			changelog: createV023ReleaseNotes(),
+			date: '2026-07-23T00:00:00.000Z',
+			id: `${ADDON_ID}-0.2.3`,
+			version: '0.2.3',
 		},
 		{
 			changelog: createV022ReleaseNotes(),
@@ -201,12 +205,6 @@ function createPackagedReleaseHistory(): PackagedRelease[] {
 			date: '2026-07-21T00:00:00.000Z',
 			id: `${ADDON_ID}-0.2.0`,
 			version: '0.2.0',
-		},
-		{
-			changelog: createV011ReleaseNotes(),
-			date: '2026-07-21T00:00:00.000Z',
-			id: `${ADDON_ID}-0.1.1`,
-			version: '0.1.1',
 		},
 	];
 }
@@ -240,7 +238,7 @@ export function createMarketplaceDetailPayload(
 				],
 				color: '#6E187A',
 				details: {
-					homepage: 'https://www.amsive.com/',
+					homepage: 'https://www.amsive.com/?utm_source=localwp&utm_medium=referral&utm_campaign=local_media_proxy&utm_content=addon_details',
 					license: 'Apache-2.0',
 					overview: createOverview(assetUrl(packageRoot, 'resources', 'detail-hero.svg')),
 					repository: 'https://github.com/amsive/local-media-proxy',
