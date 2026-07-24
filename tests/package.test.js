@@ -18,7 +18,11 @@ const { ADDON_VERSION } = require('../lib/constants');
 test('declares the installed add-on card metadata expected by Local', () => {
 	assert.equal(packageJson.productName, 'Local Media Proxy');
 	assert.equal(packageJson.author?.name, 'Amsive');
-	assert.equal(packageJson.version, '0.2.3');
+	assert.equal(
+		packageJson.author?.url,
+		'https://www.amsive.com/?utm_source=localwp&utm_medium=referral&utm_campaign=local_media_proxy&utm_content=package_author',
+	);
+	assert.equal(packageJson.version, '0.2.4');
 	assert.equal(packageJson.license, 'Apache-2.0');
 	assert.equal(
 		packageJson.description,
@@ -71,4 +75,25 @@ test('declares the installed add-on card metadata expected by Local', () => {
 			`${asset} must be packaged for the native detail page.`,
 		);
 	}
+});
+
+test('keeps README artwork public, package-compatible, and off removed commit history', () => {
+	const readme = fs.readFileSync(path.resolve(__dirname, '../README.md'), 'utf8');
+
+	assert.match(
+		readme,
+		/\[Amsive\]\(https:\/\/www\.amsive\.com\/\?utm_source=github&utm_medium=referral&utm_campaign=local_media_proxy&utm_content=readme\)/,
+	);
+	assert.match(
+		readme,
+		/https:\/\/github\.com\/amsive\/local-media-proxy\/raw\/main\/docs\/screenshots\/origin-discovery-light\.png/,
+	);
+	assert.doesNotMatch(
+		readme,
+		/https:\/\/github\.com\/amsive\/local-media-proxy\/raw\/[0-9a-f]{40}\//,
+	);
+	assert.equal(
+		fs.existsSync(path.resolve(__dirname, '../docs/screenshots/origin-discovery-light.png')),
+		true,
+	);
 });
