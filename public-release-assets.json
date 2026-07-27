@@ -104,10 +104,22 @@
       "reviewedForPublicRelease": "Rendered at 1400x925 from the current v0.2.1 light scoped Tools toggle-operation DOM and CSS with one fictional Example Site, media.example.com, and RFC 5737 address 203.0.113.10; both gray loading dots are visible in place of the toggle, which is absent; no logos, overlays, or timestamps; full-resolution visual and local OCR review completed after lossless ancillary-metadata stripping."
     },
     {
+      "path": "docs/screenshots/v0.3.0-icon-framing-dark.png",
+      "sha256": "f47a1e9199304d7dad671eef3197ccc9ce60e9fa4c871f843459f4dc98aee9a8",
+      "kind": "png",
+      "reviewedForPublicRelease": "Rendered at 1200x700 from the packaged v0.3.0 dark artwork and public add-on metadata only; the Installed Add-ons card and detail framing are shown over the approved #6E187A background, with detail artwork occupying 193 of 258 pixels (74.8%) in the focused proof; no sites, hostnames, addresses, overlays, or timestamps; full-resolution visual and local OCR review completed with only essential PNG chunks."
+    },
+    {
+      "path": "docs/screenshots/v0.3.0-icon-framing-light.png",
+      "sha256": "e8bc3129e31c21df27bb14a2a983370b7799bf16a21a600d07fd2025c1fbf5dc",
+      "kind": "png",
+      "reviewedForPublicRelease": "Rendered at 1200x700 from the packaged v0.3.0 light artwork and public add-on metadata only; the Installed Add-ons card and detail framing are shown over the approved #6E187A background, with detail artwork occupying 193 of 258 pixels (74.8%) in the focused proof; no sites, hostnames, addresses, overlays, or timestamps; full-resolution visual and local OCR review completed with only essential PNG chunks."
+    },
+    {
       "path": "icon.svg",
-      "sha256": "f8d6607f96206707efce3c1aff0ac2f4be0b68395360d47dc2d0fd596f1b5924",
+      "sha256": "f23e41be29e7fb6613a7343d2589486d5887edeb47950ad374b633a190552fdb",
       "kind": "svg",
-      "reviewedForPublicRelease": "Product icon contains only Amsive-authored vector artwork."
+      "reviewedForPublicRelease": "Self-contained Amsive-authored SVG with a tightly cropped transparent canvas and pixel-aligned vector paths; icon artwork reviewed at 1228x499 over the approved #6E187A background with zero channel differences from the matching source-artwork crop; contains no embedded or external assets."
     },
     {
       "path": "resources/amsive-avatar.svg",
@@ -132,6 +144,12 @@
       "sha256": "9094c14d8534bcc964ad30a320073ed132dfc70c389fd22a4b0bfb34cf446529",
       "kind": "svg",
       "reviewedForPublicRelease": "Product detail artwork uses only synthetic example host and address data."
+    },
+    {
+      "path": "resources/detail-icon.svg",
+      "sha256": "948999cb74b2d1ac488ea819d5a7b06cce9a3c46047657a3332405894b4b753b",
+      "kind": "svg",
+      "reviewedForPublicRelease": "Self-contained Amsive-authored SVG with a detail-page-only transparent canvas and pixel-aligned vector paths; artwork reviewed at 1254x633 over the approved #6E187A background with zero channel differences from the matching approved source-artwork crop; contains no embedded or external assets."
     },
     {
       "path": "resources/mark-davoli-avatar.svg",

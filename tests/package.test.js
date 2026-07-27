@@ -57,16 +57,18 @@ test('declares the installed add-on card metadata expected by Local', () => {
 		'resources/boris-hegedis-avatar.svg',
 		'resources/cloudflare-origin-ca.pem',
 		'resources/detail-hero.svg',
+		'resources/detail-icon.svg',
 		'resources/mark-davoli-avatar.svg',
 		'style.css',
 	]);
-	// npm adds package.json to these 24 explicit files, producing the
-	// release verifier's exact 25-entry archive.
-	assert.equal(packageJson.files.length, 24);
+	// npm adds package.json to these 25 explicit files, producing the
+	// release verifier's exact 26-entry archive.
+	assert.equal(packageJson.files.length, 25);
 	for (const asset of [
 		'amsive-avatar.svg',
 		'boris-hegedis-avatar.svg',
 		'detail-hero.svg',
+		'detail-icon.svg',
 		'mark-davoli-avatar.svg',
 	]) {
 		assert.equal(

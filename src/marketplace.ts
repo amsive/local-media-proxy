@@ -213,7 +213,7 @@ export function createMarketplaceDetailPayload(
 		data: {
 			addon: {
 				avatar: {
-					original: assetUrl(packageRoot, 'icon.svg'),
+					original: assetUrl(packageRoot, 'resources', 'detail-icon.svg'),
 				},
 				categories: [
 					{ name: 'Developer Tools' },

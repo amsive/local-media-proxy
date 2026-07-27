@@ -10,6 +10,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- Refreshed the Local Media Proxy artwork with separately framed, pixel-matched vector canvases for the Installed Add-ons card and add-on detail view while preserving the approved `#6E187A` background.
 - Limited background inspection, reconciliation, and recovery to sites that Local reports as running or halted. Creation and initial WP Engine pulls remain entirely Local-owned until they reach one of those stable states.
 - Made lifecycle notifications non-blocking: they schedule bounded readiness checks instead of delaying Local's provisioning or pull pipeline.
 - Guarded synchronous global disable and uninstall cleanup for lifecycle-ready sites, then moved remaining cleanup and runtime refresh work onto a separate bounded retry lane. Transitional sites stay dormant on that lane without managed-file access; re-enabling cancels stale cleanup before reconciliation.

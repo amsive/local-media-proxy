@@ -69,7 +69,10 @@ test('builds complete Amsive detail and release metadata', () => {
 		release.downloadUrl,
 		'https://github.com/amsive/local-media-proxy/releases/download/v0.3.0/local-media-proxy-v0.3.0.tgz',
 	);
-	assert.match(addon.avatar.original, /^file:\/\/\/tmp\/Local%20Media%20Proxy\/icon\.svg$/);
+	assert.match(
+		addon.avatar.original,
+		/^file:\/\/\/tmp\/Local%20Media%20Proxy\/resources\/detail-icon\.svg$/,
+	);
 	assert.match(addon.details.overview, /detail-hero\.svg/);
 	assert.match(addon.details.overview, /## Install and configure/);
 	assert.match(addon.details.overview, /## Scope and safety/);
