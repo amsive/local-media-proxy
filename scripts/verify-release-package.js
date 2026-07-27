@@ -48,6 +48,7 @@ const EXPECTED_SOURCE_FILES = Object.freeze([
 	'resources/boris-hegedis-avatar.svg',
 	'resources/cloudflare-origin-ca.pem',
 	'resources/detail-hero.svg',
+	'resources/detail-icon.svg',
 	'resources/mark-davoli-avatar.svg',
 	'style.css',
 ]);

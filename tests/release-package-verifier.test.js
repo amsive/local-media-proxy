@@ -27,8 +27,8 @@ const packageJson = JSON.parse(
 const tag = `v${packageJson.version}`;
 const archiveName = `${packageJson.name}-v${packageJson.version}.tgz`;
 
-test('accepts only the complete 25-file npm-style TGZ release manifest', (t) => {
-	assert.equal(EXPECTED_ARCHIVE_ENTRIES.length, 25);
+test('accepts only the complete 26-file npm-style TGZ release manifest', (t) => {
+	assert.equal(EXPECTED_ARCHIVE_ENTRIES.length, 26);
 	const archivePath = writeTarGzip(t, releaseEntries());
 
 	const entries = verifyReleasePackage(tag, archivePath);

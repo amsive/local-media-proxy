@@ -140,6 +140,6 @@ The fallback is scoped to this add-on's detail queries. Other add-ons and GraphQ
 
 ## Release package
 
-The installable TGZ uses npm's single `package/` root and an exact 25-file allowlist. It contains compiled runtime JavaScript, package metadata, CSS, runtime artwork, the Cloudflare trust material, `LICENSE`, `NOTICE`, and the packaged README.
+The installable TGZ uses npm's single `package/` root and an exact 26-file allowlist. It contains compiled runtime JavaScript, package metadata, CSS, runtime artwork, the Cloudflare trust material, `LICENSE`, `NOTICE`, and the packaged README.
 
 Source TypeScript, tests, source maps, `node_modules`, development configuration, provenance documents, and repository process files are excluded. CI, release creation, and promotion independently verify the package structure, source equivalence, public-release safety, and third-party material contract.
