@@ -11,11 +11,14 @@ const {
 	cleanupRequiresRefresh,
 	completeUnresolvedServiceCleanup,
 	isServerTransactionChangedError,
+	lifecycleUnavailableReason,
 	runServerTransactionMutation,
 	ServerTransactionChangedError,
 	serverTransactionFingerprintsMatch,
+	shouldCancelDeferredReconciliation,
 	shouldReconcileManagedFiles,
 	shouldRefreshRuntime,
+	siteLifecycleAccess,
 	synchronousCleanupRequiresRefresh,
 } = require('../lib/lifecycle');
 
@@ -60,8 +63,8 @@ test('server transactions close when server identity, paths, or lifecycle status
 test('server transaction failures give actionable rollback guidance', () => {
 	const error = new ServerTransactionChangedError();
 	assert.equal(error.name, 'LocalMediaProxyServerTransactionChangedError');
-	assert.match(error.message, /settings and managed files.*were restored/i);
-	assert.match(error.message, /wait for Local.*then retry/i);
+	assert.match(error.message, /stopped further work/i);
+	assert.match(error.message, /wait for Local.*review the current state.*retry/i);
 });
 
 test('server transaction failures remain identifiable across duplicate module copies', () => {
@@ -155,11 +158,12 @@ test('enabled reconciliation intent forces cleanup refresh when persistent files
 	assert.equal(cleanupRequiresRefresh(false, false), false);
 });
 
-test('runtime refresh follows the targeted process while rejecting explicit stop states', () => {
+test('runtime refresh is permitted only after Local reports the site running', () => {
 	assert.equal(shouldRefreshRuntime('running', false), true);
-	assert.equal(shouldRefreshRuntime('provisioning', true), true);
-	assert.equal(shouldRefreshRuntime('starting', true), true);
-	assert.equal(shouldRefreshRuntime('restarting', true), true);
+	assert.equal(shouldRefreshRuntime('running', true), true);
+	assert.equal(shouldRefreshRuntime('provisioning', true), false);
+	assert.equal(shouldRefreshRuntime('starting', true), false);
+	assert.equal(shouldRefreshRuntime('restarting', true), false);
 	assert.equal(shouldRefreshRuntime('provisioning', false), false);
 	assert.equal(shouldRefreshRuntime('halted', true), false);
 	assert.equal(shouldRefreshRuntime('stopping', true), false);
@@ -167,22 +171,68 @@ test('runtime refresh follows the targeted process while rejecting explicit stop
 	assert.equal(shouldRefreshRuntime('deleting_backup', true), false);
 });
 
-test('background reconciliation waits for stable Local state while siteStarted remains authoritative', () => {
-	assert.equal(shouldReconcileManagedFiles('running', false), true);
-	assert.equal(shouldReconcileManagedFiles('halted', false), true);
-	assert.equal(shouldReconcileManagedFiles('provisioning', false), false);
-	assert.equal(shouldReconcileManagedFiles('starting', false), false);
-	assert.equal(shouldReconcileManagedFiles('restarting', false), false);
-	assert.equal(shouldReconcileManagedFiles('stopping', false), false);
-	assert.equal(shouldReconcileManagedFiles('stalled', false), false);
-	assert.equal(shouldReconcileManagedFiles('provisioning', true), true);
-	assert.equal(shouldReconcileManagedFiles('stopping', true), false);
-	assert.equal(shouldReconcileManagedFiles('deleting', true), false);
+test('managed-file access defaults closed across every current Local lifecycle status', () => {
+	const currentStatuses = [
+		'adding',
+		'backing_up',
+		'cloning',
+		'container_missing',
+		'copying',
+		'creating',
+		'deleting',
+		'deleting_backup',
+		'downloading_backup',
+		'exporting',
+		'exporting_db',
+		'halted',
+		'importing_backup',
+		'processing',
+		'provisioning',
+		'provisioning_error',
+		'pulling',
+		'pulling_finalizing',
+		'pulling_provisioning',
+		'pulling_request_backup',
+		'pushing',
+		'pushing_creating',
+		'pushing_preparing',
+		'pushing_processing',
+		'pushing_v2',
+		'restarting',
+		'restoring_backup',
+		'running',
+		'saving',
+		'stalled',
+		'starting',
+		'stopping',
+		'updating_wp',
+		'wordpress_install_error',
+	];
+	for (const status of currentStatuses) {
+		assert.equal(
+			shouldReconcileManagedFiles(status),
+			status === 'running' || status === 'halted',
+			`${status} must have an explicit managed-file access decision`,
+		);
+	}
+	assert.equal(shouldReconcileManagedFiles('future_local_status'), false);
+	assert.equal(siteLifecycleAccess('running'), 'ready');
+	assert.equal(siteLifecycleAccess('halted'), 'ready');
+	assert.equal(siteLifecycleAccess('deleting'), 'destroying');
+	assert.equal(siteLifecycleAccess('provisioning_error'), 'failed');
+	assert.equal(siteLifecycleAccess('future_local_status'), 'transitioning');
+	assert.equal(shouldCancelDeferredReconciliation('deleting'), true);
+	assert.equal(shouldCancelDeferredReconciliation('stalled'), true);
+	assert.equal(shouldCancelDeferredReconciliation('pulling'), false);
+	assert.equal(shouldCancelDeferredReconciliation('future_local_status'), false);
+	assert.match(lifecycleUnavailableReason('pulling_finalizing'), /still pulling/i);
+	assert.match(lifecycleUnavailableReason('creating'), /still creating/i);
+	assert.match(lifecycleUnavailableReason('deleting'), /will not access its files/i);
 });
 
 test('an ordinary reconciliation guard closes when Local enters a transition after entry', () => {
 	let currentStatus = 'running';
-	const canMutate = () => shouldReconcileManagedFiles(currentStatus, false);
+	const canMutate = () => shouldReconcileManagedFiles(currentStatus);
 
 	assert.equal(canMutate(), true);
 	currentStatus = 'provisioning';

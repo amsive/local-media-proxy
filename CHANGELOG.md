@@ -6,6 +6,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-27
+
+### Changed
+
+- Limited background inspection, reconciliation, and recovery to sites that Local reports as running or halted. Creation and initial WP Engine pulls remain entirely Local-owned until they reach one of those stable states.
+- Made lifecycle notifications non-blocking: they schedule bounded readiness checks instead of delaying Local's provisioning or pull pipeline.
+- Guarded synchronous global disable and uninstall cleanup for lifecycle-ready sites, then moved remaining cleanup and runtime refresh work onto a separate bounded retry lane. Transitional sites stay dormant on that lane without managed-file access; re-enabling cancels stale cleanup before reconciliation.
+- Added mandatory create, delete, and log-review smoke tests plus automated first-pull transition regressions to every future release checklist. Supplemental live transfers require fresh approval, the predesignated non-production test site, database-only scope, and proof that zero files or media paths were transferred.
+
+### Fixed
+
+- Prevented status checks from resolving a site root or reading managed files while Local is still creating the site, replacing it during a first pull, or removing it.
+- Cancelled ordinary deferred reconciliation when deletion starts, kept pending global cleanup dormant while Local still reports the deleting site, and cancelled that cleanup when the site is removed. In-flight guards prevent late reconciliation or rollback from restoring settings, recreating directories, or touching managed files after readiness is lost.
+- Guarded every managed write, atomic rename, and unlink with a fresh lifecycle check, and stopped creating missing parent directories inside Local-owned site trees.
+- Committed settings only after managed files and runtime refreshes succeed, leaving the previous intent intact when Local changes the site mid-operation.
+- Kept global disable and uninstall cleanup retryable when an unexpected lifecycle-status read interrupts synchronous preparation for one site.
+- Kept lifecycle transitions unavailable but quiet in the UI, with no proxy controls or indefinite progress indicator, instead of surfacing filesystem errors for site paths Local has not created yet or has already removed.
+
 ## [0.2.4] - 2026-07-24
 
 ### Changed
@@ -112,7 +130,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Prevented slow or cancelled connection probes from hanging the UI and replaced low-level timeout errors with actionable messages.
 - Preserved correct TLS verification when switching between direct WP Engine origins and compatible proxy, CDN, or load-balancer endpoints.
 
-[Unreleased]: https://github.com/amsive/local-media-proxy/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/amsive/local-media-proxy/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/amsive/local-media-proxy/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/amsive/local-media-proxy/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/amsive/local-media-proxy/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/amsive/local-media-proxy/compare/v0.2.1...v0.2.2

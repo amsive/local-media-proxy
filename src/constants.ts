@@ -5,7 +5,7 @@
 
 export const ADDON_ID = 'local-media-proxy';
 export const ADDON_NAME = 'Local Media Proxy';
-export const ADDON_VERSION = '0.2.4';
+export const ADDON_VERSION = '0.3.0';
 export const ORIGIN_REQUEST_USER_AGENT = `${ADDON_NAME}/${ADDON_VERSION}`;
 
 export const MANUAL_WPENGINE_TLS_HOSTNAME = 'origin.wpengine.com';

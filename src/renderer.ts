@@ -6,6 +6,10 @@
 import path from 'node:path';
 import { ADDON_ID, ADDON_NAME, IPC_CHANNELS } from './constants';
 import {
+	lifecycleUnavailableReason,
+	shouldReconcileManagedFiles,
+} from './lifecycle';
+import {
 	installMarketplaceMetadataShim,
 	type MarketplaceFetchHost,
 } from './marketplace';
@@ -152,7 +156,13 @@ interface RendererContext {
 			callback: (...args: Args) => unknown,
 			priority?: number,
 		) => void;
-		addFilter: (hook: string, callback: (items: unknown[]) => unknown[]) => void;
+		addFilter: (
+			hook: string,
+			callback: (
+				items: unknown[],
+				context?: SiteInfoToolsFilterContext,
+			) => unknown[],
+		) => void;
 	};
 }
 
@@ -169,6 +179,10 @@ interface SiteProps {
 
 interface ProxyStatusRowProps extends SiteProps {
 	siteStatus: string;
+}
+
+interface SiteInfoToolsFilterContext {
+	routeChildrenProps?: Partial<ProxyStatusRowProps>;
 }
 
 interface Notice {
@@ -519,6 +533,7 @@ export default function renderer(context: RendererContext): void {
 		const tooltipTimer = React.useRef(undefined as ReturnType<typeof setTimeout> | undefined);
 		const serverFingerprint = siteServerFingerprint(site);
 		const statusIdentity = JSON.stringify([site.id, siteStatus, serverFingerprint]);
+		const lifecycleReady = shouldReconcileManagedFiles(siteStatus);
 		const stateMatchesIdentity = siteStateSnapshot?.identity === statusIdentity;
 		const siteState = stateMatchesIdentity ? siteStateSnapshot.value : undefined;
 		const busyForCurrentIdentity = stateMatchesIdentity && busy;
@@ -534,6 +549,14 @@ export default function renderer(context: RendererContext): void {
 			setTooltipOpen(false);
 			clearTimeout(tooltipTimer.current);
 			tooltipTimer.current = undefined;
+
+			if (!lifecycleReady) {
+				return () => {
+					if (siteEpoch.current === epoch) {
+						siteEpoch.current += 1;
+					}
+				};
+			}
 
 			withIpcDeadline(
 				ipcRenderer.invoke(IPC_CHANNELS.getSiteState, site.id),
@@ -565,7 +588,13 @@ export default function renderer(context: RendererContext): void {
 			};
 		}, [statusIdentity]);
 
-		const presentation: OverviewProxyStatusPresentation = siteState === undefined
+		const presentation: OverviewProxyStatusPresentation = !lifecycleReady
+			? {
+				className: 'LocalMediaProxy__OverviewStatus--Unavailable',
+				detail: lifecycleUnavailableReason(siteStatus),
+				label: 'Unavailable',
+			}
+			: siteState === undefined
 			? {
 				className: 'LocalMediaProxy__OverviewStatus--Loading',
 				detail: 'Loading proxy status.',
@@ -584,8 +613,14 @@ export default function renderer(context: RendererContext): void {
 			presentation,
 			visibleOperationError,
 		);
-		const showProgress = siteState === undefined || busyForCurrentIdentity;
-		const statusAnnouncement = siteState === undefined
+		const showProgress = lifecycleReady && (
+			siteState === undefined ||
+			busyForCurrentIdentity
+		);
+		const showControls = lifecycleReady && !showProgress;
+		const statusAnnouncement = !lifecycleReady
+			? lifecycleUnavailableReason(siteStatus)
+			: siteState === undefined
 			? 'Checking Media Proxy status.'
 			: busyForCurrentIdentity
 				? 'Toggling Media Proxy status.'
@@ -728,7 +763,7 @@ export default function renderer(context: RendererContext): void {
 					showProgress && loadingIndicator({
 						className: 'LocalMediaProxy__LoadingIndicator--Overview',
 					}),
-					!showProgress && siteState && e(
+					showControls && siteState && e(
 						'button',
 						{
 							'aria-checked': persistedEnabled,
@@ -747,7 +782,7 @@ export default function renderer(context: RendererContext): void {
 							className: 'LocalMediaProxy__OverviewSwitchLabel',
 						}, persistedEnabled ? 'On' : 'Off'),
 					),
-					!showProgress && e(
+					showControls && e(
 						'span',
 						{
 							className: 'LocalMediaProxy__OverviewTooltipAnchor',
@@ -813,7 +848,7 @@ export default function renderer(context: RendererContext): void {
 		);
 	};
 
-	const MediaProxyPanel = ({ site }: SiteProps) => {
+	const MediaProxyPanel = ({ site, siteStatus = 'running' }: ProxyStatusRowProps) => {
 		const [busy, setBusy] = React.useState('');
 		const [discoveryLoading, setDiscoveryLoading] = React.useState(false);
 		const [discoveryOptions, setDiscoveryOptions] = React.useState(null as OriginDiscoveryOptions | null);
@@ -840,7 +875,8 @@ export default function renderer(context: RendererContext): void {
 		const pendingFocusHandoff = React.useRef(null as PendingFocusHandoff | null);
 		const saveButtonRef = React.useRef(null as FocusTargetLike | null);
 		const serverFingerprint = siteServerFingerprint(site);
-		const panelIdentity = JSON.stringify([site.id, serverFingerprint]);
+		const panelIdentity = JSON.stringify([site.id, siteStatus, serverFingerprint]);
+		const lifecycleReady = shouldReconcileManagedFiles(siteStatus);
 
 		const hydrate = (nextState: SiteState): void => {
 			setSiteState(nextState);
@@ -871,13 +907,26 @@ export default function renderer(context: RendererContext): void {
 
 		React.useEffect(() => {
 			const epoch = ++siteEpoch.current;
+			const cleanUp = (): void => {
+				if (siteEpoch.current === epoch) {
+					const token = activeProbeToken.current;
+					if (token) {
+						activeProbeToken.current = null;
+						void ipcRenderer.invoke(IPC_CHANNELS.cancelOriginTest, site.id, token)
+							.catch(() => undefined);
+					}
+					siteEpoch.current += 1;
+					discoveryEpoch.current += 1;
+					operationEpoch.current += 1;
+				}
+			};
 			discoveryEpoch.current += 1;
 			operationEpoch.current += 1;
 			pendingFocusHandoff.current = null;
 			setBusy('');
 			setLoadedIdentity(null);
 			setSiteState(null);
-			setDiscoveryLoading(true);
+			setDiscoveryLoading(lifecycleReady);
 			setDiscoveryOptions(null);
 			setEnabled(false);
 			setNotice(null);
@@ -891,6 +940,11 @@ export default function renderer(context: RendererContext): void {
 			setSiteUrl('');
 			setSuggestion(null);
 			setTestedDraftKey(null);
+
+			if (!lifecycleReady) {
+				setLoadedIdentity(panelIdentity);
+				return cleanUp;
+			}
 
 			withIpcDeadline(
 				ipcRenderer.invoke(IPC_CHANNELS.getSiteState, site.id),
@@ -943,19 +997,7 @@ export default function renderer(context: RendererContext): void {
 					}
 				});
 
-			return () => {
-				if (siteEpoch.current === epoch) {
-					const token = activeProbeToken.current;
-					if (token) {
-						activeProbeToken.current = null;
-						void ipcRenderer.invoke(IPC_CHANNELS.cancelOriginTest, site.id, token)
-							.catch(() => undefined);
-					}
-					siteEpoch.current += 1;
-					discoveryEpoch.current += 1;
-					operationEpoch.current += 1;
-				}
-			};
+			return cleanUp;
 		}, [panelIdentity]);
 
 		const settings = (): SettingsInput => ({
@@ -1356,6 +1398,36 @@ export default function renderer(context: RendererContext): void {
 			);
 			pendingFocusHandoff.current = null;
 		}, [busy, loadedIdentity, notice, panelIdentity, siteState]);
+
+		const lifecycleUnavailableMessage = !lifecycleReady
+			? lifecycleUnavailableReason(siteStatus)
+			: siteState?.lifecycleReady === false
+				? siteState.reason || 'Local is changing this site. Media Proxy will be available when Local finishes.'
+				: null;
+
+		if (lifecycleUnavailableMessage) {
+			return e(
+				'main',
+				{
+					'aria-labelledby': `${ADDON_ID}-title`,
+					className: 'LocalMediaProxy',
+				},
+				e(
+					'div',
+					{ className: 'LocalMediaProxy__Heading' },
+					e('h2', { id: `${ADDON_ID}-title` }, ADDON_NAME),
+				),
+				e(
+					'div',
+					{
+						'aria-live': 'polite',
+						className: 'LocalMediaProxy__ActionFeedback LocalMediaProxy__Banner LocalMediaProxy__Banner--neutral',
+						role: 'status',
+					},
+					lifecycleUnavailableMessage,
+				),
+			);
+		}
 
 		if (loadedIdentity !== panelIdentity) {
 			return e(
@@ -1786,12 +1858,22 @@ export default function renderer(context: RendererContext): void {
 		}),
 	);
 
-	hooks.addFilter('siteInfoToolsItem', (menu) => [
+	hooks.addFilter('siteInfoToolsItem', (menu, context) => [
 		...menu,
 		{
 			menuItem: 'Media Proxy',
 			path: `/${ADDON_ID}`,
-			render: (props: SiteProps) => e(MediaProxyPanel, props),
+			render: (props?: Partial<ProxyStatusRowProps>) => {
+				const routeProps = context?.routeChildrenProps;
+				const site = routeProps?.site ?? props?.site;
+				if (!site) {
+					return null;
+				}
+				return e(MediaProxyPanel, {
+					site,
+					siteStatus: routeProps?.siteStatus ?? props?.siteStatus ?? 'running',
+				});
+			},
 		},
 	]);
 }

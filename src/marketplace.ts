@@ -116,6 +116,17 @@ ${ADDON_NAME} is maintained by Amsive LLC and developed by Mark Davoli and Boris
 }
 
 function createCurrentReleaseNotes(): string {
+	return `Version 0.3.0 keeps Local Media Proxy out of Local's site creation, first-pull, and deletion work.
+
+- Defers managed-file inspection and reconciliation until Local reports the site as running or halted, so early lifecycle notifications do not block provisioning or a first WP Engine pull.
+- Cancels deferred work when deletion starts and treats missing or transitional site roots as unavailable instead of reading, restoring, or creating files.
+- Revalidates the site before every managed write, rename, and removal, and commits settings only after the server configuration succeeds.
+- Adds a required lifecycle smoke test for every future release, including numbered non-client fixtures, log review, and complete fixture cleanup.
+
+[View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
+}
+
+function createV024ReleaseNotes(): string {
 	return `Version 0.2.4 restores the README screenshot and adds link attribution without changing Local Media Proxy behavior.
 
 - Restored the reviewed origin-discovery screenshot in both the public and packaged README without linking to removed repository history.
@@ -160,27 +171,19 @@ function createV021ReleaseNotes(): string {
 [View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
 }
 
-function createV020ReleaseNotes(): string {
-	return `Version 0.2.0 adds Apache support and improves setup and status feedback.
-
-- Added local-first Apache support with URL-only hostname routing, verified TLS, reversible managed templates, and targeted service validation. ([#12](https://github.com/amsive/local-media-proxy/issues/12))
-- Added clear proxy status to each site's Overview tab. ([#11](https://github.com/amsive/local-media-proxy/issues/11))
-- Reordered connection setup around the Site URL and its related Nginx DNS controls. ([#10](https://github.com/amsive/local-media-proxy/issues/10))
-- Kept action feedback beside the controls that produced it. ([#8](https://github.com/amsive/local-media-proxy/issues/8))
-- Replaced raw connection failures with concise, actionable messages. ([#9](https://github.com/amsive/local-media-proxy/issues/9))
-
-Apache uses the Site URL hostname for DNS, HTTP Host, TLS SNI, and certificate verification. HTTPS remains unavailable when Local's Apache platform bundle does not include \`mod_ssl\`.
-
-[View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
-}
-
 function createPackagedReleaseHistory(): PackagedRelease[] {
 	return [
 		{
 			changelog: createCurrentReleaseNotes(),
-			date: '2026-07-24T00:00:00.000Z',
+			date: '2026-07-27T00:00:00.000Z',
 			id: `${ADDON_ID}-${ADDON_VERSION}`,
 			version: ADDON_VERSION,
+		},
+		{
+			changelog: createV024ReleaseNotes(),
+			date: '2026-07-24T00:00:00.000Z',
+			id: `${ADDON_ID}-0.2.4`,
+			version: '0.2.4',
 		},
 		{
 			changelog: createV023ReleaseNotes(),
@@ -199,12 +202,6 @@ function createPackagedReleaseHistory(): PackagedRelease[] {
 			date: '2026-07-22T00:00:00.000Z',
 			id: `${ADDON_ID}-0.2.1`,
 			version: '0.2.1',
-		},
-		{
-			changelog: createV020ReleaseNotes(),
-			date: '2026-07-21T00:00:00.000Z',
-			id: `${ADDON_ID}-0.2.0`,
-			version: '0.2.0',
 		},
 	];
 }

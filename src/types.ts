@@ -80,6 +80,7 @@ export interface SiteState {
 	cleanupSupported: boolean;
 	enableUnavailableReason?: string;
 	httpsUnavailableReason?: string;
+	lifecycleReady: boolean;
 	needsAttention?: boolean;
 	reason?: string;
 	requiresOriginIp: boolean;
