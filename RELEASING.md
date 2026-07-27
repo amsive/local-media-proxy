@@ -4,14 +4,14 @@ Releases are built by GitHub Actions from an exact `v<SemVer>` tag. A read-only 
 
 ## Prepare the release
 
-1. Move relevant `Unreleased` entries into a dated SemVer heading.
+1. Use AI to review the commits and tree diff from the previous exact SemVer tag to the proposed release commit, then move the relevant `Unreleased` entries into a dated SemVer heading. Begin with one concise, version-neutral summary paragraph, followed by only populated, end-user-facing sections and bullets. Omit empty sections and `Validation`, do not use a generated commit or pull-request list as release copy, and use `New Features` only for actual Local application capabilities.
 2. Set the same version in `package.json`, `package-lock.json`, and `src/constants.ts`, then refresh the changelog comparison links.
 3. Add the new entry first in the packaged history in `src/marketplace.ts`. Keep only the five newest versions and preserve prior entries until they age out.
 4. Follow `PUBLIC_RELEASE_SAFETY.md`: run `npm run verify:public-release`, review all exact policy exceptions, visually inspect and locally OCR each screenshot, and confirm every binary hash and review reason in `public-release-assets.json`.
 5. Run `npm run verify:third-party`. Review `third-party-materials.json`, `docs/third-party-provenance.md`, and `NOTICE` whenever a dependency, packaged file, trust root, or adapted component changes. A changed certificate is a new trust decision and cannot be approved by updating a hash alone.
 6. Review new code, assets, dependencies, and notices for license compatibility, contributor authorization, client information, secrets, and trademark concerns. Confirm every human contribution made after DCO adoption carries the required matching sign-off; the only automated exception is the exact GitHub-authored Dependabot role-identity pattern enforced by the verifier.
 7. Confirm the package still contains the exact Apache `LICENSE` and `NOTICE`, that repository support and trademark policies remain present, and that release messaging does not promise a warranty, service level, third-party affiliation, endorsement, or legal approval.
-8. Review changed filenames, commit messages, pull-request and issue text, comments, and generated release notes for identifying context that the source scanner cannot recognize.
+8. Use the same change-set analysis to draft the release pull request, keeping its summary, risk, and validation evidence separate from a `Proposed release notes` section. Review filenames, commit messages, pull-request and issue fields, comments, changelog entries, and proposed release notes for identifying context that the source scanner cannot recognize.
 9. Run `npm ci`, `npm run validate`, and `npm run package:addon` from a clean checkout.
 10. Run `node scripts/verify-release-package.js v<version> dist/local-media-proxy-v<version>.tgz`. The verifier enforces the exact asset name, npm's single `package/` root, the minimal packaged-file manifest, and the declared third-party material contract.
 11. Create clean Git ZIP and TAR archives for the release commit and scan their extracted contents with `node scripts/verify-public-release.js --root <directory> --require-manifest-completeness`.
@@ -44,15 +44,17 @@ git tag -a v0.1.0 -m "Local Media Proxy v0.1.0 release"
 git push origin v0.1.0
 ```
 
-The `Release` workflow creates `Local Media Proxy v0.1.0` as a draft with generated notes and the tested archive plus its portable checksum. The prerelease option is already selected and Latest is disabled.
+The `Release` workflow creates `Local Media Proxy v0.1.0` as a draft with temporary, automatically generated notes and the tested archive plus its portable checksum. The prerelease option is already selected and Latest is disabled. Generated notes are only a placeholder until the required AI-assisted review replaces them.
 
 ## Review the draft candidate
 
-1. Open the draft in GitHub and review its generated notes, tag, installer, checksum, and automatically generated source ZIP/TAR downloads. Confirm the installer is visibly named and downloads as `local-media-proxy-v<version>.tgz`, the checksum is visibly named and downloads as `local-media-proxy-v<version>.tgz.sha256`, the repository contains only reviewed public history, and no obsolete release or tag is exposed.
-2. Before making a repository public, inventory all advertised refs, published releases, forks, and pull-request commits. Read-only pull refs and immutable release tags can preserve old source after normal history rewriting; if sensitive material remains, stop and obtain a GitHub Support-confirmed purge or publish from a new clean repository.
-3. Download the attached `.tgz`, select it directly in Local without extracting it, and complete the release smoke test. Confirm it contains exactly one top-level `package/` folder and only the verified minimal runtime manifest. Do not install either automatically generated source archive.
-4. Edit the draft if its notes need clarification. Keep **Set as a pre-release** selected and do not mark it Latest.
-5. Do not publish the draft manually. It must remain a draft prerelease until the approval workflow completes.
+1. Compare the final release tag with the previous exact SemVer tag. Use AI to reconcile that immutable change set with the dated changelog entry and the pull request's `Proposed release notes`, revising the copy if the merged range differs.
+2. Replace the draft's generated body with the reviewed end-user release copy. Reread the saved release from GitHub and confirm it begins with the version-neutral summary, contains only relevant populated sections, has no `Validation` or raw pull-request list, and includes descriptive changelog and comparison links.
+3. Review the tag, installer, checksum, and automatically generated source ZIP/TAR downloads. Confirm the installer is visibly named and downloads as `local-media-proxy-v<version>.tgz`, the checksum is visibly named and downloads as `local-media-proxy-v<version>.tgz.sha256`, the repository contains only reviewed public history, and no obsolete release or tag is exposed.
+4. Before making a repository public, inventory all advertised refs, published releases, forks, and pull-request commits. Read-only pull refs and immutable release tags can preserve old source after normal history rewriting; if sensitive material remains, stop and obtain a GitHub Support-confirmed purge or publish from a new clean repository.
+5. Download the attached `.tgz`, select it directly in Local without extracting it, and complete the release smoke test. Confirm it contains exactly one top-level `package/` folder and only the verified minimal runtime manifest. Do not install either automatically generated source archive.
+6. If the notes are incomplete, unclear, or incorrect, keep the release as a draft, correct the copy, and reread the saved result. Never fall back to the generated pull-request list.
+7. Do not publish the draft manually. It must remain a draft prerelease until the approval workflow completes.
 
 ## Approve and publish a stable release
 

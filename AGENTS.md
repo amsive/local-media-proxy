@@ -20,6 +20,18 @@ Symlink the repository into Local’s add-ons directory for live development, th
 
 When a new `vX.Y.Z` release tag or draft release is produced, or when asked to review changes since the last audit, read and follow `skills/audit-local-media-proxy-release/SKILL.md`. Keep the audit diff-focused and read-only, present complete issue drafts before creating anything, and require explicit approval before publishing GitHub issues. Follow `SECURITY.md` for confidential vulnerability reporting.
 
+## AI-Assisted Release Preparation
+
+When the user asks to prepare or draft a release, use AI judgment to analyze the complete change set from the previous exact SemVer tag to the proposed release commit. Do not accept GitHub's automatically generated pull-request list as final release copy, and do not add AI calls or prose-generation logic to GitHub Actions.
+
+- Draft the dated `CHANGELOG.md` entry from the actual user-facing behavior, not from commit titles alone.
+- Add a `Proposed release notes` section to the release-preparation pull request so the final copy is reviewable and persists outside the chat.
+- Begin with one concise, version-neutral summary paragraph. Follow it with only populated, end-user-facing sections. Omit `Validation`, empty categories, and raw commit or pull-request lists. Use `New Features` only for actual Local application capabilities.
+- Keep the pull-request summary, risk, and validation evidence separate from the end-user release notes.
+- After the tag workflow creates its draft, compare the final tag with the previous release, update the proposed copy if the merged change set differs, replace the automatically generated draft body, and reread the saved GitHub release. Confirm the notes render correctly and that the release remains a draft prerelease with Latest disabled.
+
+Human approval is still required before stable publication.
+
 ## Coding Style & Naming Conventions
 
 Use tabs in TypeScript, JavaScript, and CSS; use two spaces in JSON. Follow strict TypeScript, small modules, `camelCase` functions, `PascalCase` interfaces, and uppercase constants. Never interpolate unvalidated renderer input into Nginx. Scope UI rules below `.LocalMediaProxy` and support `.Theme__Light` and `.Theme__Dark`.

@@ -8,22 +8,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [0.3.0] - 2026-07-27
 
+This release keeps Local Media Proxy out of Local's way during site creation, first WP Engine pulls, and deletion, while refreshing the add-on artwork shown throughout Local.
+
 ### Changed
 
-- Refreshed the Local Media Proxy artwork with separately framed, pixel-matched vector canvases for the Installed Add-ons card and add-on detail view while preserving the approved `#6E187A` background.
-- Limited background inspection, reconciliation, and recovery to sites that Local reports as running or halted. Creation and initial WP Engine pulls remain entirely Local-owned until they reach one of those stable states.
-- Made lifecycle notifications non-blocking: they schedule bounded readiness checks instead of delaying Local's provisioning or pull pipeline.
-- Guarded synchronous global disable and uninstall cleanup for lifecycle-ready sites, then moved remaining cleanup and runtime refresh work onto a separate bounded retry lane. Transitional sites stay dormant on that lane without managed-file access; re-enabling cancels stale cleanup before reconciliation.
-- Added mandatory create, delete, and log-review smoke tests plus automated first-pull transition regressions to every future release checklist. Supplemental live transfers require fresh approval, the predesignated non-production test site, database-only scope, and proof that zero files or media paths were transferred.
+- Local Media Proxy now waits until Local reports a site as running or halted before inspecting or reconciling it. Lifecycle checks stay bounded and do not delay Local's provisioning or pull workflow.
+- Refreshed the Installed Add-ons card and add-on detail artwork with purpose-sized vector canvases while preserving the approved `#6E187A` background.
+- Future releases now require creation, deletion, and log-review smoke tests, with first-pull transition behavior covered by automated regressions.
 
 ### Fixed
 
-- Prevented status checks from resolving a site root or reading managed files while Local is still creating the site, replacing it during a first pull, or removing it.
-- Cancelled ordinary deferred reconciliation when deletion starts, kept pending global cleanup dormant while Local still reports the deleting site, and cancelled that cleanup when the site is removed. In-flight guards prevent late reconciliation or rollback from restoring settings, recreating directories, or touching managed files after readiness is lost.
-- Guarded every managed write, atomic rename, and unlink with a fresh lifecycle check, and stopped creating missing parent directories inside Local-owned site trees.
-- Committed settings only after managed files and runtime refreshes succeed, leaving the previous intent intact when Local changes the site mid-operation.
-- Kept global disable and uninstall cleanup retryable when an unexpected lifecycle-status read interrupts synchronous preparation for one site.
-- Kept lifecycle transitions unavailable but quiet in the UI, with no proxy controls or indefinite progress indicator, instead of surfacing filesystem errors for site paths Local has not created yet or has already removed.
+- Prevented the add-on from resolving site paths or touching managed files while Local is creating, replacing, or deleting a site. Stale cleanup, reconciliation, and rollback work is cancelled or deferred whenever readiness changes.
+- Settings are saved only after managed-file changes and runtime refreshes succeed, and transitional sites remain quiet in the UI instead of displaying missing-path errors or an indefinite loading indicator.
+- Corrected the packaged README so its installer inventory matches the exact 26-entry release package.
 
 ## [0.2.4] - 2026-07-24
 
