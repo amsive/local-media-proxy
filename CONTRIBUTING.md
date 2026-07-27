@@ -35,8 +35,10 @@ Never commit directly to `main`. Create `feature/<slug>` for planned work or `is
 7. Embed each committed screenshot in the PR description with `![alt text](https://github.com/amsive/local-media-proxy/raw/<head-commit-sha>/docs/screenshots/<file>.png)`, using a commit SHA that contains the image. Use the absolute, commit-pinned `github.com` URL rather than a repository-relative path or direct `raw.githubusercontent.com` URL.
 8. After saving the PR description, inspect its rendered view and confirm the images themselves display. Also confirm the rendered HTML contains an absolute `https://github.com/amsive/local-media-proxy/raw/…` image source. A broken-image icon with linked alt text does not pass this check.
 9. For proxy changes, verify a local file remains local, a missing production image receives `X-Local-Media-Proxy: origin`, and disabling returns the site to its prior behavior.
-10. Review every changed filename, diff, commit message, PR field, comment, and release note for client or proprietary context that an automated pattern cannot recognize. Confirm that no individually assigned email address appears in any repository or GitHub text.
-11. Add an entry under `CHANGELOG.md` → `Unreleased` for user-visible changes.
+10. For lifecycle changes and every release candidate, complete the mandatory lifecycle isolation test in `RELEASING.md`: use sequentially numbered `Local Media Proxy Test Site N` fixtures, cover creation and deletion while both running and halted, run the automated initial-pull transition regressions, and review only log bytes and lines after recorded starting offsets. Never start a Local pull or push for this checklist. Any separately approved live transfer must use the predesignated non-production transfer-test site, be reconfirmed immediately before execution, and be database-only with every file and media path excluded.
+11. Keep raw Local and WP Engine logs, workstation paths, environment or install names, domains, IP addresses, and process details local and untracked. Include only sanitized PR evidence: fixture numbers, flows exercised, pass/fail outcomes, reviewed log ranges, and redacted error classifications.
+12. Review every changed filename, diff, commit message, PR field, comment, and release note for client or proprietary context that an automated pattern cannot recognize. Confirm that no individually assigned email address appears in any repository or GitHub text.
+13. Add an entry under `CHANGELOG.md` → `Unreleased` for user-visible changes.
 
 Local cannot overwrite an installed add-on with the same slug. For manual upgrade testing, disable and remove the current Local Media Proxy installation before selecting the replacement TGZ directly.
 
@@ -46,9 +48,13 @@ Use short Conventional Commit-style subjects. Prefer one logical change per comm
 
 - Renderer input is untrusted until the main process validates it.
 - Filesystem writes must stay within the selected Local site.
+- Transitional sites permit no managed-file reads or writes and no settings writes.
+- Revalidate lifecycle readiness immediately before every managed write, atomic rename, unlink, and rollback restoration.
 - Only managed marker content may be inserted into `site.conf.hbs`.
 - The proxy must remain local-first, read-only, upload-image-only, and free of incoming client headers or request bodies.
-- Disabling and rollback must restore the pre-add-on configuration.
+- Disabling and rollback must restore the pre-add-on configuration only while the site remains lifecycle-ready; a transition stops restoration without recreating Local-owned state.
+- Global disable and uninstall may synchronously remove managed files only for a lifecycle-ready site, with the site and server transaction revalidated before each operation; all remaining cleanup and runtime refresh work stays deferred.
+- Deferred global cleanup for a transitional site must remain pending but dormant while global disable or uninstall is active. Re-enable, a site-deleted notification, or disappearance of the site record must cancel it; cancelled cleanup must never become reconciliation or access managed files afterward.
 - The marketplace metadata fallback must match only Local Media Proxy detail queries, pass through all other requests, and defer to a future official listing.
 
 Discuss Apache support, additional media types, caching, or a broader proxy scope before implementation because each changes the security and compatibility model.

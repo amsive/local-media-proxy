@@ -17,6 +17,7 @@ Local Media Proxy is open-source, community-supported software released under th
 - Proxies only missing image requests, allows only `GET` and `HEAD`, and forwards no request body, cookies, or credentials.
 - Verifies HTTPS identity and certificate chains against standard public roots and Cloudflare's published Origin CA roots.
 - Applies bounded, reversible managed configuration and removes it when the proxy is disabled.
+- Stays inactive while Local creates a site, performs an initial pull, or deletes it, with no managed-file access or settings writes until the site is lifecycle-ready and running or halted. During transitions, the UI shows a static unavailable state without proxy controls or an indefinite progress indicator.
 
 ## Requirements
 

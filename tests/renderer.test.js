@@ -166,6 +166,7 @@ function createSiteState({
 	canEnable = true,
 	enabled,
 	enableUnavailableReason,
+	lifecycleReady = true,
 	needsAttention,
 	reason,
 	requiresOriginIp = true,
@@ -181,6 +182,7 @@ function createSiteState({
 		canEnable,
 		cleanupSupported,
 		enableUnavailableReason,
+		lifecycleReady,
 		needsAttention,
 		reason,
 		requiresOriginIp,
@@ -894,6 +896,43 @@ test('refreshes Overview status when the Local site status changes', async () =>
 		elementText(findElement(tree, (node) => node.props?.role === 'status')),
 		'Inactive: Enabled and applied, but the Local site is not running.',
 	);
+});
+
+test('keeps Overview reads and controls out of Local lifecycle transitions', () => {
+	for (const status of [
+		'creating',
+		'provisioning',
+		'pulling_provisioning',
+		'pulling_finalizing',
+		'deleting',
+		'future_local_status',
+	]) {
+		const calls = [];
+		const { contentHooks, React } = createRendererRegistration((...args) => {
+			calls.push(args);
+			return Promise.resolve(createSiteState({ applied: false, enabled: false }));
+		});
+		const overviewHook = contentHooks.get('SiteInfoOverview_TableList');
+		const element = overviewHook({ id: `site-${status}` }, status);
+		const harness = createHookHarness(React);
+		const tree = harness.render(element.type, element.props);
+
+		assert.deepEqual(calls, [], `${status} must not invoke Media Proxy IPC`);
+		assert.equal(findElement(tree, (node) => node.props?.role === 'switch'), null);
+		assert.equal(
+			findElement(tree, (node) => node.props?.['aria-label'] === 'Media proxy status details'),
+			null,
+		);
+		assert.equal(
+			findLoadingIndicator(tree, 'LocalMediaProxy__LoadingIndicator--Overview'),
+			null,
+			`${status} must not show an unbounded Media Proxy loader`,
+		);
+		assert.match(
+			elementText(findElement(tree, (node) => node.props?.role === 'status')),
+			/Local is .*Media Proxy will|will not access its files/i,
+		);
+	}
 });
 
 test('refreshes Overview state when same-site web-server metadata changes', async () => {
@@ -2243,6 +2282,101 @@ test('gates Tools controls when the current Apache profile or service cannot ena
 	const blockedControls = controls(serviceNull.tree);
 	assert.equal(blockedControls.switch.props.disabled, true);
 	assert.equal(blockedControls.save.props.disabled, true);
+});
+
+test('keeps Tools IPC and controls out of Local lifecycle transitions', () => {
+	for (const status of [
+		'creating',
+		'provisioning',
+		'pulling_provisioning',
+		'pulling_finalizing',
+		'deleting',
+		'deleting_backup',
+		'provisioning_error',
+		'future_local_status',
+	]) {
+		const calls = [];
+		const registration = createRendererRegistration((...args) => {
+			calls.push(args);
+			return Promise.resolve(createSiteState({ applied: false, enabled: false }));
+		});
+		const element = registration.filters.get('siteInfoToolsItem')(
+			[],
+			{
+				routeChildrenProps: {
+					site: { id: `site-${status}`, name: 'Example site' },
+					siteStatus: status,
+				},
+			},
+		)[0].render();
+		const harness = createHookHarness(registration.React);
+		const tree = harness.render(element.type, element.props);
+
+		assert.deepEqual(calls, [], `${status} must not invoke Media Proxy IPC`);
+		assert.equal(findElement(tree, (node) => node.props?.role === 'switch'), null);
+		assert.equal(findElement(tree, (node) => node.props?.id === 'local-media-proxy-site-url'), null);
+		assert.equal(findElement(tree, (node) => node.type === 'button'), null);
+		assert.equal(findLoadingIndicator(tree), null);
+		assert.match(
+			elementText(findElement(tree, (node) => node.props?.role === 'status')),
+			/Local (?:is|could not).*Media Proxy|Media Proxy will/i,
+		);
+	}
+});
+
+test('rehydrates Tools after a same-site Local lifecycle transition', async () => {
+	const calls = [];
+	const discovery = {
+		canAutoPopulate: false,
+		environments: [],
+		message: 'Manual setup',
+		provider: 'none',
+	};
+	const registration = createRendererRegistration(async (channel, siteId) => {
+		calls.push([channel, siteId]);
+		return channel === IPC_CHANNELS.getSiteState
+			? createSiteState({ applied: false, enabled: false })
+			: discovery;
+	});
+	const filter = registration.filters.get('siteInfoToolsItem');
+	const site = { id: 'site-a', name: 'Example site' };
+	const panelFor = (siteStatus) => filter(
+		[],
+		{ routeChildrenProps: { site, siteStatus } },
+	)[0].render();
+	const runningElement = panelFor('running');
+	const harness = createHookHarness(registration.React);
+
+	harness.render(runningElement.type, runningElement.props);
+	await flushPromises();
+	let tree = harness.render(runningElement.type, runningElement.props);
+	assert.ok(findElement(tree, (node) => node.props?.role === 'switch'));
+	assert.deepEqual(calls, [
+		[IPC_CHANNELS.getSiteState, 'site-a'],
+		[IPC_CHANNELS.getOriginDiscoveryOptions, 'site-a'],
+	]);
+
+	const pullingElement = panelFor('pulling_finalizing');
+	tree = harness.render(pullingElement.type, pullingElement.props);
+	assert.equal(findElement(tree, (node) => node.props?.role === 'switch'), null);
+	assert.equal(findElement(tree, (node) => node.props?.id === 'local-media-proxy-site-url'), null);
+	assert.equal(findLoadingIndicator(tree), null);
+	assert.match(elementText(tree), /still pulling.*remain inactive/i);
+	assert.equal(calls.length, 2, 'transitioning status must not issue additional IPC');
+
+	const readyElement = panelFor('running');
+	tree = harness.render(readyElement.type, readyElement.props);
+	assertNativeLoadingIndicator(findLoadingIndicator(tree));
+	await flushPromises();
+	tree = harness.render(readyElement.type, readyElement.props);
+
+	assert.ok(findElement(tree, (node) => node.props?.role === 'switch'));
+	assert.deepEqual(calls, [
+		[IPC_CHANNELS.getSiteState, 'site-a'],
+		[IPC_CHANNELS.getOriginDiscoveryOptions, 'site-a'],
+		[IPC_CHANNELS.getSiteState, 'site-a'],
+		[IPC_CHANNELS.getOriginDiscoveryOptions, 'site-a'],
+	]);
 });
 
 test('fails closed when site state cannot be loaded', async () => {

@@ -90,17 +90,35 @@ For Apache, the add-on:
 
 Only content between `# BEGIN Local Media Proxy (managed)` and `# END Local Media Proxy (managed)` belongs to the add-on. It does not edit Local's generated runtime configuration under the application-support `run/` directory.
 
+## Local lifecycle isolation
+
+Local owns a site's files and services while it is being created, initially pulled from WP Engine, or deleted. Local Media Proxy treats every status in those transitions as unavailable: it performs no managed-file reads or writes and no settings writes until Local reports the site as lifecycle-ready and `running` or `halted`. Inspection, reconciliation, apply, cleanup, and recovery use that same boundary.
+
+Lifecycle notifications do not perform awaited filesystem work. They schedule bounded readiness checks that re-read the current site record and status. A stable status alone is not enough: the site root and Local-owned server templates must already exist before any managed path is resolved. A readiness check never creates a directory or template to make the site appear ready.
+
+A first WP Engine pull can provision a shell site before replacing its files and importing its data. The add-on stays inactive through provisioning, pulling, and finalizing, then reconciles the completed Local site only after the terminal running or halted state. Existing proxy intent may be reapplied at that point, but no pull-owned file is inspected or changed earlier.
+
+When deletion starts, ordinary deferred reconciliation is cancelled and in-flight operations stop when their lifecycle guards no longer match. A pending global cleanup follows a separate rule: it remains scheduled but dormant while Local still exposes the deleting site, performs no managed-file or settings access, and is cancelled when Local sends the site-deleted notification or the site record disappears. It never treats deletion as readiness.
+
+Any queued transaction revalidates the current site, status, service identity, and managed paths immediately before each write, atomic rename, or unlink. Rollback is similarly qualified at every restoration step and proceeds only while the current site remains lifecycle-ready. If the site is deleting or no longer exists, the transaction stops without restoring settings, recreating directories, refreshing a service, or reading the removed root.
+
+The renderer does not start proxy-state or origin-discovery requests for a transitional site, ignores stale results from an earlier lifecycle identity, and hides proxy controls and progress indicators. It reports a quiet, static unavailable state while Local owns the transition instead of forwarding a missing-path error.
+
+If a bounded readiness check expires, the add-on leaves the site untouched. A later stable lifecycle notification or explicit user action can start a fresh check.
+
+Global disable or uninstall first attempts guarded synchronous managed-file removal for each lifecycle-ready site. It revalidates the current site, status, service identity, and managed paths before every removal; remaining verification and runtime refresh work continues on a separate bounded cleanup lane. A transitional site skips synchronous access and stays pending but dormant on that lane. Cleanup resumes only if the site becomes lifecycle-ready, is cancelled if the site is deleted or disappears, and expires with an error rather than touching transitional files. If the add-on is re-enabled first, re-enable cancels the deferred global cleanup before normal configured-site reconciliation is scheduled.
+
 ## Validation, apply, rollback, and cleanup
 
 Before activation, the add-on validates user input, builds the managed configuration, compiles the selected Local server templates, and runs the available server syntax checks.
 
 Running Nginx sites receive a graceful reload, with a targeted Nginx-service restart only for a stale master PID. Apache performs a bounded, site-scoped graceful reload using the selected site configuration. Stopped sites are compiled and validated without being started.
 
-Writes use snapshots and rollback. If apply fails, the add-on restores previous settings and managed files before attempting to return the service to its prior configuration.
+Writes use snapshots and rollback. If apply fails while the site remains lifecycle-ready, the add-on restores previous settings and managed files before attempting to return the service to its prior configuration. If Local enters a transition, rollback stops rather than writing into or recreating Local-owned state; later lifecycle-ready cleanup or reconciliation handles the surviving intent.
 
 Disabling removes managed includes, generated proxy rules, and trust files while retaining saved connection fields for later reuse. If Local cannot resolve the selected service, cleanup is deferred without falsely reporting that a running proxy was removed.
 
-The global Installed Add-ons switch also performs cleanup as a Local 10 compatibility safeguard. Per-site disable remains the preferred uninstall preparation because Local does not expose a public awaited uninstall hook.
+The global Installed Add-ons switch also performs guarded synchronous removal plus deferred cleanup as a Local 10 compatibility safeguard. Transitional sites stay dormant on the deferred global-cleanup lane, site deletion cancels their pending cleanup, and re-enable cancels the lane before reconciliation. Per-site disable remains the preferred uninstall preparation because Local does not expose a public awaited uninstall hook.
 
 ## Installed add-on details
 
@@ -118,7 +136,7 @@ The fallback is scoped to this add-on's detail queries. Other add-ons and GraphQ
 - **Certificate error:** Confirm the certificate matches the expected identity and chains to a standard public CA or Cloudflare Origin CA. Apache HTTPS also requires `mod_ssl`.
 - **Remote error response:** Test the exact remote upload path. Authentication, hotlink protection, or origin/CDN access rules can still block it.
 - **Add-on already exists:** Disable and remove the installed add-on before selecting a replacement TGZ.
-- **Configuration refresh fails:** Disable the proxy and review Local's logs for the underlying syntax or reload error. Failed apply operations restore their previous snapshots.
+- **Configuration refresh fails:** Disable the proxy and review Local's logs for the underlying syntax or reload error. Failed apply operations restore their previous snapshots only while the site remains lifecycle-ready; a Local transition stops rollback safely.
 
 ## Release package
 

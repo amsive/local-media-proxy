@@ -33,12 +33,14 @@ import {
 	cleanupRequiresRefresh,
 	completeUnresolvedServiceCleanup,
 	isServerTransactionChangedError,
+	lifecycleUnavailableReason,
 	runServerTransactionMutation,
 	ServerTransactionChangedError,
 	serverTransactionFingerprintsMatch,
+	shouldCancelDeferredReconciliation,
 	shouldReconcileManagedFiles,
 	shouldRefreshRuntime,
-	synchronousCleanupRequiresRefresh,
+	siteLifecycleAccess,
 	type ServerTransactionFingerprint,
 } from './lifecycle';
 import {
@@ -54,6 +56,7 @@ import {
 	removeAllManagedFiles,
 	removeAllManagedFilesSync,
 	restoreManagedFiles,
+	serverManagedFilesystemReady,
 	serverManagedFilesMatch,
 } from './site-config';
 import { detectSiteServer, type SiteServerAdapter } from './server';
@@ -89,11 +92,35 @@ type SiteWithSettings = Local.Site & {
 };
 
 interface ReconcileOptions {
+	configuredOnly?: boolean;
 	refreshMatchingEnabledRuntime?: boolean;
+}
+
+interface DeferredReconciliation {
+	attempts: number;
+	options: ReconcileOptions;
+	stableSamples: number;
+	timer?: ReturnType<typeof setTimeout>;
+}
+
+interface DeferredGlobalCleanup {
+	attempts: number;
+	forceRefresh: boolean;
+	generation: number;
+	lastError?: string;
+	mode: 'disabled' | 'uninstalling';
+	stableSamples: number;
+	timer?: ReturnType<typeof setTimeout>;
 }
 
 const siteOperationQueues = new Map<string, Promise<void>>();
 const LIFECYCLE_LISTENERS_KEY = Symbol.for('amsive.local-media-proxy.lifecycle-listeners');
+const DEFERRED_RECONCILIATION_INTERVAL_MS = 1_000;
+const DEFERRED_RECONCILIATION_MAX_ATTEMPTS = 900;
+const DEFERRED_RECONCILIATION_STABLE_SAMPLES = 2;
+const DEFERRED_GLOBAL_CLEANUP_INTERVAL_MS = 1_000;
+const DEFERRED_GLOBAL_CLEANUP_MAX_ATTEMPTS = 900;
+const DEFERRED_GLOBAL_CLEANUP_STABLE_SAMPLES = 2;
 
 class ApacheCapabilityUnavailableError extends Error {}
 
@@ -107,6 +134,11 @@ function errorLogMessage(error: unknown): string {
 	}
 
 	return errorMessage(error);
+}
+
+function isExpectedLifecycleFilesystemAbsence(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException).code;
+	return code === 'ENOENT' || code === 'ENOTDIR' || code === 'ESTALE';
 }
 
 function readStoredSettingsEnvelope(
@@ -150,7 +182,10 @@ export default function main(context: LocalMain.AddonMainContext): void {
 	const wpEngineCapi = capi as WpEngineCapi;
 	const logger = localLogger.child({ addon: ADDON_ID, thread: 'main' });
 	const originProbeControllers = new Map<string, AbortController>();
+	const deferredReconciliations = new Map<string, DeferredReconciliation>();
+	const deferredGlobalCleanups = new Map<string, DeferredGlobalCleanup>();
 	let globalLifecycleState: 'disabled' | 'uninstalling' | null = null;
+	let globalLifecycleGeneration = 0;
 
 	type RuntimeServer = SiteServerAdapter & {
 		service: ApacheRuntimeService | null;
@@ -205,8 +240,23 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		siteId: string,
 		expected: ServerTransactionFingerprint,
 	): boolean => {
-		const current = currentServerTransactionFingerprint(siteId);
-		return current !== null && serverTransactionFingerprintsMatch(expected, current);
+		try {
+			const currentSite = siteData.getSite(siteId);
+			if (!currentSite) {
+				return false;
+			}
+			const current = currentServerTransactionFingerprint(siteId);
+			if (
+				current === null ||
+				!serverTransactionFingerprintsMatch(expected, current)
+			) {
+				return false;
+			}
+			return expected.serverKind === 'unsupported' ||
+				serverManagedFilesystemReady(currentSite, expected.serverKind);
+		} catch {
+			return false;
+		}
 	};
 
 	const assertServerTransactionCurrent = (
@@ -219,14 +269,50 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		}
 	};
 
+	const isExpectedLifecycleInterruption = (
+		siteId: string,
+		error: unknown,
+	): boolean => {
+		if (isServerTransactionChangedError(error)) {
+			return true;
+		}
+		if (!isExpectedLifecycleFilesystemAbsence(error)) {
+			return false;
+		}
+
+		const currentSite = siteData.getSite(siteId);
+		if (!currentSite) {
+			return true;
+		}
+		try {
+			const siteStatus = siteProcessManager.getSiteStatus(currentSite);
+			if (!shouldReconcileManagedFiles(siteStatus)) {
+				return true;
+			}
+			const server = detectSiteServer(currentSite);
+			return server.kind !== 'unsupported' &&
+				!serverManagedFilesystemReady(currentSite, server.kind);
+		} catch {
+			return true;
+		}
+	};
+
 	const beginInteractiveServerTransaction = (
 		site: Local.Site,
 		server: RuntimeServer,
 	): ServerTransactionFingerprint => {
 		const transaction = serverTransactionFingerprint(site, server);
-		if (!shouldReconcileManagedFiles(transaction.siteStatus, false)) {
+		if (!shouldReconcileManagedFiles(transaction.siteStatus)) {
 			throw new Error(
 				`Local is currently ${transaction.siteStatus || 'changing this site'}. Wait until the site is running or stopped before changing Media Proxy settings.`,
+			);
+		}
+		if (
+			server.kind !== 'unsupported' &&
+			!serverManagedFilesystemReady(site, server.kind)
+		) {
+			throw new Error(
+				'Local has not finished preparing this site\'s web-server files. Wait for Local to finish, then retry.',
 			);
 		}
 		return transaction;
@@ -274,6 +360,24 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			throw new Error('The selected Local site no longer exists.');
 		}
 
+		return site;
+	};
+
+	const requireLifecycleReadySite = (siteId: string): Local.Site => {
+		const site = requireSite(siteId);
+		const siteStatus = siteProcessManager.getSiteStatus(site);
+		if (!shouldReconcileManagedFiles(siteStatus)) {
+			throw new Error(lifecycleUnavailableReason(siteStatus));
+		}
+		const server = detectSiteServer(site);
+		if (
+			server.kind !== 'unsupported' &&
+			!serverManagedFilesystemReady(site, server.kind)
+		) {
+			throw new Error(
+				'Local has not finished preparing this site\'s web-server files. Wait for Local to finish, then retry.',
+			);
+		}
 		return site;
 	};
 
@@ -398,6 +502,15 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		} as unknown as Partial<Local.SiteJSON>);
 	};
 
+	const commitInteractiveSettings = (
+		siteId: string,
+		transaction: ServerTransactionFingerprint,
+		envelope: StoredSettingsEnvelope,
+	): void => {
+		assertServerTransactionCurrent(siteId, transaction);
+		persistSettings(siteId, envelope);
+	};
+
 	const compileAndReload = async (
 		site: Local.Site,
 		server: RuntimeServer,
@@ -500,67 +613,131 @@ export default function main(context: LocalMain.AddonMainContext): void {
 	const rollbackTransaction = async (
 		site: Local.Site,
 		server: RuntimeServer,
+		expectedTransaction: ServerTransactionFingerprint,
 		previousEnvelope: StoredSettingsEnvelope,
 		snapshots: Awaited<ReturnType<typeof captureAllManagedFiles>>,
 		originalError: unknown,
 	): Promise<never> => {
 		const rollbackErrors: string[] = [];
+		const throwOriginalError = (): never => {
+			throw originalError instanceof Error
+				? originalError
+				: new Error(errorMessage(originalError));
+		};
+		const deferRecovery = (): void => {
+			if (globalLifecycleState) {
+				scheduleDeferredGlobalCleanup(
+					site.id,
+					globalLifecycleState,
+					globalLifecycleGeneration,
+				);
+				return;
+			}
+			scheduleDeferredReconciliation(site.id, {
+				configuredOnly: false,
+				refreshMatchingEnabledRuntime: true,
+			});
+		};
+		const currentRollbackTarget = (): {
+			server: RuntimeServer;
+			site: Local.Site;
+			transaction: ServerTransactionFingerprint;
+		} | null => {
+			try {
+				if (globalLifecycleState) {
+					return null;
+				}
+				const currentSite = siteData.getSite(site.id);
+				if (!currentSite) {
+					return null;
+				}
+				const siteStatus = siteProcessManager.getSiteStatus(currentSite);
+				if (!shouldReconcileManagedFiles(siteStatus)) {
+					return null;
+				}
+				const currentServer = resolveServer(currentSite);
+				if (
+					currentServer.kind === 'unsupported' ||
+					currentServer.kind !== server.kind ||
+					currentServer.serviceName !== server.serviceName ||
+					currentSite.longPath !== site.longPath ||
+					!serverManagedFilesystemReady(currentSite, currentServer.kind)
+				) {
+					return null;
+				}
+				const currentTransaction = serverTransactionFingerprint(
+					currentSite,
+					currentServer,
+				);
+				if (
+					!serverTransactionFingerprintsMatch(
+						expectedTransaction,
+						currentTransaction,
+					)
+				) {
+					return null;
+				}
+				return {
+					server: currentServer,
+					site: currentSite,
+					transaction: currentTransaction,
+				};
+			} catch {
+				return null;
+			}
+		};
+
+		let rollbackTarget = currentRollbackTarget();
+		if (!rollbackTarget) {
+			deferRecovery();
+			logger.log(
+				'info',
+				`Skipped Media Proxy rollback writes for site ${site.id} because Local is changing or removing the site.`,
+			);
+			return throwOriginalError();
+		}
+		const assertRollbackTransactionCurrent = (): void => {
+			const current = currentRollbackTarget();
+			if (
+				!current ||
+				!serverTransactionFingerprintsMatch(
+					expectedTransaction,
+					current.transaction,
+				)
+			) {
+				throw new ServerTransactionChangedError();
+			}
+		};
 
 		try {
+			await restoreManagedFiles(snapshots, assertRollbackTransactionCurrent);
+			assertRollbackTransactionCurrent();
+			rollbackTarget = currentRollbackTarget();
+			if (
+				rollbackTarget?.server.serviceName &&
+				rollbackTarget.server.kind !== 'unsupported'
+			) {
+				await compileAndReload(
+					rollbackTarget.site,
+					rollbackTarget.server,
+					rollbackTarget.server.kind === 'apache'
+						? apacheSnapshotHasCompleteManagedConfig(rollbackTarget.site, snapshots)
+						: previousEnvelope.enabled,
+					assertRollbackTransactionCurrent,
+				);
+			}
+			assertRollbackTransactionCurrent();
 			persistSettings(site.id, previousEnvelope);
 		} catch (error) {
-			rollbackErrors.push(`settings: ${errorMessage(error)}`);
-		}
-
-		try {
-			await restoreManagedFiles(snapshots);
-		} catch (error) {
-			rollbackErrors.push(`files: ${errorMessage(error)}`);
-		}
-
-		const currentSite = siteData.getSite(site.id);
-		let currentServer: RuntimeServer | null = null;
-		try {
-			currentServer = currentSite ? resolveServer(currentSite) : null;
-		} catch (error) {
-			rollbackErrors.push(`${server.kind} transaction current runtime: ${errorMessage(error)}`);
-		}
-		if (
-			currentSite &&
-			currentServer?.serviceName &&
-			currentServer.kind !== 'unsupported'
-		) {
-			const currentTransaction = serverTransactionFingerprint(currentSite, currentServer);
-			const currentStatusIsStable = shouldReconcileManagedFiles(
-				currentTransaction.siteStatus,
-				false,
-			);
-			try {
-				if (currentStatusIsStable) {
-					await compileAndReload(
-						currentSite,
-						currentServer,
-						currentServer.kind === 'apache'
-							? apacheSnapshotHasCompleteManagedConfig(currentSite, snapshots)
-							: previousEnvelope.enabled,
-						() => assertServerTransactionCurrent(site.id, currentTransaction),
-					);
-				} else {
-					logger.log(
-						'warn',
-						`Restored Media Proxy settings and managed files for site ${site.id}; runtime refresh was deferred while Local reported ${currentTransaction.siteStatus || 'a lifecycle transition'}.`,
-					);
-				}
-			} catch (error) {
-				if (isServerTransactionChangedError(error)) {
-					logger.log(
-						'warn',
-						`Restored Media Proxy settings and managed files for site ${site.id}; runtime refresh was deferred because Local changed the site's web-server identity or lifecycle status during recovery.`,
-					);
-				} else {
-					rollbackErrors.push(`${currentServer.kind} restore: ${errorMessage(error)}`);
-				}
+			if (isServerTransactionChangedError(error)) {
+				deferRecovery();
+				logger.log(
+					'info',
+					`Stopped Media Proxy rollback for site ${site.id} because Local changed the site's web-server identity or lifecycle status; deferred reconciliation will verify the stable state.`,
+				);
+				return throwOriginalError();
 			}
+			rollbackErrors.push(`restore: ${errorMessage(error)}`);
 		}
 
 		if (rollbackErrors.length > 0) {
@@ -569,56 +746,94 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			throw new Error(`${errorMessage(originalError)} Rollback also failed (${rollbackSummary}).`);
 		}
 
+		return throwOriginalError();
+	};
+
+	const abortForGlobalLifecycle = async (
+		siteId: string,
+		originalError: unknown,
+	): Promise<never> => {
+		if (globalLifecycleState) {
+			scheduleDeferredGlobalCleanup(
+				siteId,
+				globalLifecycleState,
+				globalLifecycleGeneration,
+			);
+		}
 		throw originalError instanceof Error
 			? originalError
 			: new Error(errorMessage(originalError));
 	};
 
-	const abortForGlobalLifecycle = async (
-		site: Local.Site,
-		server: RuntimeServer,
-		previousEnvelope: StoredSettingsEnvelope,
-		originalError: unknown,
-	): Promise<never> => {
-		const cleanupErrors: string[] = [];
-		const restoredEnvelope = globalLifecycleState === 'uninstalling'
-			? setStoredSettingsEnabled(previousEnvelope, false)
-			: previousEnvelope;
-
-		try {
-			persistSettings(site.id, restoredEnvelope);
-		} catch (error) {
-			cleanupErrors.push(`settings: ${errorMessage(error)}`);
-		}
-
-		try {
-			await removeAllManagedFiles(site);
-		} catch (error) {
-			cleanupErrors.push(`files: ${errorMessage(error)}`);
-		}
-
-		if (server.serviceName && server.kind !== 'unsupported') {
-			try {
-				await compileAndReload(site, server, false);
-			} catch (error) {
-				cleanupErrors.push(`${server.kind} cleanup: ${errorMessage(error)}`);
-			}
-		}
-
-		const suffix = cleanupErrors.length > 0
-			? ` Cleanup also failed (${cleanupErrors.join('; ')}).`
-			: '';
-		throw new Error(`${errorMessage(originalError)}${suffix}`);
+	const lifecycleUnavailableSiteState = (
+		site: Local.Site | null,
+		siteStatus: string,
+		reason = lifecycleUnavailableReason(siteStatus),
+	): SiteState => {
+		const server = site ? detectSiteServer(site) : {
+			kind: 'unsupported' as const,
+			requiresOriginIp: false,
+		};
+		const envelope = site
+			? readStoredSettingsEnvelope(site, server.kind)
+			: normalizeStoredSettingsEnvelope(undefined, 'unsupported');
+		const settings = server.kind === 'apache' || server.kind === 'nginx'
+			? storedSettingsForServer(envelope, server.kind)
+			: fallbackStoredSettings(envelope);
+		return {
+			applied: false,
+			canEnable: false,
+			cleanupSupported: false,
+			enableUnavailableReason: reason,
+			lifecycleReady: false,
+			needsAttention: false,
+			reason,
+			requiresOriginIp: server.requiresOriginIp,
+			serverKind: server.kind,
+			settings,
+			siteStatus,
+			supported: false,
+			supportsHttpsOrigin: false,
+		};
 	};
 
 	const getSiteState = async (siteId: string): Promise<SiteState> => {
-		const site = requireSite(siteId);
+		requireSiteId(siteId);
+		const site = siteData.getSite(siteId);
+		if (!site) {
+			return lifecycleUnavailableSiteState(null, 'deleting');
+		}
+		const siteStatus = siteProcessManager.getSiteStatus(site);
+		if (!shouldReconcileManagedFiles(siteStatus)) {
+			return lifecycleUnavailableSiteState(site, siteStatus);
+		}
+		const detectedServer = detectSiteServer(site);
+		if (
+			detectedServer.kind !== 'unsupported' &&
+			!serverManagedFilesystemReady(site, detectedServer.kind)
+		) {
+			return lifecycleUnavailableSiteState(
+				site,
+				siteStatus,
+				'Local has not finished preparing this site\'s web-server files. Media Proxy will remain inactive until they are ready.',
+			);
+		}
 		const server = resolveServer(site);
+		const transaction = serverTransactionFingerprint(site, server);
+		const assertSiteStateTransactionCurrent = (): void => {
+			if (!serverTransactionIsCurrent(siteId, transaction)) {
+				throw new ServerTransactionChangedError();
+			}
+		};
+		assertSiteStateTransactionCurrent();
 		const envelope = readStoredSettingsEnvelope(site, server.kind);
 		const settings = server.kind === 'apache' || server.kind === 'nginx'
 			? storedSettingsForServer(envelope, server.kind)
 			: fallbackStoredSettings(envelope);
-		const managedArtifactsPresent = await allManagedArtifactsExist(site);
+		const managedArtifactsPresent = await allManagedArtifactsExist(
+			site,
+			assertSiteStateTransactionCurrent,
+		);
 		const runtimeUnavailable = server.kind === 'unsupported' || !server.service;
 		let apacheCapabilities: Awaited<ReturnType<typeof inspectApacheRuntimeCapabilities>> | undefined;
 		let capabilityInspectionReason: string | undefined;
@@ -684,8 +899,12 @@ export default function main(context: LocalMain.AddonMainContext): void {
 						normalizedOrigin,
 						managedFileOptions(server),
 						trustBundle,
+						assertSiteStateTransactionCurrent,
 					);
-				} catch {
+				} catch (error) {
+					if (isExpectedLifecycleInterruption(siteId, error)) {
+						throw error;
+					}
 					applied = false;
 				}
 			} else {
@@ -714,6 +933,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			httpsUnavailableReason: apacheCapabilities?.http && !apacheCapabilities.https
 				? apacheCapabilities.reason
 				: undefined,
+			lifecycleReady: true,
 			needsAttention,
 			reason: needsAttention
 				? attentionReason
@@ -727,7 +947,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			requiresOriginIp: server.requiresOriginIp,
 			serverKind: server.kind,
 			settings,
-			siteStatus: siteProcessManager.getSiteStatus(site),
+			siteStatus,
 			supported: server.kind !== 'unsupported' && Boolean(server.service) && (
 				server.kind !== 'apache' || apacheCapabilities?.http === true
 			),
@@ -777,8 +997,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					: origin.hostname,
 			};
 			assertServerTransactionCurrent(siteId, transaction);
-			const snapshots = await captureAllManagedFiles(site);
-			assertServerTransactionCurrent(siteId, transaction);
 			nextSettings = {
 				certificate: probe.certificate,
 				enabled: true,
@@ -801,9 +1019,12 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				nextSettings,
 			);
 
+			let snapshots: Awaited<ReturnType<typeof captureAllManagedFiles>> | undefined;
 			try {
-				persistSettings(siteId, nextEnvelope);
-				assertServerTransactionCurrent(siteId, transaction);
+				snapshots = await captureAllManagedFiles(
+					site,
+					() => assertServerTransactionCurrent(siteId, transaction),
+				);
 				await runServerTransactionMutation(
 					() => assertServerTransactionCurrent(siteId, transaction),
 					() => applyServerManagedFiles(
@@ -811,6 +1032,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 						verifiedOrigin,
 						managedFileOptions(server),
 						probe.trustedCertificateAuthoritiesPem,
+						() => assertServerTransactionCurrent(siteId, transaction),
 					),
 				);
 				const restarted = await compileAndReload(
@@ -819,15 +1041,19 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					true,
 					() => assertServerTransactionCurrent(siteId, transaction),
 				);
-				assertServerTransactionCurrent(siteId, transaction);
+				commitInteractiveSettings(siteId, transaction, nextEnvelope);
 				logger.log('info', `Enabled media proxy for site ${siteId}${restarted ? ` and refreshed ${server.kind}` : ''}.`);
 			} catch (error) {
 				if (globalLifecycleState) {
-					return abortForGlobalLifecycle(site, server, previousEnvelope, error);
+					return abortForGlobalLifecycle(site.id, error);
+				}
+				if (!snapshots) {
+					throw error;
 				}
 				return rollbackTransaction(
 					site,
 					server,
+					transaction,
 					previousEnvelope,
 					snapshots,
 					error,
@@ -836,7 +1062,10 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		} else {
 			if (
 				(server.kind === 'unsupported' || !server.service) &&
-				(previousSettings.enabled || await allManagedArtifactsExist(site))
+				(previousSettings.enabled || await allManagedArtifactsExist(
+					site,
+					() => assertServerTransactionCurrent(siteId, transaction),
+				))
 			) {
 				throw new Error(runtimeCleanupUnavailableReason(server));
 			}
@@ -881,8 +1110,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			}
 			const preserveVerification = originPairMatches(disabled, previousSettings);
 			assertServerTransactionCurrent(siteId, transaction);
-			const snapshots = await captureAllManagedFiles(site);
-			assertServerTransactionCurrent(siteId, transaction);
 			nextSettings = {
 				...disabled,
 				certificate: preserveVerification ? previousSettings.certificate : undefined,
@@ -897,12 +1124,18 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				nextSettings,
 			);
 
+			let snapshots: Awaited<ReturnType<typeof captureAllManagedFiles>> | undefined;
 			try {
-				persistSettings(siteId, nextEnvelope);
-				assertServerTransactionCurrent(siteId, transaction);
+				snapshots = await captureAllManagedFiles(
+					site,
+					() => assertServerTransactionCurrent(siteId, transaction),
+				);
 				const changed = await runServerTransactionMutation(
 					() => assertServerTransactionCurrent(siteId, transaction),
-					() => removeAllManagedFiles(site),
+					() => removeAllManagedFiles(
+						site,
+						() => assertServerTransactionCurrent(siteId, transaction),
+					),
 				);
 				if ((changed || previousSettings.enabled) && server.kind !== 'unsupported' && server.service) {
 					await compileAndReload(
@@ -911,16 +1144,20 @@ export default function main(context: LocalMain.AddonMainContext): void {
 						false,
 						() => assertServerTransactionCurrent(siteId, transaction),
 					);
-					assertServerTransactionCurrent(siteId, transaction);
 				}
+				commitInteractiveSettings(siteId, transaction, nextEnvelope);
 				logger.log('info', `Disabled media proxy for site ${siteId}.`);
 			} catch (error) {
 				if (globalLifecycleState) {
-					return abortForGlobalLifecycle(site, server, previousEnvelope, error);
+					return abortForGlobalLifecycle(site.id, error);
+				}
+				if (!snapshots) {
+					throw error;
 				}
 				return rollbackTransaction(
 					site,
 					server,
+					transaction,
 					previousEnvelope,
 					snapshots,
 					error,
@@ -969,15 +1206,19 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		if (!server.service) {
 			throw new Error(runtimeCleanupUnavailableReason(server));
 		}
-		const snapshots = await captureAllManagedFiles(site);
-		assertServerTransactionCurrent(siteId, transaction);
 		const disabledEnvelope = setStoredSettingsEnabled(envelope, false);
+		let snapshots: Awaited<ReturnType<typeof captureAllManagedFiles>> | undefined;
 		try {
-			persistSettings(siteId, disabledEnvelope);
-			assertServerTransactionCurrent(siteId, transaction);
+			snapshots = await captureAllManagedFiles(
+				site,
+				() => assertServerTransactionCurrent(siteId, transaction),
+			);
 			const changed = await runServerTransactionMutation(
 				() => assertServerTransactionCurrent(siteId, transaction),
-				() => removeAllManagedFiles(site),
+				() => removeAllManagedFiles(
+					site,
+					() => assertServerTransactionCurrent(siteId, transaction),
+				),
 			);
 			if (changed || envelope.enabled) {
 				await compileAndReload(
@@ -986,16 +1227,20 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					false,
 					() => assertServerTransactionCurrent(siteId, transaction),
 				);
-				assertServerTransactionCurrent(siteId, transaction);
 			}
+			commitInteractiveSettings(siteId, transaction, disabledEnvelope);
 			logger.log('info', `Disabled media proxy for site ${siteId} without changing its connection profiles.`);
 		} catch (error) {
 			if (globalLifecycleState) {
-				return abortForGlobalLifecycle(site, server, envelope, error);
+				return abortForGlobalLifecycle(site.id, error);
+			}
+			if (!snapshots) {
+				throw error;
 			}
 			return rollbackTransaction(
 				site,
 				server,
+				transaction,
 				envelope,
 				snapshots,
 				error,
@@ -1008,7 +1253,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		siteId: string,
 		request: OriginDiscoveryRequest,
 	): Promise<OriginSuggestion> => {
-		const site = requireSite(siteId);
+		const site = requireLifecycleReadySite(siteId);
 		if (!request || typeof request !== 'object') {
 			throw new Error('A valid origin discovery request is required.');
 		}
@@ -1051,7 +1296,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		input: unknown,
 		signal: AbortSignal,
 	): Promise<PublicOriginProbeResult> => {
-		const site = requireSite(siteId);
+		const site = requireLifecycleReadySite(siteId);
 		const server = resolveServer(site);
 		if (server.kind === 'unsupported' || !server.service) {
 			throw new Error(server.reason || 'Local could not load the web-server service for this site.');
@@ -1098,248 +1343,871 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		siteId: string,
 		options: ReconcileOptions = {},
 	): Promise<void> => {
-		await withSiteLock(siteId, async () => {
-			if (globalLifecycleState) {
-				return;
-			}
-
-			const site = siteData.getSite(siteId);
-			if (!site) {
-				return;
-			}
-			const forcedAfterSiteStarted = options.refreshMatchingEnabledRuntime === true;
-			const siteStatusAllowsReconciliation = (candidate: Local.Site): boolean => (
-				shouldReconcileManagedFiles(
-					siteProcessManager.getSiteStatus(candidate),
-					forcedAfterSiteStarted,
-				)
-			);
-			if (!siteStatusAllowsReconciliation(site)) {
-				return;
-			}
-
-			const server = resolveServer(site);
-			const transaction = serverTransactionFingerprint(site, server);
-			const reconciliationCanMutate = (): boolean => {
-				const latestSite = siteData.getSite(siteId);
-				if (!latestSite || !siteStatusAllowsReconciliation(latestSite)) {
-					return false;
-				}
-				return serverTransactionIsCurrent(siteId, transaction);
-			};
-			const assertReconciliationTransactionCurrent = (): void => {
-				assertGloballyActive();
-				if (!reconciliationCanMutate()) {
-					throw new ServerTransactionChangedError();
-				}
-			};
-			const rawStoredSettings = (site as SiteWithSettings)[SITE_SETTINGS_KEY];
-			const previousEnvelope = readStoredSettingsEnvelope(site, server.kind);
-			const settings = server.kind === 'apache' || server.kind === 'nginx'
-				? storedSettingsForServer(previousEnvelope, server.kind)
-				: fallbackStoredSettings(previousEnvelope);
-			let normalizedOrigin: ReturnType<typeof validateAndNormalizeOrigin> | undefined;
-			if (server.kind === 'unsupported' || !server.service) {
-				if (!settings.enabled && !await allManagedArtifactsExist(site)) {
+		try {
+			await withSiteLock(siteId, async () => {
+				if (globalLifecycleState) {
 					return;
 				}
-				throw new Error(runtimeCleanupUnavailableReason(server));
-			}
-			const nextEnvelope = setStoredSettingsLastServer(previousEnvelope, server.kind);
-			const shouldPersistReconciledEnvelope = nextEnvelope !== previousEnvelope ||
-				storedSettingsEnvelopeNeedsMigration(rawStoredSettings);
-			const persistReconciledEnvelope = (): boolean => {
-				if (!reconciliationCanMutate()) {
-					return false;
-				}
-				if (shouldPersistReconciledEnvelope) {
-					persistSettings(site.id, nextEnvelope);
-				}
-				return true;
-			};
-			if (!settings.enabled) {
-				if (!await allManagedArtifactsExist(site)) {
-					persistReconciledEnvelope();
+
+				const site = siteData.getSite(siteId);
+				if (!site) {
 					return;
 				}
-			} else {
-				try {
-					if (server.kind === 'nginx') {
-						await assertStoredWpEngineConnection(site, settings);
-					}
-					normalizedOrigin = validateAndNormalizeOrigin(settings, {
-						requiresOriginIp: server.requiresOriginIp,
-					});
-					await assertApacheOriginCapability(server, normalizedOrigin.protocol);
-				} catch (validationError) {
-					if (!reconciliationCanMutate()) {
-						return;
-					}
-					const snapshots = await captureAllManagedFiles(site);
-					if (!reconciliationCanMutate()) {
-						return;
-					}
-					const cleanupErrors: string[] = [];
+				const rawStoredSettings = (site as SiteWithSettings)[SITE_SETTINGS_KEY];
+				if (options.configuredOnly && rawStoredSettings === undefined) {
+					return;
+				}
+				const siteStatusAllowsReconciliation = (candidate: Local.Site): boolean => (
+					shouldReconcileManagedFiles(siteProcessManager.getSiteStatus(candidate))
+				);
+				if (!siteStatusAllowsReconciliation(site)) {
+					return;
+				}
 
-					let changed = false;
-					try {
-						changed = await runServerTransactionMutation(
-							assertReconciliationTransactionCurrent,
-							() => removeAllManagedFiles(site),
-						);
-					} catch (error) {
-						if (isServerTransactionChangedError(error)) {
-							return rollbackTransaction(
-								site,
-								server,
-								previousEnvelope,
-								snapshots,
-								error,
-							);
+				const detectedServer = detectSiteServer(site);
+				if (
+					detectedServer.kind === 'unsupported' ||
+					!serverManagedFilesystemReady(site, detectedServer.kind)
+				) {
+					return;
+				}
+				const server = resolveServer(site);
+				const transaction = serverTransactionFingerprint(site, server);
+				const reconciliationCanMutate = (): boolean => {
+					const latestSite = siteData.getSite(siteId);
+					if (!latestSite || !siteStatusAllowsReconciliation(latestSite)) {
+						return false;
+					}
+					const latestServer = detectSiteServer(latestSite);
+					if (
+						latestServer.kind === 'unsupported' ||
+						!serverManagedFilesystemReady(latestSite, latestServer.kind)
+					) {
+						return false;
+					}
+					return serverTransactionIsCurrent(siteId, transaction);
+				};
+				const assertReconciliationTransactionCurrent = (): void => {
+					assertGloballyActive();
+					if (!reconciliationCanMutate()) {
+						throw new ServerTransactionChangedError();
+					}
+				};
+				const previousEnvelope = readStoredSettingsEnvelope(site, server.kind);
+				const settings = server.kind === 'apache' || server.kind === 'nginx'
+					? storedSettingsForServer(previousEnvelope, server.kind)
+					: fallbackStoredSettings(previousEnvelope);
+				let normalizedOrigin: ReturnType<typeof validateAndNormalizeOrigin> | undefined;
+				if (server.kind === 'unsupported' || !server.service) {
+					if (!settings.enabled && !await allManagedArtifactsExist(
+						site,
+						assertReconciliationTransactionCurrent,
+					)) {
+						return;
+					}
+					throw new Error(runtimeCleanupUnavailableReason(server));
+				}
+				const nextEnvelope = setStoredSettingsLastServer(previousEnvelope, server.kind);
+				const shouldPersistReconciledEnvelope = nextEnvelope !== previousEnvelope ||
+					storedSettingsEnvelopeNeedsMigration(rawStoredSettings);
+				const persistReconciledEnvelope = (): boolean => {
+					if (!reconciliationCanMutate()) {
+						return false;
+					}
+					if (shouldPersistReconciledEnvelope) {
+						persistSettings(site.id, nextEnvelope);
+					}
+					return true;
+				};
+				if (!settings.enabled) {
+					if (!await allManagedArtifactsExist(
+						site,
+						assertReconciliationTransactionCurrent,
+					)) {
+						if (rawStoredSettings !== undefined) {
+							persistReconciledEnvelope();
 						}
-						cleanupErrors.push(`files: ${errorMessage(error)}`);
+						return;
 					}
-					if (!reconciliationCanMutate()) {
-						return rollbackTransaction(
+				} else {
+					try {
+						if (server.kind === 'nginx') {
+							await assertStoredWpEngineConnection(site, settings);
+						}
+						normalizedOrigin = validateAndNormalizeOrigin(settings, {
+							requiresOriginIp: server.requiresOriginIp,
+						});
+						await assertApacheOriginCapability(server, normalizedOrigin.protocol);
+					} catch (validationError) {
+						if (!reconciliationCanMutate()) {
+							return;
+						}
+						const snapshots = await captureAllManagedFiles(
 							site,
-							server,
-							previousEnvelope,
-							snapshots,
-							new ServerTransactionChangedError(),
+							assertReconciliationTransactionCurrent,
 						);
-					}
+						if (!reconciliationCanMutate()) {
+							return;
+						}
+						const cleanupErrors: string[] = [];
 
-					if (cleanupRequiresRefresh(changed, settings.enabled)) {
+						let changed = false;
 						try {
-							await compileAndReload(
-								site,
-								server,
-								false,
+							changed = await runServerTransactionMutation(
 								assertReconciliationTransactionCurrent,
+								() => removeAllManagedFiles(
+									site,
+									assertReconciliationTransactionCurrent,
+								),
 							);
 						} catch (error) {
 							if (isServerTransactionChangedError(error)) {
 								return rollbackTransaction(
 									site,
 									server,
+									transaction,
 									previousEnvelope,
 									snapshots,
 									error,
 								);
 							}
-							cleanupErrors.push(`${server.kind} cleanup: ${errorMessage(error)}`);
+							cleanupErrors.push(`files: ${errorMessage(error)}`);
 						}
-					}
-					try {
-						if (!persistReconciledEnvelope()) {
+						if (!reconciliationCanMutate()) {
 							return rollbackTransaction(
 								site,
 								server,
+								transaction,
 								previousEnvelope,
 								snapshots,
 								new ServerTransactionChangedError(),
 							);
 						}
-					} catch (error) {
-						if (isServerTransactionChangedError(error)) {
-							throw error;
+
+						if (cleanupRequiresRefresh(changed, settings.enabled)) {
+							try {
+								await compileAndReload(
+									site,
+									server,
+									false,
+									assertReconciliationTransactionCurrent,
+								);
+							} catch (error) {
+								if (isServerTransactionChangedError(error)) {
+									return rollbackTransaction(
+										site,
+										server,
+										transaction,
+										previousEnvelope,
+										snapshots,
+										error,
+									);
+								}
+								cleanupErrors.push(`${server.kind} cleanup: ${errorMessage(error)}`);
+							}
 						}
-						cleanupErrors.push(`settings: ${errorMessage(error)}`);
-					}
+						try {
+							if (!persistReconciledEnvelope()) {
+								return rollbackTransaction(
+									site,
+									server,
+									transaction,
+									previousEnvelope,
+									snapshots,
+									new ServerTransactionChangedError(),
+								);
+							}
+						} catch (error) {
+							if (isServerTransactionChangedError(error)) {
+								throw error;
+							}
+							cleanupErrors.push(`settings: ${errorMessage(error)}`);
+						}
 
-					const reason = errorMessage(validationError);
-					if (cleanupErrors.length > 0) {
-						throw new Error(`${reason} Fail-closed cleanup also failed (${cleanupErrors.join('; ')}).`);
-					}
-					logger.log(
-						'warn',
-						`Removed unverified media proxy configuration for site ${site.id} while retaining global enabled intent for the current ${server.kind} profile: ${reason}`,
-					);
-					return;
-				}
-
-				const trustBundle = normalizedOrigin.protocol === 'https:'
-					? trustedCertificateAuthoritiesPem()
-					: undefined;
-
-				if (await serverManagedFilesMatch(
-					site,
-					normalizedOrigin,
-					managedFileOptions(server),
-					trustBundle,
-				)) {
-					if (!persistReconciledEnvelope()) {
+						const reason = errorMessage(validationError);
+						if (cleanupErrors.length > 0) {
+							throw new Error(`${reason} Fail-closed cleanup also failed (${cleanupErrors.join('; ')}).`);
+						}
+						logger.log(
+							'warn',
+							`Removed unverified media proxy configuration for site ${site.id} while retaining global enabled intent for the current ${server.kind} profile: ${reason}`,
+						);
 						return;
 					}
-					if (options.refreshMatchingEnabledRuntime) {
-						if (!reconciliationCanMutate()) {
-							return;
+
+					const trustBundle = normalizedOrigin.protocol === 'https:'
+						? trustedCertificateAuthoritiesPem()
+						: undefined;
+
+					if (await serverManagedFilesMatch(
+						site,
+						normalizedOrigin,
+						managedFileOptions(server),
+						trustBundle,
+						assertReconciliationTransactionCurrent,
+					)) {
+						if (options.refreshMatchingEnabledRuntime) {
+							if (!reconciliationCanMutate()) {
+								return;
+							}
+							await compileAndReload(
+								site,
+								server,
+								true,
+								assertReconciliationTransactionCurrent,
+							);
+							assertReconciliationTransactionCurrent();
 						}
+						persistReconciledEnvelope();
+						return;
+					}
+				}
+
+				const snapshots = await captureAllManagedFiles(
+					site,
+					assertReconciliationTransactionCurrent,
+				);
+				try {
+					assertGloballyActive();
+					if (!reconciliationCanMutate()) {
+						return;
+					}
+					assertReconciliationTransactionCurrent();
+					let changed: boolean;
+					if (settings.enabled) {
+						const origin = normalizedOrigin ?? validateAndNormalizeOrigin(settings, {
+							requiresOriginIp: server.requiresOriginIp,
+						});
+						const trustBundle = origin.protocol === 'https:'
+							? trustedCertificateAuthoritiesPem()
+							: undefined;
+						changed = await runServerTransactionMutation(
+							assertReconciliationTransactionCurrent,
+							() => applyServerManagedFiles(
+								site,
+								origin,
+								managedFileOptions(server),
+								trustBundle,
+								assertReconciliationTransactionCurrent,
+							),
+						);
+					} else {
+						changed = await runServerTransactionMutation(
+							assertReconciliationTransactionCurrent,
+							() => removeAllManagedFiles(
+								site,
+								assertReconciliationTransactionCurrent,
+							),
+						);
+					}
+
+					if (changed) {
 						await compileAndReload(
 							site,
 							server,
-							true,
+							settings.enabled,
 							assertReconciliationTransactionCurrent,
 						);
 						assertReconciliationTransactionCurrent();
 					}
-					return;
-				}
-			}
-
-			const snapshots = await captureAllManagedFiles(site);
-			try {
-				assertGloballyActive();
-				if (!persistReconciledEnvelope() || !reconciliationCanMutate()) {
-					return;
-				}
-				assertReconciliationTransactionCurrent();
-				let changed: boolean;
-				if (settings.enabled) {
-					const origin = normalizedOrigin ?? validateAndNormalizeOrigin(settings, {
-						requiresOriginIp: server.requiresOriginIp,
-					});
-					const trustBundle = origin.protocol === 'https:'
-						? trustedCertificateAuthoritiesPem()
-						: undefined;
-					changed = await runServerTransactionMutation(
-						assertReconciliationTransactionCurrent,
-						() => applyServerManagedFiles(
+					if (!persistReconciledEnvelope()) {
+						return rollbackTransaction(
 							site,
-							origin,
-							managedFileOptions(server),
-							trustBundle,
-						),
-					);
-				} else {
-					changed = await runServerTransactionMutation(
-						assertReconciliationTransactionCurrent,
-						() => removeAllManagedFiles(site),
-					);
-				}
-
-				if (changed) {
-					await compileAndReload(
+							server,
+							transaction,
+							previousEnvelope,
+							snapshots,
+							new ServerTransactionChangedError(),
+						);
+					}
+				} catch (error) {
+					if (globalLifecycleState) {
+						return abortForGlobalLifecycle(site.id, error);
+					}
+					return rollbackTransaction(
 						site,
 						server,
-						settings.enabled,
-						assertReconciliationTransactionCurrent,
+						transaction,
+						previousEnvelope,
+						snapshots,
+						error,
 					);
-					assertReconciliationTransactionCurrent();
 				}
+			});
+		} catch (error) {
+			if (isExpectedLifecycleInterruption(siteId, error)) {
+				logger.log(
+					'info',
+					`Paused Media Proxy reconciliation for site ${siteId} because Local changed or removed the site during a guarded read.`,
+				);
+				return;
+			}
+			throw error;
+		}
+	};
+
+	const cancelDeferredReconciliation = (siteId: string): void => {
+		const pending = deferredReconciliations.get(siteId);
+		if (pending?.timer) {
+			clearTimeout(pending.timer);
+		}
+		deferredReconciliations.delete(siteId);
+	};
+
+	const cancelOriginProbesForSite = (siteId: string): void => {
+		for (const [key, controller] of originProbeControllers) {
+			try {
+				const parsed = JSON.parse(key) as unknown[];
+				if (parsed[1] !== siteId) {
+					continue;
+				}
+			} catch {
+				continue;
+			}
+			controller.abort();
+			originProbeControllers.delete(key);
+		}
+	};
+
+	const scheduleDeferredReconciliation = (
+		siteId: string,
+		options: ReconcileOptions,
+	): void => {
+		const existing = deferredReconciliations.get(siteId);
+		if (existing) {
+			existing.options = {
+				configuredOnly: existing.options.configuredOnly && options.configuredOnly,
+				refreshMatchingEnabledRuntime: Boolean(
+					existing.options.refreshMatchingEnabledRuntime ||
+					options.refreshMatchingEnabledRuntime,
+				),
+			};
+			return;
+		}
+
+		const pending: DeferredReconciliation = {
+			attempts: 0,
+			options: { ...options },
+			stableSamples: 0,
+		};
+		const poll = (): void => {
+			if (deferredReconciliations.get(siteId) !== pending) {
+				return;
+			}
+			pending.timer = undefined;
+			pending.attempts += 1;
+			if (globalLifecycleState) {
+				cancelDeferredReconciliation(siteId);
+				return;
+			}
+
+			const site = siteData.getSite(siteId);
+			if (!site) {
+				cancelDeferredReconciliation(siteId);
+				return;
+			}
+			let siteStatus: string;
+			try {
+				siteStatus = siteProcessManager.getSiteStatus(site);
 			} catch (error) {
-				if (globalLifecycleState) {
-					return abortForGlobalLifecycle(site, server, previousEnvelope, error);
+				cancelDeferredReconciliation(siteId);
+				logger.log('warn', `Unable to read lifecycle status for site ${siteId}: ${errorMessage(error)}`);
+				return;
+			}
+			if (shouldCancelDeferredReconciliation(siteStatus)) {
+				cancelDeferredReconciliation(siteId);
+				return;
+			}
+
+			if (shouldReconcileManagedFiles(siteStatus)) {
+				let server: SiteServerAdapter;
+				try {
+					server = detectSiteServer(site);
+				} catch (error) {
+					cancelDeferredReconciliation(siteId);
+					logger.log('warn', `Unable to identify the web server for site ${siteId}: ${errorMessage(error)}`);
+					return;
 				}
-				return rollbackTransaction(
-					site,
-					server,
-					previousEnvelope,
-					snapshots,
-					error,
+				if (server.kind === 'unsupported') {
+					cancelDeferredReconciliation(siteId);
+					return;
+				}
+				try {
+					pending.stableSamples = serverManagedFilesystemReady(site, server.kind)
+						? pending.stableSamples + 1
+						: 0;
+				} catch (error) {
+					cancelDeferredReconciliation(siteId);
+					logger.log('warn', `Unsafe or unreadable Media Proxy paths for site ${siteId}: ${errorMessage(error)}`);
+					return;
+				}
+				if (pending.stableSamples >= DEFERRED_RECONCILIATION_STABLE_SAMPLES) {
+					const reconcileOptions = pending.options;
+					cancelDeferredReconciliation(siteId);
+					void reconcileSite(siteId, reconcileOptions).catch((error) => {
+						if (isExpectedLifecycleInterruption(siteId, error)) {
+							logger.log(
+								'info',
+								`Paused Media Proxy reconciliation for site ${siteId} because Local changed or removed the site during a guarded read.`,
+							);
+						} else {
+							logger.log('warn', `Unable to reconcile site ${siteId}: ${errorMessage(error)}`);
+						}
+					});
+					return;
+				}
+			} else {
+				pending.stableSamples = 0;
+			}
+
+			if (pending.attempts >= DEFERRED_RECONCILIATION_MAX_ATTEMPTS) {
+				cancelDeferredReconciliation(siteId);
+				logger.log(
+					'info',
+					`Deferred Media Proxy reconciliation expired for site ${siteId} without accessing its files.`,
+				);
+				return;
+			}
+			pending.timer = setTimeout(poll, DEFERRED_RECONCILIATION_INTERVAL_MS);
+		};
+
+		deferredReconciliations.set(siteId, pending);
+		pending.timer = setTimeout(poll, 0);
+	};
+
+	const cancelDeferredGlobalCleanup = (siteId: string): void => {
+		const pending = deferredGlobalCleanups.get(siteId);
+		if (pending?.timer) {
+			clearTimeout(pending.timer);
+		}
+		deferredGlobalCleanups.delete(siteId);
+	};
+
+	const globalCleanupFilesystemReady = (
+		site: Local.Site,
+		server: SiteServerAdapter,
+	): boolean => {
+		if (server.kind === 'apache' || server.kind === 'nginx') {
+			return serverManagedFilesystemReady(site, server.kind);
+		}
+		return serverManagedFilesystemReady(site, 'nginx') ||
+			serverManagedFilesystemReady(site, 'apache');
+	};
+
+	const synchronouslyPrepareSiteForGlobalChange = (
+		site: Local.Site,
+		mode: 'disabled' | 'uninstalling',
+		generation: number,
+	): boolean => {
+		const globalCleanupIsCurrent = (): boolean => (
+			globalLifecycleState === mode &&
+			globalLifecycleGeneration === generation
+		);
+		let siteStatus: string;
+		try {
+			siteStatus = siteProcessManager.getSiteStatus(site);
+		} catch (error) {
+			logger.log(
+				'info',
+				`Deferred synchronous Media Proxy ${mode === 'uninstalling' ? 'uninstall' : 'disable'} cleanup for site ${site.id} because Local's lifecycle status was unavailable: ${errorMessage(error)}`,
+			);
+			return false;
+		}
+		if (!shouldReconcileManagedFiles(siteStatus)) {
+			return false;
+		}
+
+		let detectedServer: SiteServerAdapter;
+		try {
+			detectedServer = detectSiteServer(site);
+			if (!globalCleanupFilesystemReady(site, detectedServer)) {
+				return false;
+			}
+		} catch (error) {
+			logger.log(
+				isExpectedLifecycleInterruption(site.id, error) ? 'info' : 'warn',
+				`Deferred synchronous Media Proxy ${mode === 'uninstalling' ? 'uninstall' : 'disable'} cleanup for ready site ${site.id} because its managed paths were unavailable: ${errorMessage(error)}`,
+			);
+			return false;
+		}
+
+		let server: RuntimeServer;
+		try {
+			server = resolveServer(site);
+		} catch {
+			server = { ...detectedServer, service: null };
+		}
+		const transaction = serverTransactionFingerprint(site, server);
+		const currentGlobalCleanupTarget = (): Local.Site | null => {
+			try {
+				if (!globalCleanupIsCurrent()) {
+					return null;
+				}
+				const currentSite = siteData.getSite(site.id);
+				if (!currentSite) {
+					return null;
+				}
+				const currentStatus = siteProcessManager.getSiteStatus(currentSite);
+				if (!shouldReconcileManagedFiles(currentStatus)) {
+					return null;
+				}
+				const currentDetectedServer = detectSiteServer(currentSite);
+				if (!globalCleanupFilesystemReady(currentSite, currentDetectedServer)) {
+					return null;
+				}
+				let currentServer: RuntimeServer;
+				try {
+					currentServer = resolveServer(currentSite);
+				} catch {
+					currentServer = { ...currentDetectedServer, service: null };
+				}
+				const currentTransaction = serverTransactionFingerprint(
+					currentSite,
+					currentServer,
+				);
+				return serverTransactionFingerprintsMatch(transaction, currentTransaction)
+					? currentSite
+					: null;
+			} catch {
+				return null;
+			}
+		};
+		const assertSynchronousGlobalCleanupCurrent = (): void => {
+			if (!currentGlobalCleanupTarget()) {
+				throw new ServerTransactionChangedError();
+			}
+		};
+
+		let envelopeBeforeCleanup: StoredSettingsEnvelope | undefined;
+		let forceRefresh = true;
+		try {
+			assertSynchronousGlobalCleanupCurrent();
+			envelopeBeforeCleanup = readStoredSettingsEnvelope(site, server.kind);
+			const settingsBeforeCleanup = server.kind === 'apache' || server.kind === 'nginx'
+				? storedSettingsForServer(envelopeBeforeCleanup, server.kind)
+				: fallbackStoredSettings(envelopeBeforeCleanup);
+			forceRefresh = settingsBeforeCleanup.enabled;
+		} catch (error) {
+			if (isExpectedLifecycleInterruption(site.id, error)) {
+				logger.log(
+					'info',
+					`Paused synchronous Media Proxy global cleanup for site ${site.id} because Local changed the site before saved settings could be read.`,
+				);
+				return true;
+			}
+			logger.log(
+				'warn',
+				`Could not read saved settings during synchronous global cleanup for site ${site.id}; forcing the deferred runtime refresh. ${errorMessage(error)}`,
+			);
+		}
+
+		try {
+			assertSynchronousGlobalCleanupCurrent();
+			forceRefresh = removeAllManagedFilesSync(
+				site,
+				assertSynchronousGlobalCleanupCurrent,
+			) || forceRefresh;
+			assertSynchronousGlobalCleanupCurrent();
+		} catch (error) {
+			forceRefresh = true;
+			logger.log(
+				isExpectedLifecycleInterruption(site.id, error) ? 'info' : 'warn',
+				`Synchronous Media Proxy global cleanup for site ${site.id} was incomplete; deferred cleanup will retry. ${errorMessage(error)}`,
+			);
+		}
+
+		if (mode === 'uninstalling') {
+			try {
+				assertSynchronousGlobalCleanupCurrent();
+				const latestSite = currentGlobalCleanupTarget();
+				if (!latestSite) {
+					throw new ServerTransactionChangedError();
+				}
+				const latestEnvelope = envelopeBeforeCleanup ??
+					readStoredSettingsEnvelope(latestSite, server.kind);
+				assertSynchronousGlobalCleanupCurrent();
+				persistSettings(
+					site.id,
+					setStoredSettingsEnabled(latestEnvelope, false),
+				);
+			} catch (error) {
+				logger.log(
+					isExpectedLifecycleInterruption(site.id, error) ? 'info' : 'warn',
+					`Could not commit durable disabled intent during synchronous uninstall cleanup for site ${site.id}; deferred cleanup will retry. ${errorMessage(error)}`,
 				);
 			}
-		});
+		}
+
+		return forceRefresh;
+	};
+
+	const cleanupSiteForGlobalChange = async (
+		siteId: string,
+		mode: 'disabled' | 'uninstalling',
+		generation: number,
+		forceRefresh: boolean,
+	): Promise<void> => withSiteLock(siteId, async () => {
+		const globalCleanupIsCurrent = (): boolean => {
+			const pending = deferredGlobalCleanups.get(siteId);
+			return globalLifecycleState === mode &&
+				globalLifecycleGeneration === generation &&
+				pending?.mode === mode &&
+				pending.generation === generation;
+		};
+		if (!globalCleanupIsCurrent()) {
+			throw new ServerTransactionChangedError();
+		}
+
+		const site = siteData.getSite(siteId);
+		if (!site) {
+			return;
+		}
+		const siteStatus = siteProcessManager.getSiteStatus(site);
+		if (!shouldReconcileManagedFiles(siteStatus)) {
+			throw new ServerTransactionChangedError();
+		}
+		const detectedServer = detectSiteServer(site);
+		if (!globalCleanupFilesystemReady(site, detectedServer)) {
+			throw new ServerTransactionChangedError();
+		}
+
+		let server: RuntimeServer;
+		try {
+			server = resolveServer(site);
+		} catch (error) {
+			logger.log(
+				'warn',
+				`Could not resolve the site service during global cleanup for site ${site.id}; using fail-closed persistent cleanup. ${errorMessage(error)}`,
+			);
+			server = { ...detectedServer, service: null };
+		}
+		const transaction = serverTransactionFingerprint(site, server);
+		const currentGlobalCleanupTarget = (): {
+			server: RuntimeServer;
+			site: Local.Site;
+		} | null => {
+			try {
+				if (!globalCleanupIsCurrent()) {
+					return null;
+				}
+				const currentSite = siteData.getSite(siteId);
+				if (!currentSite) {
+					return null;
+				}
+				const currentStatus = siteProcessManager.getSiteStatus(currentSite);
+				if (!shouldReconcileManagedFiles(currentStatus)) {
+					return null;
+				}
+				const currentDetectedServer = detectSiteServer(currentSite);
+				if (!globalCleanupFilesystemReady(currentSite, currentDetectedServer)) {
+					return null;
+				}
+				let currentServer: RuntimeServer;
+				try {
+					currentServer = resolveServer(currentSite);
+				} catch {
+					currentServer = { ...currentDetectedServer, service: null };
+				}
+				const currentTransaction = serverTransactionFingerprint(
+					currentSite,
+					currentServer,
+				);
+				if (!serverTransactionFingerprintsMatch(transaction, currentTransaction)) {
+					return null;
+				}
+				return { server: currentServer, site: currentSite };
+			} catch {
+				return null;
+			}
+		};
+		const assertGlobalCleanupTransactionCurrent = (): void => {
+			if (!currentGlobalCleanupTarget()) {
+				throw new ServerTransactionChangedError();
+			}
+		};
+		const guardedManagedArtifactsExist = async (): Promise<boolean> => {
+			return allManagedArtifactsExist(
+				site,
+				assertGlobalCleanupTransactionCurrent,
+			);
+		};
+		const guardedCompileAllConfigs = async (): Promise<void> => {
+			assertGlobalCleanupTransactionCurrent();
+			await configTemplates.compileServiceConfigs(site);
+			assertGlobalCleanupTransactionCurrent();
+		};
+
+		let envelopeBeforeCleanup: StoredSettingsEnvelope | undefined;
+		let enabledBeforeCleanup = true;
+		try {
+			envelopeBeforeCleanup = readStoredSettingsEnvelope(site, server.kind);
+			const settingsBeforeCleanup = server.kind === 'apache' || server.kind === 'nginx'
+				? storedSettingsForServer(envelopeBeforeCleanup, server.kind)
+				: fallbackStoredSettings(envelopeBeforeCleanup);
+			enabledBeforeCleanup = settingsBeforeCleanup.enabled;
+		} catch (error) {
+			logger.log(
+				'warn',
+				`Could not read saved settings during global cleanup for site ${site.id}; preserving the unknown schema and forcing runtime cleanup. ${errorMessage(error)}`,
+			);
+		}
+
+		const requiresRuntimeRefresh = forceRefresh || enabledBeforeCleanup;
+		const artifactsBeforeCleanup = await guardedManagedArtifactsExist();
+		if (!artifactsBeforeCleanup && !requiresRuntimeRefresh) {
+			assertGlobalCleanupTransactionCurrent();
+		} else if (server.kind === 'unsupported' || !server.service) {
+			const result = await completeUnresolvedServiceCleanup({
+				compileAllConfigs: guardedCompileAllConfigs,
+				hasManagedArtifacts: guardedManagedArtifactsExist,
+				isSiteRunning: () => {
+					assertGlobalCleanupTransactionCurrent();
+					return siteProcessManager.getSiteStatus(site) === 'running';
+				},
+				removeAllManagedFiles: () => removeAllManagedFiles(
+					site,
+					assertGlobalCleanupTransactionCurrent,
+				),
+			}, requiresRuntimeRefresh);
+			logger.log(
+				'warn',
+				`Completed fail-closed persistent cleanup for site ${site.id} without a hard restart${result.changed ? '' : '; no managed files required removal'}.`,
+			);
+		} else {
+			const changed = await removeAllManagedFiles(
+				site,
+				assertGlobalCleanupTransactionCurrent,
+			);
+			if (changed || requiresRuntimeRefresh) {
+				await compileAndReload(
+					site,
+					server,
+					false,
+					assertGlobalCleanupTransactionCurrent,
+				);
+			}
+			if (await guardedManagedArtifactsExist()) {
+				throw new Error('Managed proxy files remained after global cleanup.');
+			}
+		}
+
+		assertGlobalCleanupTransactionCurrent();
+		if (mode === 'uninstalling') {
+			const latestSite = siteData.getSite(site.id);
+			if (!latestSite) {
+				return;
+			}
+			const latestEnvelope = envelopeBeforeCleanup ??
+				readStoredSettingsEnvelope(latestSite, server.kind);
+			assertGlobalCleanupTransactionCurrent();
+			persistSettings(site.id, setStoredSettingsEnabled(latestEnvelope, false));
+		}
+	});
+
+	const scheduleDeferredGlobalCleanup = (
+		siteId: string,
+		mode: 'disabled' | 'uninstalling',
+		generation: number,
+		forceRefresh = false,
+	): void => {
+		const existing = deferredGlobalCleanups.get(siteId);
+		if (
+			existing &&
+			existing.generation === generation &&
+			existing.mode === mode
+		) {
+			existing.forceRefresh = existing.forceRefresh || forceRefresh;
+			return;
+		}
+		if (existing) {
+			cancelDeferredGlobalCleanup(siteId);
+		}
+
+		const pending: DeferredGlobalCleanup = {
+			attempts: 0,
+			forceRefresh,
+			generation,
+			mode,
+			stableSamples: 0,
+		};
+		const scheduleNext = (): void => {
+			if (deferredGlobalCleanups.get(siteId) !== pending) {
+				return;
+			}
+			if (pending.attempts >= DEFERRED_GLOBAL_CLEANUP_MAX_ATTEMPTS) {
+				cancelDeferredGlobalCleanup(siteId);
+				logger.log(
+					'error',
+					`Deferred Media Proxy global ${mode === 'uninstalling' ? 'uninstall' : 'disable'} cleanup expired for site ${siteId} without touching transitional site files.${pending.lastError ? ` Last error: ${pending.lastError}` : ''}`,
+				);
+				return;
+			}
+			pending.timer = setTimeout(
+				() => void poll(),
+				DEFERRED_GLOBAL_CLEANUP_INTERVAL_MS,
+			);
+		};
+		const poll = async (): Promise<void> => {
+			if (deferredGlobalCleanups.get(siteId) !== pending) {
+				return;
+			}
+			pending.timer = undefined;
+			pending.attempts += 1;
+			if (
+				globalLifecycleState !== pending.mode ||
+				globalLifecycleGeneration !== pending.generation
+			) {
+				cancelDeferredGlobalCleanup(siteId);
+				return;
+			}
+
+			try {
+				const site = siteData.getSite(siteId);
+				if (!site) {
+					cancelDeferredGlobalCleanup(siteId);
+					return;
+				}
+				const siteStatus = siteProcessManager.getSiteStatus(site);
+				if (siteLifecycleAccess(siteStatus) === 'destroying') {
+					pending.attempts = 0;
+					pending.stableSamples = 0;
+					scheduleNext();
+					return;
+				}
+				if (shouldReconcileManagedFiles(siteStatus)) {
+					const server = detectSiteServer(site);
+					pending.stableSamples = globalCleanupFilesystemReady(site, server)
+						? pending.stableSamples + 1
+						: 0;
+				} else {
+					pending.stableSamples = 0;
+				}
+
+				if (pending.stableSamples >= DEFERRED_GLOBAL_CLEANUP_STABLE_SAMPLES) {
+					await cleanupSiteForGlobalChange(
+						siteId,
+						pending.mode,
+						pending.generation,
+						pending.forceRefresh,
+					);
+					if (deferredGlobalCleanups.get(siteId) === pending) {
+						deferredGlobalCleanups.delete(siteId);
+					}
+					logger.log(
+						'info',
+						`Completed deferred Media Proxy global ${mode === 'uninstalling' ? 'uninstall' : 'disable'} cleanup for site ${siteId}.`,
+					);
+					return;
+				}
+			} catch (error) {
+				pending.lastError = errorMessage(error);
+				pending.stableSamples = 0;
+			}
+			scheduleNext();
+		};
+
+		deferredGlobalCleanups.set(siteId, pending);
+		pending.timer = setTimeout(() => void poll(), 0);
 	};
 
 	const matchesThisAddon = (addon: unknown): boolean => {
@@ -1355,89 +2223,46 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		if (!matchesThisAddon(addon)) {
 			return;
 		}
-		globalLifecycleState = uninstalling ? 'uninstalling' : 'disabled';
+		globalLifecycleGeneration += 1;
+		const mode = uninstalling ? 'uninstalling' : 'disabled';
+		globalLifecycleState = mode;
+		for (const siteId of deferredReconciliations.keys()) {
+			cancelDeferredReconciliation(siteId);
+		}
+		for (const siteId of deferredGlobalCleanups.keys()) {
+			cancelDeferredGlobalCleanup(siteId);
+		}
 		for (const controller of originProbeControllers.values()) {
 			controller.abort();
 		}
 		originProbeControllers.clear();
 
-		const cleanups: Promise<unknown>[] = [];
 		for (const site of Object.values(siteData.getSites()) as Local.Site[]) {
-			let server: RuntimeServer | null = null;
 			try {
-				server = resolveServer(site);
+				const forceRefresh = synchronouslyPrepareSiteForGlobalChange(
+					site,
+					mode,
+					globalLifecycleGeneration,
+				);
+				scheduleDeferredGlobalCleanup(
+					site.id,
+					mode,
+					globalLifecycleGeneration,
+					forceRefresh,
+				);
 			} catch (error) {
-				logger.log('warn', `Could not resolve the site service during global cleanup for site ${site.id}; using fail-closed persistent cleanup. ${errorMessage(error)}`);
+				logger.log(
+					'warn',
+					`Deferred Media Proxy global ${uninstalling ? 'uninstall' : 'disable'} cleanup for site ${site.id} after synchronous preparation failed; a forced retry was scheduled: ${errorMessage(error)}`,
+				);
+				scheduleDeferredGlobalCleanup(
+					site.id,
+					mode,
+					globalLifecycleGeneration,
+					true,
+				);
 			}
-			const detectedServerKind = server?.kind ?? detectSiteServer(site).kind;
-			let envelopeBeforeCleanup: StoredSettingsEnvelope | undefined;
-			let enabledBeforeCleanup = true;
-			try {
-				envelopeBeforeCleanup = readStoredSettingsEnvelope(site, detectedServerKind);
-				const settingsBeforeCleanup = detectedServerKind === 'apache' || detectedServerKind === 'nginx'
-					? storedSettingsForServer(envelopeBeforeCleanup, detectedServerKind)
-					: fallbackStoredSettings(envelopeBeforeCleanup);
-				enabledBeforeCleanup = settingsBeforeCleanup.enabled;
-			} catch (error) {
-				logger.log('warn', `Could not read saved settings during global cleanup for site ${site.id}; preserving the unknown schema and forcing runtime cleanup. ${errorMessage(error)}`);
-			}
-			if (uninstalling && envelopeBeforeCleanup) {
-				try {
-					persistSettings(site.id, setStoredSettingsEnabled(envelopeBeforeCleanup, false));
-				} catch (error) {
-					logger.log('warn', `Initial uninstall intent update failed for site ${site.id}; async cleanup will retry. ${errorMessage(error)}`);
-				}
-			}
-			const changedSynchronously = synchronousCleanupRequiresRefresh(
-				() => removeAllManagedFilesSync(site),
-				(error) => logger.log('warn', `Synchronous global cleanup failed for site ${site.id}; async cleanup will retry and force a runtime refresh. ${errorMessage(error)}`),
-			);
-
-			cleanups.push(withSiteLock(site.id, async () => {
-				const errors: string[] = [];
-				try {
-					if (!server || server.kind === 'unsupported' || !server.service) {
-						const result = await completeUnresolvedServiceCleanup({
-							compileAllConfigs: () => configTemplates.compileServiceConfigs(site),
-							hasManagedArtifacts: () => allManagedArtifactsExist(site),
-							isSiteRunning: () => siteProcessManager.getSiteStatus(site) === 'running',
-							removeAllManagedFiles: () => removeAllManagedFiles(site),
-						}, changedSynchronously || enabledBeforeCleanup);
-						logger.log('warn', `Completed fail-closed persistent cleanup for site ${site.id} without a hard restart${result.changed ? '' : '; no managed files required removal'}.`);
-					} else {
-						const changedAfterPendingOperations = await removeAllManagedFiles(site);
-						if (changedSynchronously || changedAfterPendingOperations || enabledBeforeCleanup) {
-							await compileAndReload(site, server, false);
-						}
-					}
-				} catch (error) {
-					errors.push(`runtime cleanup: ${errorMessage(error)}`);
-				}
-				if (uninstalling) {
-					try {
-						const latestSite = siteData.getSite(site.id) ?? site;
-						const latestEnvelope = readStoredSettingsEnvelope(latestSite, detectedServerKind);
-						persistSettings(site.id, setStoredSettingsEnabled(latestEnvelope, false));
-					} catch (error) {
-						errors.push(`disabled intent: ${errorMessage(error)}`);
-					}
-				}
-				if (errors.length > 0) {
-					throw new Error(errors.join('; '));
-				}
-			}));
 		}
-
-		void Promise.allSettled(cleanups).then((results) => {
-			const failures = results.flatMap((result, index) => (
-				result.status === 'rejected'
-					? [`cleanup ${index + 1}: ${errorMessage(result.reason)}`]
-					: []
-			));
-			if (failures.length > 0) {
-				logger.log('error', `Global ${uninstalling ? 'uninstall' : 'disable'} cleanup incomplete; stop affected sites before retrying. ${failures.join('; ')}`);
-			}
-		});
 	};
 
 	const restoreAfterGlobalEnable = (addon: unknown): void => {
@@ -1445,10 +2270,15 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			return;
 		}
 
+		globalLifecycleGeneration += 1;
+		for (const siteId of deferredGlobalCleanups.keys()) {
+			cancelDeferredGlobalCleanup(siteId);
+		}
 		globalLifecycleState = null;
 		for (const site of Object.values(siteData.getSites()) as Local.Site[]) {
-			void reconcileSite(site.id).catch((error) => {
-				logger.log('warn', `Re-enable reconciliation failed for site ${site.id}: ${errorMessage(error)}`);
+			scheduleDeferredReconciliation(site.id, {
+				configuredOnly: true,
+				refreshMatchingEnabledRuntime: true,
 			});
 		}
 	};
@@ -1507,7 +2337,37 @@ export default function main(context: LocalMain.AddonMainContext): void {
 
 	ipcMain.handle(IPC_CHANNELS.getOriginDiscoveryOptions, async (_event, siteId: string) => {
 		try {
-			const site = requireSite(siteId);
+			requireSiteId(siteId);
+			const site = siteData.getSite(siteId);
+			if (!site) {
+				return {
+					canAutoPopulate: false,
+					environments: [],
+					message: 'This Local site no longer exists.',
+					provider: 'none',
+				};
+			}
+			const siteStatus = siteProcessManager.getSiteStatus(site);
+			if (!shouldReconcileManagedFiles(siteStatus)) {
+				return {
+					canAutoPopulate: false,
+					environments: [],
+					message: lifecycleUnavailableReason(siteStatus),
+					provider: 'none',
+				};
+			}
+			const detectedServer = detectSiteServer(site);
+			if (
+				detectedServer.kind !== 'unsupported' &&
+				!serverManagedFilesystemReady(site, detectedServer.kind)
+			) {
+				return {
+					canAutoPopulate: false,
+					environments: [],
+					message: 'Local has not finished preparing this site. Media Proxy connection discovery is paused.',
+					provider: 'none',
+				};
+			}
 			const options = await getOriginDiscoveryOptions(
 				site,
 				wpEngineCapi,
@@ -1543,11 +2403,34 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		try {
 			await reconcileSite(siteId);
 		} catch (error) {
-			logger.log('warn', `State-read reconciliation failed for site ${siteId}; returning the current persisted state. ${errorMessage(error)}`);
+			if (isExpectedLifecycleInterruption(siteId, error)) {
+				logger.log(
+					'info',
+					`Paused state-read reconciliation for site ${siteId} because Local changed or removed the site.`,
+				);
+			} else {
+				logger.log('warn', `State-read reconciliation failed for site ${siteId}; returning the current persisted state. ${errorMessage(error)}`);
+			}
 		}
 		try {
 			return await getSiteState(siteId);
 		} catch (error) {
+			if (isExpectedLifecycleInterruption(siteId, error)) {
+				logger.log(
+					'info',
+					`Returned lifecycle-unavailable Media Proxy state for site ${siteId} because Local changed or removed the site during a guarded read.`,
+				);
+				const site = siteData.getSite(siteId) ?? null;
+				let siteStatus = 'deleting';
+				if (site) {
+					try {
+						siteStatus = siteProcessManager.getSiteStatus(site);
+					} catch {
+						siteStatus = 'deleting';
+					}
+				}
+				return lifecycleUnavailableSiteState(site, siteStatus);
+			}
 			logger.log('error', `Unable to read site state: ${errorMessage(error)}`);
 			throw new Error(errorMessage(error));
 		}
@@ -1595,7 +2478,10 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			try {
 				return await applySettings(siteId, input, expectedServerKind);
 			} catch (error) {
-				logger.log('error', `Unable to apply settings for site ${siteId}: ${errorLogMessage(error)}`);
+				logger.log(
+					isExpectedLifecycleInterruption(siteId, error) ? 'info' : 'error',
+					`Unable to apply settings for site ${siteId}: ${errorLogMessage(error)}`,
+				);
 				throw new Error(errorMessage(error));
 			}
 		},
@@ -1607,7 +2493,10 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			try {
 				return await setEnabled(siteId, expectedServerKind, enabled);
 			} catch (error) {
-				logger.log('error', `Unable to change enabled intent for site ${siteId}: ${errorLogMessage(error)}`);
+				logger.log(
+					isExpectedLifecycleInterruption(siteId, error) ? 'info' : 'error',
+					`Unable to change enabled intent for site ${siteId}: ${errorLogMessage(error)}`,
+				);
 				throw new Error(errorMessage(error));
 			}
 		},
@@ -1616,17 +2505,58 @@ export default function main(context: LocalMain.AddonMainContext): void {
 	LocalMain.HooksMain.addAction('siteStarted', (siteOrId: Local.Site | string) => {
 		const siteId = typeof siteOrId === 'string' ? siteOrId : siteOrId?.id;
 		if (!siteId) {
-			return Promise.resolve();
+			return;
 		}
 
-		return reconcileSite(siteId, { refreshMatchingEnabledRuntime: true }).catch((error) => {
-			logger.log('warn', `Unable to reconcile site ${siteId}: ${errorMessage(error)}`);
+		if (globalLifecycleState) {
+			scheduleDeferredGlobalCleanup(
+				siteId,
+				globalLifecycleState,
+				globalLifecycleGeneration,
+			);
+			return;
+		}
+		scheduleDeferredReconciliation(siteId, {
+			configuredOnly: true,
+			refreshMatchingEnabledRuntime: true,
 		});
 	});
 
+	LocalMain.HooksMain.addAction('siteAdded', (siteOrId: Local.Site | string) => {
+		const siteId = typeof siteOrId === 'string' ? siteOrId : siteOrId?.id;
+		if (!siteId) {
+			return;
+		}
+
+		if (globalLifecycleState) {
+			scheduleDeferredGlobalCleanup(
+				siteId,
+				globalLifecycleState,
+				globalLifecycleGeneration,
+			);
+			return;
+		}
+		scheduleDeferredReconciliation(siteId, {
+			configuredOnly: true,
+			refreshMatchingEnabledRuntime: true,
+		});
+	});
+
+	LocalMain.HooksMain.addAction('siteDeleted', (siteOrId: Local.Site | string) => {
+		const siteId = typeof siteOrId === 'string' ? siteOrId : siteOrId?.id;
+		if (!siteId) {
+			return;
+		}
+
+		cancelDeferredReconciliation(siteId);
+		cancelDeferredGlobalCleanup(siteId);
+		cancelOriginProbesForSite(siteId);
+	});
+
 	for (const site of Object.values(siteData.getSites()) as Local.Site[]) {
-		void reconcileSite(site.id).catch((error) => {
-			logger.log('warn', `Startup reconciliation failed for site ${site.id}: ${errorMessage(error)}`);
+		scheduleDeferredReconciliation(site.id, {
+			configuredOnly: false,
+			refreshMatchingEnabledRuntime: false,
 		});
 	}
 }

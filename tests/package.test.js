@@ -22,7 +22,7 @@ test('declares the installed add-on card metadata expected by Local', () => {
 		packageJson.author?.url,
 		'https://www.amsive.com/?utm_source=localwp&utm_medium=referral&utm_campaign=local_media_proxy&utm_content=package_author',
 	);
-	assert.equal(packageJson.version, '0.2.4');
+	assert.equal(packageJson.version, '0.3.0');
 	assert.equal(packageJson.license, 'Apache-2.0');
 	assert.equal(
 		packageJson.description,
@@ -95,5 +95,60 @@ test('keeps README artwork public, package-compatible, and off removed commit hi
 	assert.equal(
 		fs.existsSync(path.resolve(__dirname, '../docs/screenshots/origin-discovery-light.png')),
 		true,
+	);
+});
+
+test('keeps the lifecycle release contract durable and public-safe', () => {
+	const releasing = fs.readFileSync(
+		path.resolve(__dirname, '../RELEASING.md'),
+		'utf8',
+	);
+	const contributing = fs.readFileSync(
+		path.resolve(__dirname, '../CONTRIBUTING.md'),
+		'utf8',
+	);
+	const technicalDetails = fs.readFileSync(
+		path.resolve(__dirname, '../docs/technical-details.md'),
+		'utf8',
+	);
+
+	for (const expected of [
+		/Local Media Proxy Test Site N/,
+		/automated initial-pull transition regressions/,
+		/Do not start a live pull or push to satisfy this step/,
+		/predesignated non-production transfer-test site/,
+		/database-only/,
+		/File synchronization must remain disabled, including `wp-content\/uploads\/\*\*`/,
+		/zero file or media paths were transferred/,
+		/Approval does not carry across operations or test runs/,
+		/Delete at least one running numbered fixture and one halted numbered fixture/,
+		/starting byte offset.*starting line count/,
+		/no renderer IPC, managed-file reads or writes, or settings writes/,
+		/raw Local and.*WP Engine logs.*local and untracked/,
+		/Pull-request evidence must be a sanitized summary/,
+	]) {
+		assert.match(releasing, expected);
+	}
+
+	assert.match(
+		technicalDetails,
+		/immediately before each write, atomic rename, or unlink/,
+	);
+	assert.match(
+		technicalDetails,
+		/re-enable cancels the deferred global cleanup before normal configured-site reconciliation/,
+	);
+	assert.match(
+		technicalDetails,
+		/Rollback is similarly qualified.*only while the current site remains lifecycle-ready/,
+	);
+
+	assert.match(
+		contributing,
+		/Keep raw Local and WP Engine logs.*local and untracked/,
+	);
+	assert.match(
+		contributing,
+		/Revalidate lifecycle readiness immediately before every managed write, atomic rename, unlink, and rollback restoration/,
 	);
 });

@@ -22,7 +22,7 @@ export interface ServerTransactionFingerprint {
 export class ServerTransactionChangedError extends Error {
 	constructor() {
 		super(
-			'Local changed this site\'s web-server identity or lifecycle status before the Media Proxy operation completed. Any settings and managed files changed by this transaction were restored; wait for Local to finish the change, then retry.',
+			'Local changed this site\'s web-server identity or lifecycle status before the Media Proxy operation completed. Media Proxy stopped further work; wait for Local to finish the change, then review the current state before retrying.',
 		);
 		this.name = SERVER_TRANSACTION_CHANGED_ERROR_NAME;
 	}
@@ -77,26 +77,74 @@ export function cleanupRequiresRefresh(changed: boolean, enabledIntent: boolean)
 	return changed || enabledIntent;
 }
 
-const EXPLICITLY_INACTIVE_SITE_STATUSES = new Set([
-	'deleting',
-	'deleting_backup',
+const READY_SITE_STATUSES = new Set([
 	'halted',
-	'stopping',
+	'running',
 ]);
 
-export function shouldRefreshRuntime(siteStatus: string, targetServiceRunning: boolean): boolean {
-	return siteStatus === 'running' || (
-		targetServiceRunning && !EXPLICITLY_INACTIVE_SITE_STATUSES.has(siteStatus)
-	);
+const DESTROYING_SITE_STATUSES = new Set([
+	'deleting',
+	'deleting_backup',
+]);
+
+const FAILED_SITE_STATUSES = new Set([
+	'container_missing',
+	'provisioning_error',
+	'stalled',
+	'wordpress_install_error',
+]);
+
+export type SiteLifecycleAccess = 'destroying' | 'failed' | 'ready' | 'transitioning';
+
+export function siteLifecycleAccess(siteStatus: string): SiteLifecycleAccess {
+	if (READY_SITE_STATUSES.has(siteStatus)) {
+		return 'ready';
+	}
+	if (DESTROYING_SITE_STATUSES.has(siteStatus)) {
+		return 'destroying';
+	}
+	if (FAILED_SITE_STATUSES.has(siteStatus)) {
+		return 'failed';
+	}
+	return 'transitioning';
 }
 
-export function shouldReconcileManagedFiles(
+export function lifecycleUnavailableReason(siteStatus: string): string {
+	const access = siteLifecycleAccess(siteStatus);
+	if (access === 'destroying') {
+		return 'Local is deleting this site. Media Proxy is inactive and will not access its files.';
+	}
+	if (access === 'failed') {
+		return 'Local could not finish preparing this site. Resolve the site error in Local before using Media Proxy.';
+	}
+	if (siteStatus.startsWith('pulling') || siteStatus === 'downloading_backup') {
+		return 'Local is still pulling this site. Media Proxy will remain inactive until the pull is complete.';
+	}
+	if (
+		siteStatus === 'adding' ||
+		siteStatus === 'creating' ||
+		siteStatus === 'provisioning' ||
+		siteStatus === 'wordpress_installing'
+	) {
+		return 'Local is still creating this site. Media Proxy will remain inactive until the site is ready.';
+	}
+	return 'Local is changing this site. Media Proxy will remain inactive until the site is running or stopped.';
+}
+
+export function shouldCancelDeferredReconciliation(siteStatus: string): boolean {
+	const access = siteLifecycleAccess(siteStatus);
+	return access === 'destroying' || access === 'failed';
+}
+
+export function shouldRefreshRuntime(
 	siteStatus: string,
-	forcedAfterSiteStarted: boolean,
+	_targetServiceRunning: boolean,
 ): boolean {
-	return siteStatus === 'running' || siteStatus === 'halted' || (
-		forcedAfterSiteStarted && !EXPLICITLY_INACTIVE_SITE_STATUSES.has(siteStatus)
-	);
+	return siteStatus === 'running';
+}
+
+export function shouldReconcileManagedFiles(siteStatus: string): boolean {
+	return siteLifecycleAccess(siteStatus) === 'ready';
 }
 
 export function synchronousCleanupRequiresRefresh(
