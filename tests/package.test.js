@@ -100,6 +100,18 @@ test('keeps README artwork public, package-compatible, and off removed commit hi
 	);
 });
 
+test('keeps the README package count synchronized with the exact release manifest', () => {
+	const readme = fs.readFileSync(path.resolve(__dirname, '../README.md'), 'utf8');
+	const expectedArchiveEntries = packageJson.files.length + 1;
+
+	assert.match(
+		readme,
+		new RegExp(
+			`contains exactly ${expectedArchiveEntries} reviewed runtime files\\.`,
+		),
+	);
+});
+
 test('keeps the lifecycle release contract durable and public-safe', () => {
 	const releasing = fs.readFileSync(
 		path.resolve(__dirname, '../RELEASING.md'),
