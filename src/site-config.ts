@@ -190,6 +190,21 @@ function isRealDirectory(filePath: string): boolean {
 	}
 }
 
+function isAbsentOrRealDirectory(filePath: string): boolean {
+	try {
+		const metadata = fsSync.lstatSync(filePath);
+		return metadata.isDirectory() && !metadata.isSymbolicLink();
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+			return true;
+		}
+		if (isExpectedLifecycleFilesystemAbsence(error)) {
+			return false;
+		}
+		throw error;
+	}
+}
+
 function allManagedParentsReady(paths: ManagedPaths | ApacheManagedPaths): boolean {
 	return [...new Set(
 		Object.values(paths).map((filePath) => path.dirname(filePath)),
@@ -221,11 +236,14 @@ export function serverManagedFilesystemReady(
 		}
 
 		const paths = getApacheManagedPaths(site);
+		const apacheRoot = path.dirname(paths.siteTemplate);
+		const managedIncludesRoot = path.dirname(paths.includeTemplate);
 		return (
 			isRealDirectory(siteRoot) &&
+			isRealDirectory(apacheRoot) &&
 			isRegularFile(paths.siteTemplate) &&
 			isRegularFile(paths.modulesTemplate) &&
-			allManagedParentsReady(paths)
+			isAbsentOrRealDirectory(managedIncludesRoot)
 		);
 	} catch (error) {
 		if (isExpectedLifecycleFilesystemAbsence(error)) {
@@ -336,6 +354,47 @@ async function runMutationGuard(
 	assertCurrent?: ManagedFileMutationGuard,
 ): Promise<void> {
 	await assertCurrent?.();
+}
+
+async function ensureApacheManagedIncludesDirectory(
+	site: Local.Site,
+	paths: ApacheManagedPaths,
+	assertCurrent?: ManagedFileMutationGuard,
+): Promise<void> {
+	const directoryPath = path.dirname(paths.includeTemplate);
+
+	await runMutationGuard(assertCurrent);
+	assertServerManagedFilesystemReady(site, 'apache');
+	try {
+		const metadata = await fs.lstat(directoryPath);
+		if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+			throw new Error('The Apache managed-file parent path must be a real directory.');
+		}
+		return;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+			throw error;
+		}
+	}
+
+	await runMutationGuard(assertCurrent);
+	assertServerManagedFilesystemReady(site, 'apache');
+	try {
+		await fs.mkdir(directoryPath, { mode: 0o755 });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+			throw error;
+		}
+		const metadata = await fs.lstat(directoryPath);
+		if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+			throw new Error('The Apache managed-file parent path must be a real directory.');
+		}
+	}
+
+	// Leave an empty managed directory behind if the next guard closes. Local may
+	// have replaced this root, so path-based cleanup could escape the site.
+	await runMutationGuard(assertCurrent);
+	assertServerManagedFilesystemReady(site, 'apache');
 }
 
 function removeTemporaryFile(filePath: string): Promise<void> {
@@ -649,6 +708,7 @@ async function applyApacheManagedFiles(
 		origin.protocol === 'https:' ? normalizePathForNginx(paths.trustBundle) : undefined,
 	);
 	assertHttpsTrustBundleAvailable(origin, trustedCertificateAuthoritiesPem);
+	await ensureApacheManagedIncludesDirectory(site, paths, assertCurrent);
 
 	let changed = false;
 	if (origin.protocol === 'https:') {

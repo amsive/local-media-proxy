@@ -6,6 +6,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-30
+
+This patch restores Media Proxy setup for running Apache sites while preserving Local site-lifecycle protections.
+
+### Fixed
+
+- Running Apache sites no longer remain on the web-server preparation screen when Local's core Apache templates are ready but the add-on's own `includes` directory has not been created yet. ([#29](https://github.com/amsive/local-media-proxy/issues/29))
+- Apache setup now creates only its add-on-owned managed-file directory, while continuing to block access during site creation, replacement, and deletion. Nginx readiness and managed-file behavior are unchanged.
+
 ## [0.3.0] - 2026-07-27
 
 This release keeps Local Media Proxy out of Local's way during site creation, first WP Engine pulls, and deletion, while refreshing the add-on artwork shown throughout Local.
@@ -128,7 +137,8 @@ This release keeps Local Media Proxy out of Local's way during site creation, fi
 - Prevented slow or cancelled connection probes from hanging the UI and replaced low-level timeout errors with actionable messages.
 - Preserved correct TLS verification when switching between direct WP Engine origins and compatible proxy, CDN, or load-balancer endpoints.
 
-[Unreleased]: https://github.com/amsive/local-media-proxy/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/amsive/local-media-proxy/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/amsive/local-media-proxy/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/amsive/local-media-proxy/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/amsive/local-media-proxy/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/amsive/local-media-proxy/compare/v0.2.2...v0.2.3

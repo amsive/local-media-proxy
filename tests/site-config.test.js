@@ -305,6 +305,158 @@ test('waits for every Local-owned managed-file parent and never recreates one', 
 	}
 });
 
+test('creates the add-on-owned Apache includes directory after Local core templates are ready', async () => {
+	const fixture = await makeDualServerSite();
+	try {
+		const paths = getApacheManagedPaths(fixture.site);
+		const includesRoot = path.dirname(paths.includeTemplate);
+		const origin = validateAndNormalizeOrigin({
+			originIp: '',
+			siteUrl: 'http://media.example.com',
+		}, { requiresOriginIp: false });
+		await fs.rm(includesRoot, { recursive: true });
+
+		assert.equal(serverManagedFilesystemReady(fixture.site, 'apache'), true);
+		assert.equal(await applyServerManagedFiles(fixture.site, origin, {
+			apacheHttpdBinary: fixture.httpd,
+			serverKind: 'apache',
+		}), true);
+
+		const metadata = await fs.lstat(includesRoot);
+		assert.equal(metadata.isDirectory(), true);
+		assert.equal(metadata.isSymbolicLink(), false);
+		assert.match(await fs.readFile(paths.includeTemplate, 'utf8'), /ProxyRequests Off/);
+		assert.match(await fs.readFile(paths.modulesTemplate, 'utf8'), /mod_proxy_http\.so/);
+		assert.match(await fs.readFile(paths.siteTemplate, 'utf8'), /BEGIN Local Media Proxy/);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test('rejects an unsafe Apache includes path instead of replacing it', async () => {
+	const fixture = await makeDualServerSite();
+	try {
+		const paths = getApacheManagedPaths(fixture.site);
+		const includesRoot = path.dirname(paths.includeTemplate);
+		const origin = validateAndNormalizeOrigin({
+			originIp: '',
+			siteUrl: 'http://media.example.com',
+		}, { requiresOriginIp: false });
+		await fs.rm(includesRoot, { recursive: true });
+		await fs.writeFile(includesRoot, 'not a directory');
+
+		assert.equal(serverManagedFilesystemReady(fixture.site, 'apache'), false);
+		await assert.rejects(
+			applyServerManagedFiles(fixture.site, origin, {
+				apacheHttpdBinary: fixture.httpd,
+				serverKind: 'apache',
+			}),
+			/has not finished creating this site web-server configuration/,
+		);
+		assert.equal(await fs.readFile(includesRoot, 'utf8'), 'not a directory');
+		assert.equal(await fs.readFile(paths.siteTemplate, 'utf8'), fixture.apacheMain);
+		assert.equal(await fs.readFile(paths.modulesTemplate, 'utf8'), fixture.apacheModules);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test('never recreates an Apache template root removed before managed-directory creation', async () => {
+	const fixture = await makeDualServerSite();
+	try {
+		const paths = getApacheManagedPaths(fixture.site);
+		const apacheRoot = path.dirname(paths.siteTemplate);
+		const includesRoot = path.dirname(paths.includeTemplate);
+		const origin = validateAndNormalizeOrigin({
+			originIp: '',
+			siteUrl: 'http://media.example.com',
+		}, { requiresOriginIp: false });
+		await fs.rm(includesRoot, { recursive: true });
+		let guardCalls = 0;
+
+		await assert.rejects(
+			applyServerManagedFiles(
+				fixture.site,
+				origin,
+				{
+					apacheHttpdBinary: fixture.httpd,
+					serverKind: 'apache',
+				},
+				undefined,
+				async () => {
+					guardCalls += 1;
+					if (guardCalls === 2) {
+						await fs.rm(apacheRoot, { recursive: true });
+					}
+				},
+			),
+			/has not finished creating this site web-server configuration/,
+		);
+
+		assert.equal(guardCalls, 2);
+		await assert.rejects(fs.access(apacheRoot));
+		await assert.rejects(fs.access(includesRoot));
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test('never cleans up through a replaced Apache root after managed-directory creation', async () => {
+	const fixture = await makeDualServerSite();
+	const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'local-media-proxy-outside-apache-'));
+	try {
+		const paths = getApacheManagedPaths(fixture.site);
+		const apacheRoot = path.dirname(paths.siteTemplate);
+		const movedApacheRoot = `${apacheRoot}-original`;
+		const includesRoot = path.dirname(paths.includeTemplate);
+		const outsideIncludesRoot = path.join(outsideRoot, 'includes');
+		const origin = validateAndNormalizeOrigin({
+			originIp: '',
+			siteUrl: 'http://media.example.com',
+		}, { requiresOriginIp: false });
+		await fs.rm(includesRoot, { recursive: true });
+		await fs.mkdir(outsideIncludesRoot);
+		let swapped = false;
+
+		await assert.rejects(
+			applyServerManagedFiles(
+				fixture.site,
+				origin,
+				{
+					apacheHttpdBinary: fixture.httpd,
+					serverKind: 'apache',
+				},
+				undefined,
+				async () => {
+					if (swapped) {
+						return;
+					}
+					try {
+						await fs.lstat(includesRoot);
+					} catch (error) {
+						if (error.code === 'ENOENT') {
+							return;
+						}
+						throw error;
+					}
+					await fs.rename(apacheRoot, movedApacheRoot);
+					await fs.symlink(outsideRoot, apacheRoot, 'dir');
+					swapped = true;
+				},
+			),
+			/unsafe web-server configuration path through a symbolic link/,
+		);
+
+		assert.equal(swapped, true);
+		assert.equal((await fs.lstat(outsideIncludesRoot)).isDirectory(), true);
+		assert.equal((await fs.lstat(path.join(movedApacheRoot, 'includes'))).isDirectory(), true);
+		assert.deepEqual(await fs.readdir(outsideIncludesRoot), []);
+	} finally {
+		await fixture.cleanup();
+		await fs.rm(outsideRoot, { force: true, recursive: true });
+	}
+});
+
 test('rejects a symbolic-link site root before reading or writing lookalike templates', async () => {
 	const linkParent = await fs.mkdtemp(path.join(os.tmpdir(), 'local-media-proxy-link-parent-'));
 	const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'local-media-proxy-link-target-'));
