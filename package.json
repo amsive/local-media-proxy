@@ -1,7 +1,7 @@
 {
   "name": "local-media-proxy",
   "productName": "Local Media Proxy",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "Load missing WordPress upload images from a remote site while keeping existing media local.",
   "author": {

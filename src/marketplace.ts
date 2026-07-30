@@ -116,6 +116,16 @@ ${ADDON_NAME} is maintained by Amsive LLC and developed by Mark Davoli and Boris
 }
 
 function createCurrentReleaseNotes(): string {
+	return `Version 0.3.1 restores Media Proxy setup on running Apache sites while preserving Local site-lifecycle protections.
+
+- Running Apache sites no longer remain on the web-server preparation screen when Local's core Apache templates are ready but the add-on's own managed-file directory has not been created yet. ([#29](https://github.com/amsive/local-media-proxy/issues/29))
+- Apache setup creates only its add-on-owned managed-file directory and continues to stay out of Local's site creation, replacement, and deletion work.
+- Nginx readiness and managed-file behavior are unchanged.
+
+[View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
+}
+
+function createV030ReleaseNotes(): string {
 	return `Version 0.3.0 keeps Local Media Proxy out of Local's site creation, first-pull, and deletion work.
 
 - Defers managed-file inspection and reconciliation until Local reports the site as running or halted, so early lifecycle notifications do not block provisioning or a first WP Engine pull.
@@ -157,27 +167,19 @@ function createV022ReleaseNotes(): string {
 [View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
 }
 
-function createV021ReleaseNotes(): string {
-	return `Version 0.2.1 makes web-server switching and proxy activation seamless.
-
-- Added separate saved Nginx and Apache connection profiles, with one shared proxy on/off intent.
-- Added a compact Overview-tab proxy toggle with status details in an accessible information tooltip.
-- Enabling or disabling now saves and applies immediately; **Save & apply** is reserved for setup changes.
-- Status checks, enable and disable actions, and **Save & apply** now show Local's native two-dot progress indicator while unresolved controls are hidden.
-- Fixed enabled proxy configurations so they automatically reactivate after Local changes web servers when the destination profile is ready.
-- Prevented activation when the selected server still needs a complete saved setup.
-- Bounded status and apply operations so stalled Local responses cannot leave loading progress stuck or later show an unverified state.
-
-[View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
-}
-
 function createPackagedReleaseHistory(): PackagedRelease[] {
 	return [
 		{
 			changelog: createCurrentReleaseNotes(),
-			date: '2026-07-27T00:00:00.000Z',
+			date: '2026-07-30T00:00:00.000Z',
 			id: `${ADDON_ID}-${ADDON_VERSION}`,
 			version: ADDON_VERSION,
+		},
+		{
+			changelog: createV030ReleaseNotes(),
+			date: '2026-07-27T00:00:00.000Z',
+			id: `${ADDON_ID}-0.3.0`,
+			version: '0.3.0',
 		},
 		{
 			changelog: createV024ReleaseNotes(),
@@ -196,12 +198,6 @@ function createPackagedReleaseHistory(): PackagedRelease[] {
 			date: '2026-07-22T00:00:00.000Z',
 			id: `${ADDON_ID}-0.2.2`,
 			version: '0.2.2',
-		},
-		{
-			changelog: createV021ReleaseNotes(),
-			date: '2026-07-22T00:00:00.000Z',
-			id: `${ADDON_ID}-0.2.1`,
-			version: '0.2.1',
 		},
 	];
 }

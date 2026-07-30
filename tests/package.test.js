@@ -22,7 +22,7 @@ test('declares the installed add-on card metadata expected by Local', () => {
 		packageJson.author?.url,
 		'https://www.amsive.com/?utm_source=localwp&utm_medium=referral&utm_campaign=local_media_proxy&utm_content=package_author',
 	);
-	assert.equal(packageJson.version, '0.3.0');
+	assert.equal(packageJson.version, '0.3.1');
 	assert.equal(packageJson.license, 'Apache-2.0');
 	assert.equal(
 		packageJson.description,
