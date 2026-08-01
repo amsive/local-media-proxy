@@ -82,7 +82,7 @@
   },
   "devDependencies": {
     "@getflywheel/local": "10.1.1",
-    "@types/node": "^26.1.1",
+    "@types/node": "^26.1.2",
     "selfsigned": "^5.5.0",
     "typescript": "^7.0.2"
   },
