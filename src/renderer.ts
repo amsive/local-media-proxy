@@ -1282,7 +1282,7 @@ export default function renderer(context: RendererContext): void {
 					hydrate(nextState);
 					setNotice({
 						message: nextState.settings.enabled
-							? `Media proxy enabled. ${nextState.serverKind === 'apache' ? 'Apache' : 'Nginx'} now checks local uploads first and fetches only missing images from the configured site.`
+							? `Media proxy enabled. ${nextState.serverKind === 'apache' ? 'Apache' : 'Nginx'} now checks local uploads first and fetches only safe missing upload assets from the configured site.`
 							: `${nextState.serverKind === 'apache' ? 'Apache' : 'Nginx'} connection profile saved. The media proxy remains disabled.`,
 						variant: 'success',
 					});
@@ -1347,7 +1347,7 @@ export default function renderer(context: RendererContext): void {
 					hydrate(nextState);
 					setNotice({
 						message: nextState.settings.enabled
-							? `Media proxy enabled. ${nextState.serverKind === 'apache' ? 'Apache' : 'Nginx'} now checks local uploads first and fetches only missing images from the configured site.`
+							? `Media proxy enabled. ${nextState.serverKind === 'apache' ? 'Apache' : 'Nginx'} now checks local uploads first and fetches only safe missing upload assets from the configured site.`
 							: 'Media proxy disabled. The managed web-server configuration was removed.',
 						variant: 'success',
 					});
@@ -1826,8 +1826,8 @@ export default function renderer(context: RendererContext): void {
 				{ className: 'LocalMediaProxy__Details', 'aria-label': 'How the proxy works' },
 				e('h3', null, 'Local-first and narrowly scoped'),
 				e('ul', null,
-					e('li', null, 'Existing images continue to come from the local uploads directory.'),
-					e('li', null, 'Only missing image files under /wp-content/uploads/ are fetched.'),
+					e('li', null, 'Existing upload assets continue to come from the local uploads directory.'),
+					e('li', null, 'Only safe missing files under /wp-content/uploads/ are fetched.'),
 					e('li', null, proxyPrivacySummary(siteState?.serverKind ?? 'unsupported')),
 				e('li', null, requiresOriginIp
 					? 'HTTPS identity and chain are verified against standard CA roots and the published Cloudflare Origin CA roots.'

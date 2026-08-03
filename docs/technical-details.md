@@ -4,11 +4,13 @@ This document describes Local Media Proxy's operating, security, compatibility, 
 
 ## Operating model
 
-Local Media Proxy inserts bounded managed configuration into the selected Local site's persistent Nginx or Apache templates. The generated rules check the local uploads directory first and proxy only an eligible image when the file is missing.
+Local Media Proxy inserts bounded managed configuration into the selected Local site's persistent Nginx or Apache templates. The generated rules check the local uploads directory first and proxy only an eligible upload asset when the file is missing.
 
 The response header `X-Local-Media-Proxy: origin` identifies a remote fallback. Locally served files do not receive that header. Remote responses are streamed without a persistent media cache; Nginx proxy buffering is disabled.
 
 Saved Nginx and Apache connection profiles are separate because the servers have different routing models. The enabled intent is shared. When a Local site changes web-server type, the add-on reapplies the saved profile for the new server only when that profile is complete and valid.
+
+For a truly untouched destination profile, the first server change carries only the other profile's validated canonical Site URL. It does not carry IP addresses, hosting provenance, TLS identity, certificates, timestamps, or verification results. Apache can apply the carried URL when its service supports that origin; Nginx still requires a separately configured remote IP. An existing or intentionally cleared destination profile is never overwritten.
 
 ## Nginx connection identity
 
@@ -44,18 +46,21 @@ Discovery never saves settings or enables the proxy automatically. Every suggest
 
 ## Request boundary
 
-Fallback rules are deliberately narrow:
+Fallback rules are deliberately narrow while remaining format-tolerant:
 
-- Requests must remain below `/wp-content/uploads/`.
-- Only the project's allowlisted image extensions are eligible.
-- Only `GET` and `HEAD` are allowed.
+- A request must be a missing local `GET` or `HEAD` below `/wp-content/uploads/`, with no request body.
+- The path must end in a visible, non-hidden filename with an extension. The extension is not checked against an allowlist, so new asset formats work without a code change.
+- Executable and interpreter suffixes, browser-active documents, hidden paths, and obvious secret, configuration, database, and backup material are blocked. SVG and SVGZ remain supported exceptions to the browser-document block.
+- Interpreter tokens are rejected at any non-alphanumeric filename boundary, including double-suffix forms such as `shell.php.jpg`.
+- Traversal, empty or dot segments, encoded slashes or backslashes, malformed or repeated encoding, NUL and control characters, and ambiguous decoded paths are rejected.
+- Query strings are validated separately from the path and retained for cache busting.
 - Request bodies are not forwarded.
 - The remote request receives a fixed, non-visitor-identifying add-on `User-Agent`.
 - The configured Site URL supplies the upstream HTTP `Host`.
 
-Nginx suppresses incoming request headers before adding a small allowlist. Apache removes named credential, cookie, authorization, nonce, CSRF, and proxy-identity headers. Apache 2.4 `mod_headers` cannot wildcard-remove arbitrary custom header names, so its conservative URL-safe filename matcher and fixed upload-image boundary remain important.
+Nginx suppresses incoming request headers before forwarding only `Range` and `If-Range`. Apache removes named credential, cookie, authorization, nonce, CSRF, and proxy-identity headers while preserving its equivalent range behavior. Apache 2.4 `mod_headers` cannot wildcard-remove arbitrary custom header names, so its conservative URL-safe filename matcher and fixed uploads boundary remain important.
 
-Apache upload filenames containing decoded spaces or characters outside its allowlist remain local-only rather than broadening the proxy matcher.
+Apache upload filenames containing decoded spaces or characters outside its path-character allowlist remain local-only rather than broadening the proxy matcher. The upstream status, content type, disposition, length, and range headers are preserved; upstream `Set-Cookie` is removed, and remote responses receive `X-Content-Type-Options: nosniff` and `X-Local-Media-Proxy: origin`.
 
 ## TLS trust model
 
@@ -106,7 +111,7 @@ The renderer does not start proxy-state or origin-discovery requests for a trans
 
 If a bounded readiness check expires, the add-on leaves the site untouched. A later stable lifecycle notification or explicit user action can start a fresh check.
 
-Global disable or uninstall first attempts guarded synchronous managed-file removal for each lifecycle-ready site. It revalidates the current site, status, service identity, and managed paths before every removal; remaining verification and runtime refresh work continues on a separate bounded cleanup lane. A transitional site skips synchronous access and stays pending but dormant on that lane. Cleanup resumes only if the site becomes lifecycle-ready, is cancelled if the site is deleted or disappears, and expires with an error rather than touching transitional files. If the add-on is re-enabled first, re-enable cancels the deferred global cleanup before normal configured-site reconciliation is scheduled.
+Global disable or uninstall first attempts guarded synchronous managed-file removal for each lifecycle-ready site. It revalidates the current site, status, service identity, and managed paths before every removal; remaining verification and runtime refresh work continues on a separate bounded cleanup lane. A transitional site skips synchronous access and stays pending but dormant on that lane. Cleanup resumes only if the site becomes lifecycle-ready, is cancelled if the site is deleted or disappears, and expires with an error rather than touching transitional files. Cleanup does not change persisted per-site enabled intent. If the add-on is re-enabled first, re-enable cancels the deferred global cleanup before normal configured-site reconciliation is scheduled and valid enabled profiles are reapplied. Invalid profiles remain fail-closed without losing intent.
 
 ## Validation, apply, rollback, and cleanup
 
@@ -140,6 +145,6 @@ The fallback is scoped to this add-on's detail queries. Other add-ons and GraphQ
 
 ## Release package
 
-The installable TGZ uses npm's single `package/` root and an exact 26-file allowlist. It contains compiled runtime JavaScript, package metadata, CSS, runtime artwork, the Cloudflare trust material, `LICENSE`, `NOTICE`, and the packaged README.
+The installable TGZ uses npm's single `package/` root and an exact 27-file allowlist. It contains compiled runtime JavaScript, package metadata, CSS, runtime artwork, the Cloudflare trust material, `LICENSE`, `NOTICE`, and the packaged README.
 
 Source TypeScript, tests, source maps, `node_modules`, development configuration, provenance documents, and repository process files are excluded. CI, release creation, and promotion independently verify the package structure, source equivalence, public-release safety, and third-party material contract.

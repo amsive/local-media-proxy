@@ -92,6 +92,9 @@ test('builds complete Amsive detail and release metadata', () => {
 	assert.match(addon.details.overview, /video, audio, captions, PDFs, documents, fonts, archives/);
 	assert.match(addon.details.overview, /rejects executable, browser-active, hidden, configuration, secret, database, and backup paths/i);
 	assert.match(addon.details.overview, /does not overwrite the same add-on slug/);
+	assert.match(addon.details.overview, /release before v0\.4\.0 may clear a site's enabled state/);
+	assert.match(addon.details.overview, /only the validated Site URL is carried across/);
+	assert.match(addon.details.overview, /Nginx still requires its own remote IP/);
 	assert.match(addon.details.overview, /Select the TGZ directly in Local; do not extract it first/);
 	assert.match(addon.details.overview, /Apache License 2\.0/);
 	assert.match(addon.details.overview, /without a support SLA/);
@@ -106,7 +109,8 @@ test('builds complete Amsive detail and release metadata', () => {
 	assert.match(releases[0].changelog, /Version 0\.4\.0 expands the local-first fallback/);
 	assert.match(releases[0].changelog, /future asset formats/);
 	assert.match(releases[0].changelog, /range requests support seeking/);
-	assert.match(releases[0].changelog, /enabled intent survives add-on disable and reinstall/);
+	assert.match(releases[0].changelog, /enabled intent survives v0\.4\.0 add-on disable and reinstall/);
+	assert.match(releases[0].changelog, /older uninstaller runs first/);
 	assert.match(releases[0].changelog, /compiled server configuration/);
 	assert.match(releases[1].changelog, /Version 0\.3\.1 restores Media Proxy setup on running Apache sites/);
 	assert.match(releases[1].changelog, /web-server preparation screen/);

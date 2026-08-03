@@ -98,7 +98,7 @@ test('official Apache +11 runtime preserves local files and safely proxies only 
 		const isRangeFixture = incoming.url.includes('/range.') || incoming.url.includes('/head.');
 		response.statusCode = incoming.url.includes('not-found') ? 404 : 200;
 		response.setHeader('Content-Type', isRangeFixture ? 'application/octet-stream' : 'text/plain');
-		response.setHeader('Content-Disposition', 'inline; filename="origin-asset.bin"');
+		response.setHeader('Content-Disposition', 'inline; filename="asset.example"');
 		response.setHeader('Set-Cookie', 'origin_session=private; HttpOnly');
 		if (isRangeFixture) {
 			response.setHeader('Accept-Ranges', 'bytes');
@@ -215,7 +215,7 @@ test('official Apache +11 runtime preserves local files and safely proxies only 
 		assert.equal(missing.body, 'backend:/wp-content/uploads/missing.JPG');
 		assert.equal(missing.headers['x-local-media-proxy'], 'origin');
 		assert.equal(missing.headers['x-content-type-options'], 'nosniff');
-		assert.equal(missing.headers['content-disposition'], 'inline; filename="origin-asset.bin"');
+		assert.equal(missing.headers['content-disposition'], 'inline; filename="asset.example"');
 		assert.equal(missing.headers['set-cookie'], undefined);
 		assert.equal(backendRequests.length, 1);
 		assert.equal(backendRequests[0].headers.host, `127.0.0.1:${backendAddress.port}`);
@@ -317,7 +317,7 @@ test('official Apache +11 runtime preserves local files and safely proxies only 
 		assert.equal(rangedVideo.headers['content-range'], 'bytes 2-5/10');
 		assert.equal(rangedVideo.headers['content-length'], '4');
 		assert.equal(rangedVideo.headers['content-type'], 'application/octet-stream');
-		assert.equal(rangedVideo.headers['content-disposition'], 'inline; filename="origin-asset.bin"');
+		assert.equal(rangedVideo.headers['content-disposition'], 'inline; filename="asset.example"');
 		assert.equal(rangedVideo.headers['x-local-media-proxy'], 'origin');
 		assert.equal(rangedVideo.headers['x-content-type-options'], 'nosniff');
 		assert.equal(rangedVideo.headers['set-cookie'], undefined);

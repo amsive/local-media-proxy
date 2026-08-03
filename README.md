@@ -36,7 +36,7 @@ The current official Intel macOS +11 Apache bundle does not include `mod_ssl`, s
 3. Choose **Install from disk** and select the `.tgz` directly without extracting it.
 4. Enable the add-on and restart Local if prompted.
 
-Local cannot overwrite an installed add-on with the same slug. To update manually, first disable and remove the existing Local Media Proxy installation.
+Local cannot overwrite an installed add-on with the same slug. To update manually, first disable and remove the existing Local Media Proxy installation. When upgrading from a release before v0.4.0, the older uninstaller may clear a site's enabled state; enable that site once after installing v0.4.0. Later v0.4.0 disable, uninstall, and reinstall cycles preserve enabled intent.
 
 ## Configure a site
 
@@ -86,7 +86,7 @@ npm run validate
 npm run package:addon
 ```
 
-The release installer uses npm's single `package/` root and contains exactly 26 reviewed runtime files. Source, tests, source maps, dependencies, and repository-only process documents are excluded.
+The release installer uses npm's single `package/` root and contains exactly 27 reviewed runtime files. Source, tests, source maps, dependencies, and repository-only process documents are excluded.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development and DCO requirements, [PUBLIC_RELEASE_SAFETY.md](PUBLIC_RELEASE_SAFETY.md) for the blocking public-content review, and [RELEASING.md](RELEASING.md) for the draft and promotion workflow.
 

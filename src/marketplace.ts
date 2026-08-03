@@ -73,7 +73,7 @@ For any provider on Nginx, the Site URL supplies HTTP Host and TLS identity whil
 ## Install and configure
 
 1. Download \`local-media-proxy-v<version>.tgz\` from the matching [GitHub release](https://github.com/amsive/local-media-proxy/releases). Select the TGZ directly in Local; do not extract it first.
-2. When replacing an existing installation, disable and remove its Installed Add-ons entry first; Local does not overwrite the same add-on slug.
+2. When replacing an existing installation, disable and remove its Installed Add-ons entry first; Local does not overwrite the same add-on slug. A release before v0.4.0 may clear a site's enabled state during that one-time replacement, so enable the site once after installing v0.4.0. Later v0.4.0 disable and reinstall cycles preserve enabled intent.
 3. In Local, open **Add-ons → Installed** and choose **Install from disk**.
 4. Enable **Local Media Proxy** and relaunch Local if prompted.
 5. Start a site that uses Nginx or Apache, then open **Tools → Media Proxy**.
@@ -85,7 +85,7 @@ For any provider on Nginx, the Site URL supplies HTTP Host and TLS identity whil
 
 Auto-populated values remain unsaved suggestions and are never enabled or applied automatically. Test them before explicitly applying them. Flywheel-connected sites retain the manual setup because Local does not publish a supported Flywheel environment API for add-ons; Nginx also offers DNS-assisted IP discovery, while Apache uses the Site URL hostname directly.
 
-The on/off intent is shared across web servers while Nginx and Apache retain their own connection values. When Local changes the server type, an enabled proxy automatically reapplies the destination profile if it is complete. Otherwise, the activation controls remain unavailable; the Overview information tooltip and Tools help explain what still needs setup.
+The on/off intent is shared across web servers while Nginx and Apache retain their own connection values. On the first change to a truly untouched server profile, only the validated Site URL is carried across; no IP, hosting, TLS, certificate, timestamp, or verification metadata is copied, and an existing or intentionally cleared profile is not overwritten. An enabled proxy automatically applies a complete destination profile. Nginx still requires its own remote IP; otherwise, the activation controls remain unavailable and explain what still needs setup.
 
 ## Verify and disable
 
@@ -120,7 +120,7 @@ function createCurrentReleaseNotes(): string {
 
 - Missing video, audio, captions, PDFs, documents, fonts, archives, generated CSS, data, streaming manifests, and future asset formats can stream from the configured origin while existing uploads remain local. Unsafe executable, browser-active, hidden, configuration, secret, database, and backup paths remain blocked. ([#32](https://github.com/amsive/local-media-proxy/issues/32))
 - Media and document range requests support seeking and partial downloads on Nginx and Apache. ([#32](https://github.com/amsive/local-media-proxy/issues/32))
-- Per-site enabled intent survives add-on disable and reinstall, and a first-time server change carries only the Site URL into a pristine destination profile. ([#31](https://github.com/amsive/local-media-proxy/issues/31), [#33](https://github.com/amsive/local-media-proxy/issues/33))
+- Per-site enabled intent survives v0.4.0 add-on disable and reinstall, and a first-time server change carries only the Site URL into a pristine destination profile. Replacing an earlier release may require enabling a site once because its older uninstaller runs first. ([#31](https://github.com/amsive/local-media-proxy/issues/31), [#33](https://github.com/amsive/local-media-proxy/issues/33))
 - Managed source, compiled server configuration, and the dashboard are reconciled after upgrades, settings changes, same-value repair requests, and server changes. ([#34](https://github.com/amsive/local-media-proxy/issues/34))
 
 [View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;

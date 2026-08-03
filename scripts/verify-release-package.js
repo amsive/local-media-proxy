@@ -30,6 +30,7 @@ const EXPECTED_SOURCE_FILES = Object.freeze([
 	'README.md',
 	'icon.svg',
 	'lib/apache.js',
+	'lib/asset-policy.js',
 	'lib/constants.js',
 	'lib/dns.js',
 	'lib/hosting.js',

@@ -39,6 +39,7 @@
   "license": "Apache-2.0",
   "files": [
     "lib/apache.js",
+    "lib/asset-policy.js",
     "lib/constants.js",
     "lib/dns.js",
     "lib/hosting.js",
