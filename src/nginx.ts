@@ -4,7 +4,9 @@
  */
 
 import type { ExecFileOptions } from 'node:child_process';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import type * as Local from '@getflywheel/local';
 import {
 	COMPILED_INCLUDE_FILENAME,
 	MANAGED_MARKER_END,
@@ -21,11 +23,30 @@ import {
 import type { NormalizedOrigin } from './types';
 
 const NGINX_COMMAND_TIMEOUT_MS = 10_000;
+const NGINX_DUMP_MAX_BUFFER_BYTES = 4 * 1024 * 1024;
 
 export interface NginxRuntimeService {
 	bin: { [binaryName: string]: string } | undefined;
 	configPath: string;
+	configVariables: Local.GenericObject;
+	env?: NodeJS.ProcessEnv;
 	runPath: string;
+	siteConfigTemplatePath: string;
+}
+
+export interface NginxConfigTemplates {
+	compileConfigTemplates: (
+		site: Local.Site,
+		templatesDir: string,
+		destDir: string,
+		context: Local.GenericObject,
+	) => Promise<void>;
+}
+
+export interface NginxCompiledPaths {
+	include: string;
+	main: string;
+	site: string;
 }
 
 export type ExecFilePromise = (
@@ -40,6 +61,88 @@ interface NginxCommandContext {
 	commonArgs: string[];
 	nginxBinary: string;
 	options: ExecFileOptions;
+}
+
+interface CompiledNginxState {
+	include: string | null;
+	main: string | null;
+	site: string | null;
+}
+
+async function assertRealDirectoryPath(
+	directoryPath: string,
+	description: string,
+	assertCurrent: () => void = (): void => undefined,
+): Promise<string> {
+	if (!directoryPath || !path.isAbsolute(directoryPath)) {
+		throw new Error(`Local returned a relative ${description}.`);
+	}
+	const resolvedPath = path.resolve(directoryPath);
+	let currentPath = path.parse(resolvedPath).root;
+	const segments = path.relative(currentPath, resolvedPath).split(path.sep).filter(Boolean);
+	for (const segment of segments) {
+		assertCurrent();
+		const metadata = await fs.lstat(currentPath);
+		assertCurrent();
+		if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+			throw new Error(`Local returned an unsafe ${description}.`);
+		}
+		currentPath = path.join(currentPath, segment);
+	}
+	assertCurrent();
+	const metadata = await fs.lstat(currentPath);
+	assertCurrent();
+	if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+		throw new Error(`Local returned an unsafe ${description}.`);
+	}
+	return resolvedPath;
+}
+
+function isExpectedCompiledFileAbsence(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException).code;
+	return code === 'ENOENT' || code === 'ENOTDIR' || code === 'ESTALE';
+}
+
+async function readOptionalCompiledFile(
+	rootPath: string,
+	filePath: string,
+	assertCurrent: () => void = (): void => undefined,
+): Promise<string | null> {
+	try {
+		const root = await assertRealDirectoryPath(
+			rootPath,
+			'compiled Nginx root',
+			assertCurrent,
+		);
+		const relative = path.relative(root, filePath);
+		if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+			throw new Error('Local returned an unsafe compiled Nginx path.');
+		}
+		assertCurrent();
+		let current = root;
+		const segments = relative.split(path.sep);
+		for (let index = 0; index < segments.length; index += 1) {
+			current = path.join(current, segments[index]);
+			assertCurrent();
+			const metadata = await fs.lstat(current);
+			const isFile = index === segments.length - 1;
+			if (
+				metadata.isSymbolicLink() ||
+				(isFile ? !metadata.isFile() : !metadata.isDirectory())
+			) {
+				throw new Error('Local returned an unsafe compiled Nginx path.');
+			}
+		}
+		assertCurrent();
+		const content = await fs.readFile(filePath, 'utf8');
+		assertCurrent();
+		return content;
+	} catch (error) {
+		if (isExpectedCompiledFileAbsence(error)) {
+			return null;
+		}
+		throw error;
+	}
 }
 
 function escapeRegularExpression(value: string): string {
@@ -91,6 +194,9 @@ function nginxCommandContext(service: NginxRuntimeService): NginxCommandContext 
 	if (!nginxBinary) {
 		throw new Error('Local did not provide an Nginx binary for this site.');
 	}
+	if (!path.isAbsolute(service.configPath) || !path.isAbsolute(service.runPath)) {
+		throw new Error('Local returned a relative Nginx runtime path.');
+	}
 
 	const configFile = path.join(service.configPath, 'nginx.conf');
 	const commonArgs = ['-c', configFile, '-p', service.runPath];
@@ -100,6 +206,50 @@ function nginxCommandContext(service: NginxRuntimeService): NginxCommandContext 
 	};
 
 	return { commonArgs, nginxBinary, options };
+}
+
+function nginxCompilationCommandContext(service: NginxRuntimeService): NginxCommandContext {
+	const context = nginxCommandContext(service);
+	return {
+		...context,
+		options: {
+			env: {
+				...process.env,
+				...service.env,
+			},
+			maxBuffer: NGINX_DUMP_MAX_BUFFER_BYTES,
+			timeout: NGINX_COMMAND_TIMEOUT_MS,
+			windowsHide: true,
+		},
+	};
+}
+
+async function assertRealRuntimeRoot(
+	rootPath: string,
+	description: string,
+	assertCurrent: () => void,
+): Promise<void> {
+	await assertRealDirectoryPath(rootPath, description, assertCurrent);
+}
+
+export function nginxCompiledPaths(service: NginxRuntimeService): NginxCompiledPaths {
+	if (!service.configPath || !path.isAbsolute(service.configPath)) {
+		throw new Error('Local returned a relative Nginx compiled configuration root.');
+	}
+	const root = path.resolve(service.configPath);
+	const child = (relativePath: string): string => {
+		const candidate = path.resolve(root, relativePath);
+		const relative = path.relative(root, candidate);
+		if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+			throw new Error('Local returned an unsafe compiled Nginx path.');
+		}
+		return candidate;
+	};
+	return {
+		include: child(path.join('includes', COMPILED_INCLUDE_FILENAME)),
+		main: child('nginx.conf'),
+		site: child('site.conf'),
+	};
 }
 
 async function validateNginxConfig(
@@ -174,6 +324,295 @@ export async function reloadNginxWithFallback(
 			throw new Error('Local did not start the Nginx service after stale-master recovery.');
 		}
 		return 'restarted';
+	}
+}
+
+function markerLineCount(config: string, marker: string): number {
+	const escaped = escapeRegularExpression(marker);
+	return (config.match(new RegExp(`^[\\t ]*${escaped}[\\t ]*$`, 'gm')) ?? []).length;
+}
+
+function nginxIncludeReferences(config: string): string[] {
+	return [...config.matchAll(
+		/^[\t ]*include[\t ]+(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^;\s\r\n]+));[\t ]*$/gm,
+	)].map((match) => match[1] ?? match[2] ?? match[3]);
+}
+
+function nginxReferenceTargets(
+	reference: string,
+	sourceConfigPath: string | undefined,
+	targetPath: string | undefined,
+	relativeTarget: string,
+): boolean {
+	const normalizedReference = reference.replace(/\\/g, '/');
+	if (
+		normalizedReference === relativeTarget ||
+		normalizedReference.endsWith(`/${relativeTarget}`)
+	) {
+		return true;
+	}
+	if (!sourceConfigPath || !targetPath) {
+		return false;
+	}
+	const resolvedReference = path.isAbsolute(reference)
+		? path.normalize(reference)
+		: path.resolve(path.dirname(sourceConfigPath), reference);
+	return path.normalize(resolvedReference) === path.normalize(targetPath);
+}
+
+function managedIncludeReferenceCount(
+	config: string,
+	sourceConfigPath?: string,
+	expectedIncludePath?: string,
+): number {
+	return nginxIncludeReferences(config).filter((reference) => nginxReferenceTargets(
+		reference,
+		sourceConfigPath,
+		expectedIncludePath,
+		`includes/${COMPILED_INCLUDE_FILENAME}`,
+	)).length;
+}
+
+function nginxMainLoadsCompiledSite(
+	mainConfig: string,
+	compiledSitePath: string,
+	compiledIncludePath: string,
+): boolean {
+	const references = nginxIncludeReferences(mainConfig);
+	const siteReferences = references.filter((reference) => nginxReferenceTargets(
+		reference,
+		path.join(path.dirname(compiledSitePath), 'nginx.conf'),
+		compiledSitePath,
+		'site.conf',
+	));
+	const managedIncludeReferences = references.filter((reference) => nginxReferenceTargets(
+		reference,
+		path.join(path.dirname(compiledSitePath), 'nginx.conf'),
+		compiledIncludePath,
+		`includes/${COMPILED_INCLUDE_FILENAME}`,
+	));
+	return siteReferences.length === 1 && managedIncludeReferences.length === 0;
+}
+
+export function compiledNginxSiteHasManagedArtifacts(
+	siteConfig: string,
+	compiledSitePath?: string,
+	compiledIncludePath?: string,
+): boolean {
+	return markerLineCount(siteConfig, MANAGED_MARKER_START) > 0 ||
+		markerLineCount(siteConfig, MANAGED_MARKER_END) > 0 ||
+		managedIncludeReferenceCount(siteConfig, compiledSitePath, compiledIncludePath) > 0;
+}
+
+export function compiledNginxSiteHasCanonicalManagedInclude(
+	siteConfig: string,
+	compiledSitePath?: string,
+	compiledIncludePath?: string,
+): boolean {
+	const start = escapeRegularExpression(MANAGED_MARKER_START);
+	const end = escapeRegularExpression(MANAGED_MARKER_END);
+	const include = escapeRegularExpression(`includes/${COMPILED_INCLUDE_FILENAME}`);
+	const canonicalBlocks = siteConfig.match(new RegExp(
+		`^[\\t ]*${start}[\\t ]*\\r?\\n` +
+		`[\\t ]*include[\\t ]+${include};[\\t ]*\\r?\\n` +
+		`[\\t ]*${end}[\\t ]*$`,
+		'gm',
+	)) ?? [];
+	return canonicalBlocks.length === 1 &&
+		markerLineCount(siteConfig, MANAGED_MARKER_START) === 1 &&
+		markerLineCount(siteConfig, MANAGED_MARKER_END) === 1 &&
+		managedIncludeReferenceCount(siteConfig, compiledSitePath, compiledIncludePath) === 1;
+}
+
+async function assertCompiledNginxState(
+	service: NginxRuntimeService,
+	expectedManagedInclude: string | null,
+	assertCurrent: () => void = (): void => undefined,
+	requireRunnableConfig = false,
+): Promise<CompiledNginxState> {
+	assertCurrent();
+	const compiled = nginxCompiledPaths(service);
+	const [mainConfig, siteConfig, includeConfig] = await Promise.all([
+		readOptionalCompiledFile(service.configPath, compiled.main, assertCurrent),
+		readOptionalCompiledFile(service.configPath, compiled.site, assertCurrent),
+		readOptionalCompiledFile(service.configPath, compiled.include, assertCurrent),
+	]);
+	assertCurrent();
+	if (expectedManagedInclude !== null) {
+		if (
+			mainConfig === null ||
+			siteConfig === null ||
+			!nginxMainLoadsCompiledSite(mainConfig, compiled.site, compiled.include) ||
+			!compiledNginxSiteHasCanonicalManagedInclude(siteConfig, compiled.site, compiled.include) ||
+			includeConfig !== expectedManagedInclude
+		) {
+			throw new Error('Local did not compile the expected managed Nginx configuration.');
+		}
+		return { include: includeConfig, main: mainConfig, site: siteConfig };
+	}
+	if (
+		(requireRunnableConfig && (
+			mainConfig === null ||
+			siteConfig === null ||
+			!nginxMainLoadsCompiledSite(mainConfig, compiled.site, compiled.include)
+		)) ||
+		(siteConfig !== null && compiledNginxSiteHasManagedArtifacts(
+			siteConfig,
+			compiled.site,
+			compiled.include,
+		)) ||
+		includeConfig !== null
+	) {
+		throw new Error('Local retained a managed Nginx configuration after cleanup.');
+	}
+	return { include: includeConfig, main: mainConfig, site: siteConfig };
+}
+
+export async function nginxCompiledConfigMatches(
+	service: NginxRuntimeService,
+	expectedManagedInclude: string | null,
+	assertCurrent: () => void = (): void => undefined,
+): Promise<boolean> {
+	try {
+		await assertCompiledNginxState(service, expectedManagedInclude, assertCurrent);
+		return true;
+	} catch (error) {
+		if (isExpectedCompiledFileAbsence(error)) {
+			return expectedManagedInclude === null;
+		}
+		if (
+			error instanceof Error && (
+				error.message === 'Local did not compile the expected managed Nginx configuration.' ||
+				error.message === 'Local retained a managed Nginx configuration after cleanup.'
+			)
+		) {
+			return false;
+		}
+		throw error;
+	}
+}
+
+function normalizedConfigText(config: string): string {
+	return config.replace(/\r\n/g, '\n').trimEnd();
+}
+
+function nginxDumpSections(configDump: string): Map<string, string> {
+	const sections = new Map<string, string>();
+	const lines = configDump.replace(/\r\n/g, '\n').split('\n');
+	let currentPath: string | null = null;
+	let currentLines: string[] = [];
+	const finish = (): void => {
+		if (currentPath !== null) {
+			const key = path.normalize(currentPath);
+			sections.set(
+				key,
+				sections.has(key)
+					? '\0duplicate configuration section'
+					: normalizedConfigText(currentLines.join('\n')),
+			);
+		}
+	};
+	for (const line of lines) {
+		const header = /^# configuration file (.+):$/.exec(line);
+		if (header) {
+			finish();
+			currentPath = header[1];
+			currentLines = [];
+			continue;
+		}
+		if (currentPath !== null) {
+			currentLines.push(line);
+		}
+	}
+	finish();
+	return sections;
+}
+
+function nginxDumpExactlyMatchesCompiledState(
+	configDump: string,
+	compiled: NginxCompiledPaths,
+	state: CompiledNginxState,
+): boolean {
+	const sections = nginxDumpSections(configDump);
+	const exactSection = (filePath: string, expected: string | null): boolean => {
+		const actual = sections.get(path.normalize(filePath));
+		return expected === null
+			? actual === undefined
+			: actual === normalizedConfigText(expected);
+	};
+	return exactSection(compiled.main, state.main) &&
+		exactSection(compiled.site, state.site) &&
+		exactSection(compiled.include, state.include);
+}
+
+export async function compileAndValidateNginxConfig(
+	site: Local.Site,
+	service: NginxRuntimeService,
+	configTemplates: NginxConfigTemplates,
+	execFilePromise: ExecFilePromise,
+	expectedManagedInclude: string | null,
+	assertCurrent: () => void = (): void => undefined,
+): Promise<void> {
+	if (!path.isAbsolute(service.siteConfigTemplatePath)) {
+		throw new Error('Local returned a relative Nginx template root.');
+	}
+	assertCurrent();
+	await assertRealDirectoryPath(
+		service.configPath,
+		'Nginx compiled configuration root',
+		assertCurrent,
+	);
+	assertCurrent();
+	await configTemplates.compileConfigTemplates(
+		site,
+		service.siteConfigTemplatePath,
+		service.configPath,
+		service.configVariables,
+	);
+	assertCurrent();
+	await assertRealRuntimeRoot(service.runPath, 'Nginx runtime root', assertCurrent);
+	const compiled = nginxCompiledPaths(service);
+	const compiledState = await assertCompiledNginxState(
+		service,
+		expectedManagedInclude,
+		assertCurrent,
+		true,
+	);
+
+	const context = nginxCompilationCommandContext(service);
+	assertCurrent();
+	await execFilePromise(
+		context.nginxBinary,
+		['-t', ...context.commonArgs],
+		context.options,
+	);
+	assertCurrent();
+	const compiledDump = await execFilePromise(
+		context.nginxBinary,
+		['-T', ...context.commonArgs],
+		context.options,
+	);
+	assertCurrent();
+	if (!nginxDumpExactlyMatchesCompiledState(compiledDump, compiled, compiledState)) {
+		throw new Error('Nginx did not load the exact compiled configuration.');
+	}
+	if (
+		expectedManagedInclude !== null
+			? !compiledNginxSiteHasCanonicalManagedInclude(
+				compiledState.site ?? '',
+				compiled.site,
+				compiled.include,
+			)
+			: compiledNginxSiteHasManagedArtifacts(
+				compiledState.site ?? '',
+				compiled.site,
+				compiled.include,
+			)
+	) {
+		if (expectedManagedInclude !== null) {
+			throw new Error('Nginx did not load the expected managed configuration.');
+		}
+		throw new Error('Nginx still loads a managed configuration after cleanup.');
 	}
 }
 
@@ -285,6 +724,9 @@ export function removeManagedInclude(siteConfig: string): string {
 export function upsertManagedInclude(siteConfig: string): string {
 	const eol = siteConfig.includes('\r\n') ? '\r\n' : '\n';
 	const cleanConfig = removeManagedInclude(siteConfig);
+	if (compiledNginxSiteHasManagedArtifacts(cleanConfig)) {
+		throw new Error('The Local Nginx template contains an incomplete managed include block.');
+	}
 	const block = [
 		`    ${MANAGED_MARKER_START}`,
 		`    include includes/${COMPILED_INCLUDE_FILENAME};`,
@@ -315,5 +757,5 @@ export function upsertManagedInclude(siteConfig: string): string {
 }
 
 export function hasManagedInclude(siteConfig: string): boolean {
-	return siteConfig.includes(MANAGED_MARKER_START) && siteConfig.includes(MANAGED_MARKER_END);
+	return compiledNginxSiteHasManagedArtifacts(siteConfig);
 }

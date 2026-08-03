@@ -11,6 +11,7 @@ export interface ServerTransactionFingerprint {
 	configPath: string | null;
 	executablePath: string | null;
 	runPath: string | null;
+	serviceInputsDigest: string | null;
 	serverKind: ServerKind;
 	serviceName: string | null;
 	siteConfigTemplatePath: string | null;
@@ -35,6 +36,7 @@ export function serverTransactionFingerprintsMatch(
 	return expected.configPath === current.configPath &&
 		expected.executablePath === current.executablePath &&
 		expected.runPath === current.runPath &&
+		expected.serviceInputsDigest === current.serviceInputsDigest &&
 		expected.serverKind === current.serverKind &&
 		expected.serviceName === current.serviceName &&
 		expected.siteConfigTemplatePath === current.siteConfigTemplatePath &&
@@ -138,9 +140,9 @@ export function shouldCancelDeferredReconciliation(siteStatus: string): boolean 
 
 export function shouldRefreshRuntime(
 	siteStatus: string,
-	_targetServiceRunning: boolean,
+	targetServiceRunning: boolean,
 ): boolean {
-	return siteStatus === 'running';
+	return siteStatus === 'running' && targetServiceRunning;
 }
 
 export function shouldReconcileManagedFiles(siteStatus: string): boolean {

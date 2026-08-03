@@ -7,18 +7,28 @@
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const fsPromises = require('node:fs/promises');
+const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const {
 	buildManagedNginxConfig,
+	compileAndValidateNginxConfig,
+	compiledNginxSiteHasCanonicalManagedInclude,
 	hasManagedInclude,
 	isMissingNginxMasterProcess,
 	reloadNginxInPlace,
 	reloadNginxWithFallback,
 	removeManagedInclude,
+	nginxCompiledConfigMatches,
+	nginxCompiledPaths,
 	upsertManagedInclude,
 } = require('../lib/nginx');
-const { ORIGIN_REQUEST_USER_AGENT } = require('../lib/constants');
+const {
+	MANAGED_MARKER_END,
+	MANAGED_MARKER_START,
+	ORIGIN_REQUEST_USER_AGENT,
+} = require('../lib/constants');
 const { validateAndNormalizeOrigin } = require('../lib/validation');
 
 const secureOrigin = validateAndNormalizeOrigin({
@@ -34,6 +44,42 @@ const service = {
 	configPath: '/sites/example site/conf/nginx',
 	runPath: '/sites/example site/run/nginx',
 };
+
+function nginxManagedFixture(runtimeService, managed = true) {
+	const compiled = nginxCompiledPaths(runtimeService);
+	const main = 'events {}\nhttp {\n\tinclude site.conf;\n}\n';
+	const site = managed
+		? [
+			'server {',
+			`    ${MANAGED_MARKER_START}`,
+			'    include includes/local-media-proxy.conf;',
+			`    ${MANAGED_MARKER_END}`,
+			'}',
+			'',
+		].join('\n')
+		: 'server {\n}\n';
+	const include = managed ? '# exact managed Nginx route\n' : null;
+	const section = (filePath, content) => `# configuration file ${filePath}:\n${content}`;
+	const dump = [
+		section(compiled.main, main),
+		section(compiled.site, site),
+		...(include === null ? [] : [section(compiled.include, include)]),
+	].join('\n');
+	return { compiled, dump, include, main, site };
+}
+
+async function writeCompiledNginxFixture(runtimeService, managed = true) {
+	const fixture = nginxManagedFixture(runtimeService, managed);
+	await fsPromises.mkdir(path.join(runtimeService.configPath, 'includes'), { recursive: true });
+	await Promise.all([
+		fsPromises.writeFile(fixture.compiled.main, fixture.main),
+		fsPromises.writeFile(fixture.compiled.site, fixture.site),
+		fixture.include === null
+			? fsPromises.rm(fixture.compiled.include, { force: true })
+			: fsPromises.writeFile(fixture.compiled.include, fixture.include),
+	]);
+	return fixture;
+}
 
 test('builds a local-first, read-only, privacy-preserving HTTPS proxy', () => {
 	const config = buildManagedNginxConfig(secureOrigin, '/tmp/local origin-ca.pem');
@@ -189,6 +235,244 @@ test('preserves CRLF line endings in the injected block', () => {
 	const applied = upsertManagedInclude(original);
 	assert.match(applied, /managed\)\r\n    include/);
 	assert.equal(removeManagedInclude(applied), original);
+});
+
+test('targeted Nginx compilation verifies exact files, syntax, and loaded dump', async () => {
+	const root = await fsPromises.realpath(await fsPromises.mkdtemp(path.join(os.tmpdir(), 'local-media-proxy-nginx-compile-')));
+	try {
+		const runtimeService = {
+			bin: { nginx: '/opt/Local/nginx' },
+			configPath: path.join(root, 'compiled', 'nginx'),
+			configVariables: { port: 10000 },
+			env: { LOCAL_NGINX_TEST: '1' },
+			runPath: path.join(root, 'run', 'nginx'),
+				siteConfigTemplatePath: path.join(root, 'templates', 'nginx'),
+			};
+			await fsPromises.mkdir(runtimeService.configPath, { recursive: true });
+			await fsPromises.mkdir(runtimeService.runPath, { recursive: true });
+		const expected = nginxManagedFixture(runtimeService, true);
+		const calls = [];
+		const compiler = {
+			compileConfigTemplates: async (...args) => {
+				calls.push(['compile', ...args]);
+				await writeCompiledNginxFixture(runtimeService, true);
+			},
+		};
+		await compileAndValidateNginxConfig(
+			{ id: 'site-a' },
+			runtimeService,
+			compiler,
+			async (...args) => {
+				calls.push(['exec', ...args]);
+				return args[1][0] === '-T' ? expected.dump : '';
+			},
+			expected.include,
+		);
+
+		assert.deepEqual(calls[0].slice(2), [
+			runtimeService.siteConfigTemplatePath,
+			runtimeService.configPath,
+			runtimeService.configVariables,
+		]);
+		assert.deepEqual(calls.slice(1).map((call) => call[2][0]), ['-t', '-T']);
+		for (const call of calls.slice(1)) {
+			assert.equal(call[1], runtimeService.bin.nginx);
+			assert.deepEqual(call[2].slice(1), [
+				'-c',
+				expected.compiled.main,
+				'-p',
+				runtimeService.runPath,
+			]);
+			assert.equal(call[3].timeout, 10_000);
+			assert.equal(call[3].windowsHide, true);
+			assert.equal(call[3].env.LOCAL_NGINX_TEST, '1');
+		}
+		assert.equal(compiledNginxSiteHasCanonicalManagedInclude(expected.site), true);
+	} finally {
+		await fsPromises.rm(root, { force: true, recursive: true });
+	}
+});
+
+test('passive Nginx parity rejects stale, unloaded, and symlinked compiled state without writing', async () => {
+	const root = await fsPromises.realpath(await fsPromises.mkdtemp(path.join(os.tmpdir(), 'local-media-proxy-nginx-parity-')));
+	try {
+		const runtimeService = {
+			bin: { nginx: '/opt/Local/nginx' },
+			configPath: path.join(root, 'authoritative-compiled-root'),
+			configVariables: {},
+			runPath: path.join(root, 'run'),
+			siteConfigTemplatePath: path.join(root, 'templates'),
+		};
+		const expected = await writeCompiledNginxFixture(runtimeService, true);
+		const before = await fsPromises.readFile(expected.compiled.include, 'utf8');
+		assert.equal(await nginxCompiledConfigMatches(runtimeService, expected.include), true);
+		assert.equal(await fsPromises.readFile(expected.compiled.include, 'utf8'), before);
+
+		await fsPromises.appendFile(
+			expected.compiled.site,
+			`include "includes/${path.basename(expected.compiled.include)}";\n`,
+		);
+		assert.equal(
+			await nginxCompiledConfigMatches(runtimeService, expected.include),
+			false,
+			'a quoted duplicate managed include must not converge',
+		);
+
+		await writeCompiledNginxFixture(runtimeService, true);
+		await fsPromises.appendFile(
+			expected.compiled.main,
+			`include "${expected.compiled.include}";\n`,
+		);
+		assert.equal(
+			await nginxCompiledConfigMatches(runtimeService, expected.include),
+			false,
+			'an absolute duplicate managed include in the main config must not converge',
+		);
+
+		await writeCompiledNginxFixture(runtimeService, true);
+		await fsPromises.writeFile(expected.compiled.main, 'events {}\nhttp {}\n');
+		assert.equal(await nginxCompiledConfigMatches(runtimeService, expected.include), false);
+
+		await writeCompiledNginxFixture(runtimeService, true);
+		await fsPromises.appendFile(expected.compiled.include, '# stale directive\n');
+		assert.equal(await nginxCompiledConfigMatches(runtimeService, expected.include), false);
+
+		await writeCompiledNginxFixture(runtimeService, true);
+		const outside = path.join(root, 'outside');
+		await fsPromises.mkdir(outside);
+		await fsPromises.writeFile(path.join(outside, 'local-media-proxy.conf'), expected.include);
+		await fsPromises.rm(path.join(runtimeService.configPath, 'includes'), { recursive: true });
+		await fsPromises.symlink(outside, path.join(runtimeService.configPath, 'includes'));
+		await assert.rejects(
+			nginxCompiledConfigMatches(runtimeService, expected.include),
+			/unsafe compiled Nginx path/,
+		);
+
+		const realParent = path.join(root, 'real-compiled-parent');
+		const realService = { ...runtimeService, configPath: path.join(realParent, 'nginx') };
+		const realExpected = await writeCompiledNginxFixture(realService, true);
+		const linkedParent = path.join(root, 'linked-compiled-parent');
+		await fsPromises.symlink(realParent, linkedParent);
+		await assert.rejects(
+			nginxCompiledConfigMatches(
+				{ ...runtimeService, configPath: path.join(linkedParent, 'nginx') },
+				realExpected.include,
+			),
+			/unsafe compiled Nginx root/,
+			'compiled roots with a symlinked ancestor must fail closed',
+		);
+
+		assert.equal(await nginxCompiledConfigMatches(
+			{ ...runtimeService, configPath: path.join(root, 'absent-compiled-root') },
+			null,
+		), true, 'disabled stopped sites may have no compiled output');
+	} finally {
+		await fsPromises.rm(root, { force: true, recursive: true });
+	}
+});
+
+test('Nginx validation fences each phase and rejects an inexact or duplicated -T section', async () => {
+	const root = await fsPromises.realpath(await fsPromises.mkdtemp(path.join(os.tmpdir(), 'local-media-proxy-nginx-guards-')));
+	try {
+		const runtimeService = {
+			bin: { nginx: '/opt/Local/nginx' },
+			configPath: path.join(root, 'compiled', 'nginx'),
+			configVariables: {},
+			runPath: path.join(root, 'run', 'nginx'),
+				siteConfigTemplatePath: path.join(root, 'templates', 'nginx'),
+			};
+			await fsPromises.mkdir(runtimeService.configPath, { recursive: true });
+			await fsPromises.mkdir(runtimeService.runPath, { recursive: true });
+		const expected = nginxManagedFixture(runtimeService, true);
+		const runGuardScenario = async (mutationPoint) => {
+			let current = true;
+			const commands = [];
+			const assertCurrent = () => {
+				if (!current) {
+					throw new Error('server identity changed');
+				}
+			};
+			await assert.rejects(compileAndValidateNginxConfig(
+				{ id: 'site-a' },
+				runtimeService,
+				{
+					compileConfigTemplates: async () => {
+						await writeCompiledNginxFixture(runtimeService, true);
+						if (mutationPoint === 'compile') {
+							current = false;
+						}
+					},
+				},
+				async (_command, args) => {
+					commands.push(args[0]);
+					if (mutationPoint === args[0]) {
+						current = false;
+					}
+					return args[0] === '-T' ? expected.dump : '';
+				},
+				expected.include,
+				assertCurrent,
+			), /server identity changed/);
+			return commands;
+		};
+		assert.deepEqual(await runGuardScenario('compile'), []);
+		assert.deepEqual(await runGuardScenario('-t'), ['-t']);
+		assert.deepEqual(await runGuardScenario('-T'), ['-t', '-T']);
+
+		const compiler = {
+			compileConfigTemplates: async () => {
+				await writeCompiledNginxFixture(runtimeService, true);
+			},
+		};
+		await assert.rejects(compileAndValidateNginxConfig(
+			{ id: 'site-a' },
+			runtimeService,
+			compiler,
+			async (_command, args) => args[0] === '-T'
+				? expected.dump.replace(expected.include, `${expected.include}# stale directive\n`)
+				: '',
+			expected.include,
+		), /exact compiled configuration/);
+		await assert.rejects(compileAndValidateNginxConfig(
+			{ id: 'site-a' },
+			runtimeService,
+			compiler,
+			async (_command, args) => args[0] === '-T'
+				? `${expected.dump}\n# configuration file ${expected.compiled.include}:\n${expected.include}`
+				: '',
+			expected.include,
+		), /exact compiled configuration/);
+
+		const realRunRoot = path.join(root, 'real-run');
+		const symlinkRunRoot = path.join(root, 'symlink-run');
+		await fsPromises.mkdir(realRunRoot);
+		await fsPromises.symlink(realRunRoot, symlinkRunRoot);
+		let execCalls = 0;
+		await assert.rejects(compileAndValidateNginxConfig(
+			{ id: 'site-a' },
+			{ ...runtimeService, runPath: symlinkRunRoot },
+			compiler,
+			async () => { execCalls += 1; return ''; },
+			expected.include,
+		), /unsafe Nginx runtime root/);
+		assert.equal(execCalls, 0);
+
+		const realRunParent = path.join(root, 'real-run-parent');
+		await fsPromises.mkdir(path.join(realRunParent, 'nginx'), { recursive: true });
+		const linkedRunParent = path.join(root, 'linked-run-parent');
+		await fsPromises.symlink(realRunParent, linkedRunParent);
+		execCalls = 0;
+		await assert.rejects(compileAndValidateNginxConfig(
+			{ id: 'site-a' },
+			{ ...runtimeService, runPath: path.join(linkedRunParent, 'nginx') },
+			compiler,
+			async () => { execCalls += 1; return ''; },
+			expected.include,
+		), /unsafe Nginx runtime root/);
+		assert.equal(execCalls, 0);
+	} finally {
+		await fsPromises.rm(root, { force: true, recursive: true });
+	}
 });
 
 test('validates the compiled config before reloading Nginx in place', async () => {
@@ -415,16 +699,23 @@ test('fails closed when Local does not expose an Nginx binary', async () => {
 	);
 });
 
-test('main delegates stale-master recovery through the guarded Nginx reload helper', () => {
+test('main compiles, validates, and restarts only the targeted running Nginx service', () => {
 	const mainSource = fs.readFileSync(path.resolve(__dirname, '../src/main.ts'), 'utf8');
-	assert.match(mainSource, /reloadNginxWithFallback\(/);
-	assert.match(
-		mainSource,
-		/const targetServiceRunning = \(\): boolean => \{[\s\S]{0,180}hasRunningProcess\(site, serviceName\)[\s\S]{0,180}if \(shouldRefreshRuntime\(/,
+	const compileAndReload = mainSource.slice(
+		mainSource.indexOf('const compileAndReload = async'),
+		mainSource.indexOf('const runtimeCleanupUnavailableReason'),
 	);
-	assert.match(mainSource, /await siteProcessManager\.restartSiteService\(site, serviceName\)/);
-	assert.match(mainSource, /return siteProcessManager\.hasRunningProcess\(site, serviceName\)/);
-	assert.match(mainSource, /siteProcessManager\.getSiteStatus\(site\) === 'running'[\s\S]{0,120}siteProcessManager\.hasRunningProcess\(site\)/);
+	assert.match(compileAndReload, /compileAndValidateNginxConfig\(/);
+	assert.match(
+		compileAndReload,
+		/const targetServiceRunning = \(\): boolean => \{[\s\S]{0,180}hasRunningProcess\(site, serviceName\)[\s\S]{0,180}const targetWasRunning = targetServiceRunning\(\)[\s\S]{0,160}siteStatus === 'running' && !targetWasRunning[\s\S]{0,260}if \(shouldRefreshRuntime\(siteStatus, targetWasRunning\)\)/,
+	);
+	assert.equal(
+		(compileAndReload.match(/restartSiteService\(site, serviceName\)/g) ?? []).length,
+		1,
+	);
+	assert.match(compileAndReload, /assertCurrent\(\);[\s\S]{0,100}restartSiteService\(site, serviceName\)[\s\S]{0,100}assertCurrent\(\)/);
+	assert.doesNotMatch(compileAndReload, /reloadNginxWithFallback|reloadNginxInPlace|compileServiceConfigs/);
 });
 
 test('main binds separate WP Engine TLS identities to the selected Local site', () => {

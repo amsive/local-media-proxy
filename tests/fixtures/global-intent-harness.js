@@ -76,6 +76,7 @@ const initialSettings = Object.fromEntries(Object.entries(sites).map(([siteId, s
 	JSON.parse(JSON.stringify(site.localMediaProxy)),
 ]));
 const managedArtifacts = new Set(Object.keys(sites));
+const compiledManaged = new Set(Object.keys(sites));
 let deferredCleanupFailureThrown = false;
 
 const service = {
@@ -95,7 +96,7 @@ const cradle = {
 		compileServiceConfigs: async (site) => calls.push(`compile:${site.id}`),
 	},
 	lightningServices: {
-		getSiteService: () => service,
+		getSiteService: (site) => ({ ...service, testSiteId: site.id }),
 	},
 	localLogger: {
 		child: () => ({
@@ -169,10 +170,39 @@ siteConfig.removeAllManagedFilesSync = (site, assertCurrent) => {
 	return changed;
 };
 siteConfig.restoreManagedFiles = async () => undefined;
+siteConfig.readServerManagedIncludeTemplate = async (site, _options, assertCurrent) => {
+	assertCurrent?.();
+	return managedArtifacts.has(site.id) ? `managed:${site.id}` : null;
+};
 siteConfig.serverManagedFilesystemReady = () => true;
 siteConfig.serverManagedFilesMatch = async (site, _origin, _options, _trust, assertCurrent) => {
 	assertCurrent?.();
 	return managedArtifacts.has(site.id);
+};
+
+const nginx = require(path.join(libRoot, 'nginx.js'));
+nginx.nginxCompiledConfigMatches = async (runtimeService, expectedManagedInclude, assertCurrent) => {
+	assertCurrent?.();
+	return expectedManagedInclude === null
+		? !compiledManaged.has(runtimeService.testSiteId)
+		: compiledManaged.has(runtimeService.testSiteId);
+};
+nginx.compileAndValidateNginxConfig = async (
+	site,
+	_runtimeService,
+	_configTemplates,
+	_execFilePromise,
+	expectedManagedInclude,
+	assertCurrent,
+) => {
+	assertCurrent?.();
+	if (expectedManagedInclude === null) {
+		compiledManaged.delete(site.id);
+	} else {
+		compiledManaged.add(site.id);
+	}
+	calls.push(`compile:${site.id}`);
+	assertCurrent?.();
 };
 
 const serverModule = require(path.join(libRoot, 'server.js'));

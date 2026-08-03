@@ -48,7 +48,14 @@ test('Apache apply snapshots both servers and rollback restores runtime before c
 		'const abortForGlobalLifecycle',
 	);
 	assert.match(rollback, /await restoreManagedFiles\(snapshots, assertRollbackTransactionCurrent\)/);
-	assert.match(rollback, /apacheSnapshotHasCompleteManagedConfig\(rollbackTarget\.site, snapshots\)/);
+	assert.match(
+		rollback,
+		/restoredManagedSourceMatches = await serverManagedFilesMatch\([\s\S]{0,160}rollbackTarget\.site,[\s\S]{0,240}managedFileOptions\(rollbackTarget\.server\)/,
+	);
+	assert.match(
+		rollback,
+		/if \(!restoredManagedSourceMatches\) \{[\s\S]{0,220}removeAllManagedFiles\([\s\S]{0,180}assertRollbackTransactionCurrent/,
+	);
 	assertInOrder(
 		rollback,
 		[
@@ -62,9 +69,13 @@ test('Apache apply snapshots both servers and rollback restores runtime before c
 });
 
 test('Apache refresh observes Local runtime process name httpd without using its non-settling hard restart', () => {
-	const refreshBranch = mainSource.slice(
-		mainSource.indexOf("if (server.kind === 'apache')"),
-		mainSource.indexOf('await configTemplates.compileServiceConfigs', mainSource.indexOf("if (server.kind === 'apache')")),
+	const compileAndReload = sourceSection(
+		'const compileAndReload = async',
+		'const runtimeCleanupUnavailableReason',
+	);
+	const refreshBranch = compileAndReload.slice(
+		compileAndReload.indexOf("if (server.kind === 'apache')"),
+		compileAndReload.indexOf('await compileAndValidateNginxConfig'),
 	);
 	assert.match(refreshBranch, /const processName = 'httpd'/);
 	assert.match(refreshBranch, /hasRunningProcess\(site, processName\)/);
@@ -99,8 +110,8 @@ test('global disable and uninstall clean runtime without changing per-site enabl
 		synchronousCleanup.indexOf('shouldReconcileManagedFiles(siteStatus)') <
 		synchronousCleanup.indexOf('detectedServer = detectSiteServer(site)') &&
 		synchronousCleanup.indexOf('detectedServer = detectSiteServer(site)') <
-		synchronousCleanup.indexOf('globalCleanupFilesystemReady(site, detectedServer)') &&
-		synchronousCleanup.indexOf('globalCleanupFilesystemReady(site, detectedServer)') <
+		synchronousCleanup.indexOf('globalCleanupFilesystemReady(site, server)') &&
+		synchronousCleanup.indexOf('globalCleanupFilesystemReady(site, server)') <
 		synchronousCleanup.indexOf('readStoredSettingsEnvelope(site, server.kind)') &&
 		synchronousCleanup.indexOf('readStoredSettingsEnvelope(site, server.kind)') <
 		synchronousCleanup.indexOf('removeAllManagedFilesSync('),
@@ -183,9 +194,11 @@ test('startup and Local lifecycle reconciliation wait for stable ready sites wit
 	assert.match(mainSource, /HooksMain\.addAction\('siteDeleted'[\s\S]{0,300}cancelDeferredReconciliation\(siteId\)[\s\S]{0,120}cancelOriginProbesForSite\(siteId\)/);
 	assert.match(mainSource, /DEFERRED_RECONCILIATION_MAX_ATTEMPTS = 900/);
 	assert.match(mainSource, /DEFERRED_RECONCILIATION_STABLE_SAMPLES = 2/);
+	assert.match(reconcile, /const managedFilesMatch = await serverManagedFilesMatch\(/);
+	assert.match(reconcile, /compiledConfigMatches = await serverCompiledConfigMatches\(/);
 	assert.match(
 		reconcile,
-		/if \(options\.refreshMatchingEnabledRuntime \|\| carriedSiteUrl\) \{[\s\S]{0,300}compileAndReload\([\s\S]{0,120}true,[\s\S]{0,100}assertReconciliationTransactionCurrent/,
+		/if \(compiledConfigMatches\) \{[\s\S]{0,100}persistReconciledEnvelope\(\);[\s\S]{0,80}return/,
 	);
 	assert.match(mainSource, /for \(const site of Object\.values\(siteData\.getSites\(\)\)[\s\S]{0,220}scheduleDeferredReconciliation\(site\.id/);
 });
@@ -223,13 +236,13 @@ test('server reconciliation carries Site URL inside the site lock and commits it
 	);
 	assert.match(
 		reconcile,
-		/if \(options\.refreshMatchingEnabledRuntime \|\| carriedSiteUrl\) \{[\s\S]{0,360}compileAndReload\([\s\S]{0,180}persistReconciledEnvelope\(\)/,
-		'a complete carried profile must refresh successfully before it is persisted',
+		/if \(managedFilesMatch\) \{[\s\S]{0,260}serverCompiledConfigMatches\([\s\S]{0,180}if \(compiledConfigMatches\) \{[\s\S]{0,100}persistReconciledEnvelope\(\)/,
+		'a complete carried profile may be persisted without mutation only after exact compiled convergence',
 	);
 	assert.match(
 		reconcile,
-		/if \(changed \|\| \(settings\.enabled && carriedSiteUrl\)\) \{[\s\S]{0,300}compileAndReload\([\s\S]{0,220}persistReconciledEnvelope\(\)/,
-		'a carried profile must establish runtime convergence even if another writer made its files match',
+		/if \(changed \|\| !compiledConfigMatches\) \{[\s\S]{0,300}compileAndReload\([\s\S]{0,220}persistReconciledEnvelope\(\)/,
+		'a carried profile must establish runtime convergence whenever source or compiled state is stale',
 	);
 
 	const invalidCleanup = reconcile.slice(
@@ -416,7 +429,10 @@ test('interactive apply, save-disable, and toggle commit settings only after fil
 	);
 	assert.match(rollback, /const currentSite = siteData\.getSite\(site\.id\)/);
 	assert.match(rollback, /!shouldReconcileManagedFiles\(siteStatus\)[\s\S]{0,220}return null/);
-	assert.match(rollback, /serverManagedFilesystemReady\(currentSite, currentServer\.kind\)/);
+	assert.match(
+		rollback,
+		/serverManagedFilesystemReady\([\s\S]{0,100}currentSite,[\s\S]{0,100}currentServer\.kind,[\s\S]{0,120}managedFileOptions\(currentServer\)/,
+	);
 	assert.match(
 		rollback,
 		/serverTransactionFingerprintsMatch\([\s\S]{0,80}expectedTransaction,[\s\S]{0,80}currentTransaction/,
@@ -432,16 +448,14 @@ test('interactive apply, save-disable, and toggle commit settings only after fil
 	assert.doesNotMatch(rollback, /compileAndReload\([\s\S]{0,80}\bsite,[\s\S]{0,80}\b_server/);
 });
 
-test('site-state IPC reconciles server metadata changes before returning readable state', () => {
+test('site-state IPC reports persisted and compiled drift without reconciling or writing', () => {
 	const handler = mainSource.slice(
 		mainSource.indexOf('ipcMain.handle(IPC_CHANNELS.getSiteState'),
 		mainSource.indexOf('ipcMain.handle(IPC_CHANNELS.testOrigin'),
 	);
-	assert.ok(handler.indexOf('await reconcileSite(siteId)') >= 0);
-	assert.ok(handler.indexOf('return await getSiteState(siteId)') > handler.indexOf('await reconcileSite(siteId)'));
+	assert.doesNotMatch(handler, /reconcileSite|withSiteLock|applyServerManagedFiles|removeAllManagedFiles|compileAndReload|persistSettings/);
+	assert.match(handler, /return await getSiteState\(siteId\)/);
 	assert.match(handler, /isExpectedLifecycleInterruption\(siteId, error\)[\s\S]{0,240}logger\.log\([\s\S]{0,80}'info'/);
-	assert.match(handler, /State-read reconciliation failed for site \$\{siteId\}; returning the current persisted state/);
-	assert.doesNotMatch(handler, /withSiteLock/);
 	assert.match(mainSource, /Boolean\(!settings\.enabled && applied\)/);
 	assert.match(mainSource, /profile is disabled, but managed proxy configuration remains and cleanup is required/);
 });
@@ -457,9 +471,13 @@ test('state and discovery reads stay metadata-only until Local lifecycle and tem
 	);
 	assert.ok(
 		stateReader.indexOf('shouldReconcileManagedFiles(siteStatus)') <
-		stateReader.indexOf('serverManagedFilesystemReady(site, detectedServer.kind)') &&
-		stateReader.indexOf('serverManagedFilesystemReady(site, detectedServer.kind)') <
-		stateReader.indexOf('const server = resolveServer(site)'),
+		stateReader.indexOf('const server = resolveServer(site)') &&
+		stateReader.indexOf('const server = resolveServer(site)') <
+		stateReader.indexOf('!serverManagedFilesystemReady('),
+	);
+	assert.doesNotMatch(
+		stateReader,
+		/applyServerManagedFiles|removeAllManagedFiles|compileAndReload|restartSiteService|persistSettings/,
 	);
 	assert.match(stateReader, /return lifecycleUnavailableSiteState\(null, 'deleting'\)/);
 	assert.match(stateReader, /lifecycleReady: true/);
@@ -483,6 +501,87 @@ test('state and discovery reads stay metadata-only until Local lifecycle and tem
 		stateHandler,
 		/isExpectedLifecycleInterruption\(siteId, error\)[\s\S]{0,700}lifecycleUnavailableSiteState\(site, siteStatus\)/,
 	);
+});
+
+test('runtime convergence behavior is passive, drift-aware, halted-safe, and snapshot-transactional', () => {
+	const runScenario = (scenario) => JSON.parse(execFileSync(
+		process.execPath,
+		[path.resolve(__dirname, 'fixtures/runtime-convergence-harness.js'), scenario],
+		{ encoding: 'utf8' },
+	));
+
+	const passive = runScenario('passive-drift');
+	assert.deepEqual(passive.calls, []);
+	assert.deepEqual(passive.state, {
+		applied: false,
+		needsAttention: true,
+		siteStatus: 'running',
+	});
+	assert.deepEqual(passive.updates, []);
+
+	const startupNoop = runScenario('startup-noop');
+	assert.deepEqual(startupNoop.calls, []);
+	assert.equal(startupNoop.restartCalls, 0);
+
+	const startupRepair = runScenario('startup-compiled-drift');
+	assert.deepEqual(startupRepair.calls, [
+		'captureAllManagedFiles',
+		'applyServerManagedFiles',
+		'compileNginx:managed',
+		'restart:nginx-1.26.1+3',
+	]);
+	assert.equal(startupRepair.restartCalls, 1);
+
+	const haltedRepair = runScenario('same-value-halted-repair');
+	assert.deepEqual(haltedRepair.calls, [
+		'probeOrigin',
+		'captureAllManagedFiles',
+		'applyServerManagedFiles',
+		'compileNginx:managed',
+		'updateSite',
+	]);
+	assert.equal(haltedRepair.restartCalls, 0);
+	assert.deepEqual(haltedRepair.state, {
+		applied: true,
+		needsAttention: false,
+		siteStatus: 'halted',
+	});
+
+	for (const [scenario, restoredCompile, restoredEnabled, failClosedCleanup] of [
+		['rollback-valid-managed', 'compileNginx:managed', true, false],
+		['rollback-snapshot-enabled', 'compileNginx:clean', false, true],
+		['rollback-snapshot-disabled', 'compileNginx:clean', true, true],
+		['rollback-malformed-snapshot', 'compileNginx:clean', true, true],
+	]) {
+		const rollback = runScenario(scenario);
+		assert.equal(rollback.operationError, 'targeted restart failed');
+		assert.equal(rollback.restartCalls, 2);
+		assert.deepEqual(rollback.calls, [
+			'probeOrigin',
+			'captureAllManagedFiles',
+			'applyServerManagedFiles',
+			'compileNginx:managed',
+			'restart:nginx-1.26.1+3',
+			'restoreManagedFiles',
+			...(failClosedCleanup ? ['removeAllManagedFiles'] : []),
+			restoredCompile,
+			'restart:nginx-1.26.1+3',
+			'updateSite',
+		]);
+		assert.equal(rollback.finalEnabled, restoredEnabled);
+		assert.equal(rollback.updates.length, 1);
+		assert.equal(rollback.updates[0].enabled, restoredEnabled);
+	}
+
+	const missingTarget = runScenario('target-service-missing');
+	assert.match(missingTarget.operationError, /Nginx service as running/);
+	assert.equal(missingTarget.restartCalls, 0);
+	assert.equal(missingTarget.updates.length, 0);
+
+	const changedInputs = runScenario('service-input-change');
+	assert.match(changedInputs.operationError, /web-server identity or lifecycle status/);
+	assert.equal(changedInputs.restartCalls, 0);
+	assert.equal(changedInputs.updates.length, 0);
 });
 
 test('unsupported site state preserves dedicated renderer guidance without masking service failures', () => {
@@ -841,6 +940,11 @@ test('unsupported ambiguity and transient service lookup failure defer cleanup w
 	assert.doesNotMatch(globalCleanup, /siteProcessManager\.restart\(site\)/);
 	assert.match(globalCleanup, /server = resolveServer\(site\)[\s\S]{0,240}using fail-closed persistent cleanup/);
 	assert.match(globalCleanup, /preserving the unknown schema and forcing runtime cleanup/);
+	assert.match(
+		globalCleanup,
+		/const compiledConfigIsClean = server\.kind !== 'unsupported' && server\.service[\s\S]{0,260}: false;[\s\S]{0,180}const requiresRuntimeRefresh = forceRefresh \|\| enabledBeforeCleanup \|\| !compiledConfigIsClean/,
+		'unresolved compiled runtime must remain unknown and force the stopped-site cleanup gate',
+	);
 	assert.match(globalCleanup, /removeAllManagedFiles: \(\) => removeAllManagedFiles\([\s\S]{0,100}assertGlobalCleanupTransactionCurrent/);
 	assert.match(globalCleanup, /Completed fail-closed persistent cleanup/);
 	assert.doesNotMatch(globalCleanup, /removeAllManagedFilesSync|synchronousCleanupRequiresRefresh/);

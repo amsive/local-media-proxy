@@ -60,14 +60,103 @@ export interface ApacheRuntimeCapabilities {
 }
 
 export interface ApacheServiceRefreshOptions {
+	assertCurrent?: () => void;
 	attempts?: number;
+	expectedManagedInclude?: string;
+	expectedManagedModules?: string;
 	intervalMs?: number;
 	masterProcessExists?: (pid: number) => boolean;
 	wait?: (milliseconds: number) => Promise<void>;
 }
 
+async function assertRealDirectoryPath(
+	directoryPath: string,
+	description: string,
+	assertCurrent: () => void = (): void => undefined,
+): Promise<string> {
+	if (!directoryPath || !path.isAbsolute(directoryPath)) {
+		throw new Error(`Local returned a relative ${description}.`);
+	}
+	const resolvedPath = path.resolve(directoryPath);
+	let currentPath = path.parse(resolvedPath).root;
+	const segments = path.relative(currentPath, resolvedPath).split(path.sep).filter(Boolean);
+	for (const segment of segments) {
+		assertCurrent();
+		const metadata = await fs.lstat(currentPath);
+		assertCurrent();
+		if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+			throw new Error(`Local returned an unsafe ${description}.`);
+		}
+		currentPath = path.join(currentPath, segment);
+	}
+	assertCurrent();
+	const metadata = await fs.lstat(currentPath);
+	assertCurrent();
+	if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+		throw new Error(`Local returned an unsafe ${description}.`);
+	}
+	return resolvedPath;
+}
+
 function escapeRegularExpression(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function markerLineCount(config: string, marker: string): number {
+	const escaped = escapeRegularExpression(marker);
+	return (config.match(new RegExp(`^[\\t ]*${escaped}[\\t ]*$`, 'gm')) ?? []).length;
+}
+
+function hasExactManagedMarker(config: string): boolean {
+	return markerLineCount(config, MANAGED_MARKER_START) > 0 ||
+		markerLineCount(config, MANAGED_MARKER_END) > 0;
+}
+
+function isExpectedCompiledFileAbsence(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException).code;
+	return code === 'ENOENT' || code === 'ENOTDIR' || code === 'ESTALE';
+}
+
+async function readOptionalCompiledFile(
+	rootPath: string,
+	filePath: string,
+	assertCurrent: () => void = (): void => undefined,
+): Promise<string | null> {
+	try {
+		const root = await assertRealDirectoryPath(
+			rootPath,
+			'compiled Apache root',
+			assertCurrent,
+		);
+		const relative = path.relative(root, filePath);
+		if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+			throw new Error('Local returned an unsafe compiled Apache path.');
+		}
+		assertCurrent();
+		let current = root;
+		const segments = relative.split(path.sep);
+		for (let index = 0; index < segments.length; index += 1) {
+			current = path.join(current, segments[index]);
+			assertCurrent();
+			const metadata = await fs.lstat(current);
+			const isFile = index === segments.length - 1;
+			if (
+				metadata.isSymbolicLink() ||
+				(isFile ? !metadata.isFile() : !metadata.isDirectory())
+			) {
+				throw new Error('Local returned an unsafe compiled Apache path.');
+			}
+		}
+		assertCurrent();
+		const content = await fs.readFile(filePath, 'utf8');
+		assertCurrent();
+		return content;
+	} catch (error) {
+		if (isExpectedCompiledFileAbsence(error)) {
+			return null;
+		}
+		throw error;
+	}
 }
 
 function assertSafeApacheValue(value: string, description: string): string {
@@ -130,6 +219,9 @@ export function removeApacheManagedBlock(template: string): string {
 function appendManagedBlock(template: string, lines: string[]): string {
 	const eol = template.includes('\r\n') ? '\r\n' : '\n';
 	const cleanTemplate = removeApacheManagedBlock(template);
+	if (hasExactManagedMarker(cleanTemplate)) {
+		throw new Error('The Local Apache template contains an incomplete managed block.');
+	}
 	const prefix = cleanTemplate && !cleanTemplate.endsWith('\n') ? eol : '';
 	return `${cleanTemplate}${prefix}${[
 		MANAGED_MARKER_START,
@@ -142,6 +234,9 @@ function appendManagedBlock(template: string, lines: string[]): string {
 export function upsertApacheInclude(template: string): string {
 	const eol = template.includes('\r\n') ? '\r\n' : '\n';
 	const cleanTemplate = removeApacheManagedBlock(template);
+	if (hasExactManagedMarker(cleanTemplate)) {
+		throw new Error('The Local Apache template contains an incomplete managed include block.');
+	}
 	const virtualHostEnd = /^[\t ]*<\/VirtualHost>[\t ]*$/gm;
 	const matches = [...cleanTemplate.matchAll(virtualHostEnd)];
 	if (matches.length === 0) {
@@ -154,6 +249,7 @@ export function upsertApacheInclude(template: string): string {
 		const indent = match[0].match(/^[\t ]*/)?.[0] ?? '';
 		const block = [
 			`${indent}${MANAGED_MARKER_START}`,
+			`${indent}Protocols http/1.1`,
 			`${indent}IncludeOptional "{{ configPath }}/includes/local-media-proxy.conf"`,
 			`${indent}${MANAGED_MARKER_END}`,
 		].join(eol);
@@ -254,14 +350,16 @@ export async function inspectApacheRuntimeCapabilities(
 }
 
 export function hasApacheManagedBlock(template: string): boolean {
-	return template.includes(MANAGED_MARKER_START) && template.includes(MANAGED_MARKER_END);
+	return hasExactManagedMarker(template);
+}
+
+export function hasCompleteApacheManagedBlock(template: string): boolean {
+	const cleaned = removeApacheManagedBlock(template);
+	return cleaned !== template && !hasExactManagedMarker(cleaned);
 }
 
 export function apacheConfigReferencesInclude(siteConfig: string, expectedInclude: string): boolean {
-	const normalizeSeparators = (value: string): string => value.replace(/\\/g, '/');
-	const expected = normalizeSeparators(expectedInclude);
-	return [...siteConfig.matchAll(/^[\t ]*IncludeOptional[\t ]+"([^"\r\n]+)"[\t ]*$/gm)]
-		.some((match) => normalizeSeparators(match[1]) === expected);
+	return apacheIncludeReferenceCount(siteConfig, expectedInclude) > 0;
 }
 
 export function buildManagedApacheConfig(
@@ -387,16 +485,264 @@ export function buildManagedApacheConfig(
 }
 
 export function apacheCompiledPaths(service: ApacheRuntimeService): ApacheCompiledPaths {
+	if (!service.configPath || !path.isAbsolute(service.configPath)) {
+		throw new Error('Local returned a relative Apache compiled configuration root.');
+	}
+	const root = path.resolve(service.configPath);
+	const child = (relativePath: string): string => {
+		const candidate = path.resolve(root, relativePath);
+		const relative = path.relative(root, candidate);
+		if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+			throw new Error('Local returned an unsafe compiled Apache path.');
+		}
+		return candidate;
+	};
 	return {
-		include: path.join(service.configPath, 'includes', 'local-media-proxy.conf'),
-		main: path.join(service.configPath, 'apache2.conf'),
-		modules: path.join(service.configPath, 'modules.conf'),
-		site: path.join(service.configPath, 'site.conf'),
+		include: child(path.join('includes', 'local-media-proxy.conf')),
+		main: child('apache2.conf'),
+		modules: child('modules.conf'),
+		site: child('site.conf'),
 	};
 }
 
-async function readApacheMasterPid(service: ApacheRuntimeService): Promise<number> {
-	const pidText = await fs.readFile(path.join(service.runPath, 'logs', 'httpd.pid'), 'utf8');
+function compiledApacheSiteHasCanonicalManagedIncludes(
+	siteConfig: string,
+	expectedInclude: string,
+	compiledSitePath?: string,
+): boolean {
+	const normalizedConfig = siteConfig.replace(/\\/g, '/');
+	const normalizedInclude = expectedInclude.replace(/\\/g, '/');
+	const start = escapeRegularExpression(MANAGED_MARKER_START);
+	const end = escapeRegularExpression(MANAGED_MARKER_END);
+	const include = escapeRegularExpression(normalizedInclude);
+	const canonicalBlocks = normalizedConfig.match(new RegExp(
+		`^[\\t ]*${start}[\\t ]*\\r?\\n` +
+		`[\\t ]*Protocols[\\t ]+http/1\\.1[\\t ]*\\r?\\n` +
+		`[\\t ]*IncludeOptional[\\t ]+"${include}"[\\t ]*\\r?\\n` +
+		`[\\t ]*${end}[\\t ]*\\r?\\n` +
+		`[\\t ]*<\\/VirtualHost>[\\t ]*$`,
+		'gm',
+	)) ?? [];
+	const virtualHostCount = (normalizedConfig.match(/^[\t ]*<\/VirtualHost>[\t ]*$/gm) ?? []).length;
+	return virtualHostCount > 0 &&
+		canonicalBlocks.length === virtualHostCount &&
+		markerLineCount(normalizedConfig, MANAGED_MARKER_START) === canonicalBlocks.length &&
+		markerLineCount(normalizedConfig, MANAGED_MARKER_END) === canonicalBlocks.length &&
+		apacheIncludeReferenceCount(
+			normalizedConfig,
+			normalizedInclude,
+			compiledSitePath,
+		) === canonicalBlocks.length;
+}
+
+function apacheIncludeReferences(config: string): string[] {
+	return [...config.matchAll(
+		/^[\t ]*Include(?:Optional)?[\t ]+(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s\r\n]+))[\t ]*$/gmi,
+	)].map((match) => match[1] ?? match[2] ?? match[3]);
+}
+
+function apacheReferenceTargets(
+	reference: string,
+	expectedInclude: string,
+	sourceConfigPath?: string,
+): boolean {
+	const normalizedReference = reference.replace(/\\/g, '/');
+	const normalizedExpected = expectedInclude.replace(/\\/g, '/');
+	if (
+		normalizedReference === normalizedExpected ||
+		normalizedReference.endsWith(`/${normalizedExpected}`)
+	) {
+		return true;
+	}
+	if (!sourceConfigPath || !path.isAbsolute(expectedInclude)) {
+		return false;
+	}
+	const resolvedReference = path.isAbsolute(reference)
+		? path.normalize(reference)
+		: path.resolve(path.dirname(sourceConfigPath), reference);
+	return path.normalize(resolvedReference) === path.normalize(expectedInclude);
+}
+
+function apacheIncludeReferenceCount(
+	config: string,
+	expectedInclude: string,
+	sourceConfigPath?: string,
+): number {
+	return apacheIncludeReferences(config).filter((reference) => apacheReferenceTargets(
+		reference,
+		expectedInclude,
+		sourceConfigPath,
+	)).length;
+}
+
+function extractSingleManagedBlock(config: string): string | null {
+	const start = escapeRegularExpression(MANAGED_MARKER_START);
+	const end = escapeRegularExpression(MANAGED_MARKER_END);
+	const blocks = config.replace(/\r\n/g, '\n').match(new RegExp(
+		`^[\\t ]*${start}[\\t ]*\\r?\\n` +
+		`(?:(?!^[\\t ]*(?:${start}|${end})[\\t ]*$)[\\s\\S])+?` +
+		`^[\\t ]*${end}[\\t ]*$`,
+		'gm',
+	)) ?? [];
+	return blocks.length === 1 &&
+		markerLineCount(config, MANAGED_MARKER_START) === 1 &&
+		markerLineCount(config, MANAGED_MARKER_END) === 1
+		? blocks[0].trimEnd()
+		: null;
+}
+
+function compiledApacheModulesHaveExpectedManagedBlock(
+	modulesConfig: string,
+	expectedModulesTemplate: string,
+): boolean {
+	const actual = extractSingleManagedBlock(modulesConfig);
+	const expected = extractSingleManagedBlock(expectedModulesTemplate);
+	return actual !== null && expected !== null && actual === expected;
+}
+
+function apacheMainLoadsCompiledFiles(
+	mainConfig: string,
+	compiled: ApacheCompiledPaths,
+): boolean {
+	const references = apacheIncludeReferences(mainConfig);
+	const exactCount = (filePath: string): number => {
+		return references.filter((reference) => apacheReferenceTargets(
+			reference,
+			filePath,
+			compiled.main,
+		)).length;
+	};
+	return exactCount(compiled.modules) === 1 &&
+		exactCount(compiled.site) === 1 &&
+		exactCount(compiled.include) === 0;
+}
+
+async function assertCompiledApacheState(
+	service: ApacheRuntimeService,
+	expectedManagedInclude: string | null,
+	expectedManagedModules: string | null,
+	assertCurrent: () => void = (): void => undefined,
+	requireRunnableConfig = false,
+): Promise<void> {
+	assertCurrent();
+	const compiled = apacheCompiledPaths(service);
+	const [mainConfig, modulesConfig, siteConfig, includeConfig] = await Promise.all([
+		readOptionalCompiledFile(service.configPath, compiled.main, assertCurrent),
+		readOptionalCompiledFile(service.configPath, compiled.modules, assertCurrent),
+		readOptionalCompiledFile(service.configPath, compiled.site, assertCurrent),
+		readOptionalCompiledFile(service.configPath, compiled.include, assertCurrent),
+	]);
+	assertCurrent();
+	if (expectedManagedInclude !== null) {
+		if (
+			mainConfig === null ||
+			modulesConfig === null ||
+			siteConfig === null ||
+			expectedManagedModules === null ||
+			!apacheMainLoadsCompiledFiles(mainConfig, compiled) ||
+			!compiledApacheSiteHasCanonicalManagedIncludes(
+				siteConfig,
+				compiled.include,
+				compiled.site,
+			) ||
+			!compiledApacheModulesHaveExpectedManagedBlock(modulesConfig, expectedManagedModules) ||
+			apacheIncludeReferenceCount(modulesConfig, compiled.include, compiled.modules) > 0 ||
+			includeConfig !== expectedManagedInclude
+		) {
+			throw new Error('Local did not compile the expected managed Apache configuration.');
+		}
+		return;
+	}
+	if (
+		(requireRunnableConfig && (
+			mainConfig === null ||
+			modulesConfig === null ||
+			siteConfig === null ||
+			!apacheMainLoadsCompiledFiles(mainConfig, compiled)
+		)) ||
+		(siteConfig !== null && hasExactManagedMarker(siteConfig)) ||
+		(siteConfig !== null && apacheIncludeReferenceCount(
+			siteConfig,
+			compiled.include,
+			compiled.site,
+		) > 0) ||
+		(modulesConfig !== null && hasExactManagedMarker(modulesConfig)) ||
+		(modulesConfig !== null && apacheIncludeReferenceCount(
+			modulesConfig,
+			compiled.include,
+			compiled.modules,
+		) > 0) ||
+		includeConfig !== null
+	) {
+		throw new Error('Local retained a managed Apache configuration after cleanup.');
+	}
+}
+
+export async function apacheCompiledConfigMatches(
+	service: ApacheRuntimeService,
+	expectedManagedInclude: string | null,
+	expectedManagedModules: string | null,
+	assertCurrent: () => void = (): void => undefined,
+): Promise<boolean> {
+	try {
+		await assertCompiledApacheState(
+			service,
+			expectedManagedInclude,
+			expectedManagedModules,
+			assertCurrent,
+		);
+		return true;
+	} catch (error) {
+		if (isExpectedCompiledFileAbsence(error)) {
+			return expectedManagedInclude === null;
+		}
+		if (
+			error instanceof Error && (
+				error.message.startsWith('Local did not compile') ||
+				error.message === 'Local retained a managed Apache configuration after cleanup.'
+			)
+		) {
+			return false;
+		}
+		throw error;
+	}
+}
+
+async function readApacheMasterPid(
+	service: ApacheRuntimeService,
+	assertCurrent: () => void = (): void => undefined,
+): Promise<number> {
+	if (!service.runPath || !path.isAbsolute(service.runPath)) {
+		throw new Error('Local returned a relative Apache runtime root.');
+	}
+	const runRoot = await assertRealDirectoryPath(
+		service.runPath,
+		'Apache runtime root',
+		assertCurrent,
+	);
+	const pidFile = path.join(runRoot, 'logs', 'httpd.pid');
+	const relative = path.relative(runRoot, pidFile);
+	if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+		throw new Error('Local returned an unsafe Apache PID path.');
+	}
+	let current = runRoot;
+	const segments = relative.split(path.sep);
+	for (let index = 0; index < segments.length; index += 1) {
+		assertCurrent();
+		const metadata = await fs.lstat(current);
+		if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+			throw new Error('Local returned an unsafe Apache runtime path.');
+		}
+		current = path.join(current, segments[index]);
+	}
+	assertCurrent();
+	const pidMetadata = await fs.lstat(pidFile);
+	if (!pidMetadata.isFile() || pidMetadata.isSymbolicLink()) {
+		throw new Error('Local returned an unsafe Apache PID file.');
+	}
+	assertCurrent();
+	const pidText = await fs.readFile(pidFile, 'utf8');
+	assertCurrent();
 	if (!/^[1-9][0-9]*\s*$/.test(pidText)) {
 		throw new Error('invalid PID file contents');
 	}
@@ -445,44 +791,54 @@ export async function compileAndValidateApacheConfig(
 	configTemplates: ApacheConfigTemplates,
 	execFilePromise: ExecFilePromise,
 	expectManaged: boolean,
+	expectedManagedInclude?: string,
+	expectedManagedModules?: string,
+	assertCurrent: () => void = (): void => undefined,
 ): Promise<void> {
 	const httpdBinary = service.bin?.httpd;
 	if (!httpdBinary) {
 		throw new Error('Local did not provide an Apache httpd binary for this site.');
 	}
+	if (!path.isAbsolute(service.siteConfigTemplatePath)) {
+		throw new Error('Local returned a relative Apache template root.');
+	}
 
+	assertCurrent();
+	await assertRealDirectoryPath(
+		service.configPath,
+		'Apache compiled configuration root',
+		assertCurrent,
+	);
+	assertCurrent();
 	await configTemplates.compileConfigTemplates(
 		site,
 		service.siteConfigTemplatePath,
 		service.configPath,
 		service.configVariables,
 	);
+	assertCurrent();
 
 	const compiled = apacheCompiledPaths(service);
-	const [mainConfig, modulesConfig, siteConfig] = await Promise.all([
-		fs.readFile(compiled.main, 'utf8'),
-		fs.readFile(compiled.modules, 'utf8'),
-		fs.readFile(compiled.site, 'utf8'),
-	]);
-	if (expectManaged) {
-		const includeConfig = await fs.readFile(compiled.include, 'utf8');
-		if (
-			!hasApacheManagedBlock(siteConfig) ||
-			!hasApacheManagedBlock(modulesConfig) ||
-			!hasApacheManagedBlock(includeConfig) ||
-			!apacheConfigReferencesInclude(siteConfig, compiled.include)
-		) {
-			throw new Error('Local did not compile the complete managed Apache configuration.');
-		}
-	} else if (hasApacheManagedBlock(siteConfig) || hasApacheManagedBlock(modulesConfig)) {
-		throw new Error('Local retained a managed Apache include after cleanup.');
+	const expectedInclude = expectManaged ? expectedManagedInclude ?? null : null;
+	const expectedModules = expectManaged ? expectedManagedModules ?? null : null;
+	if (expectManaged && (expectedInclude === null || expectedModules === null)) {
+		throw new Error('Local did not compile the expected managed Apache configuration.');
 	}
+	await assertCompiledApacheState(
+		service,
+		expectedInclude,
+		expectedModules,
+		assertCurrent,
+		true,
+	);
 
+	assertCurrent();
 	await execFilePromise(
 		httpdBinary,
 		['-t', '-f', compiled.main],
 		apacheCommandOptions(service.env),
 	);
+	assertCurrent();
 }
 
 export async function refreshApacheService(
@@ -499,18 +855,27 @@ export async function refreshApacheService(
 	if (!httpdBinary) {
 		throw new Error('Local did not provide an Apache httpd binary for this site.');
 	}
+	const assertCurrent = refreshOptions.assertCurrent ?? ((): void => undefined);
 	await compileAndValidateApacheConfig(
 		site,
 		service,
 		configTemplates,
 		execFilePromise,
 		expectManaged,
+		refreshOptions.expectedManagedInclude,
+		refreshOptions.expectedManagedModules,
+		assertCurrent,
 	);
-	if (!isSiteRunning()) {
+	assertCurrent();
+	const siteRunning = isSiteRunning();
+	assertCurrent();
+	if (!siteRunning) {
 		return false;
 	}
 
-	if (!isServiceRunning()) {
+	const serviceRunning = isServiceRunning();
+	assertCurrent();
+	if (!serviceRunning) {
 		throw new Error(
 			"Local no longer reports this site's Apache service as running. Stop and start the site in Local, then retry.",
 		);
@@ -518,8 +883,17 @@ export async function refreshApacheService(
 
 	let masterPid: number;
 	try {
-		masterPid = await readApacheMasterPid(service);
+		assertCurrent();
+		masterPid = await readApacheMasterPid(service, assertCurrent);
+		assertCurrent();
 	} catch (cause) {
+		assertCurrent();
+		if (
+			cause instanceof Error &&
+			/^Local returned (?:an unsafe|a relative) Apache runtime/.test(cause.message)
+		) {
+			throw cause;
+		}
 		throw new Error(
 			"Local's Apache master PID is unavailable for this site. Stop and start the site in Local, then retry.",
 			{ cause },
@@ -527,7 +901,10 @@ export async function refreshApacheService(
 	}
 
 	const masterProcessExists = refreshOptions.masterProcessExists ?? apacheMasterProcessExists;
-	if (!masterProcessExists(masterPid)) {
+	assertCurrent();
+	const masterIsRunning = masterProcessExists(masterPid);
+	assertCurrent();
+	if (!masterIsRunning) {
 		throw new Error(
 			"Local's Apache master PID is stale for this site. Stop and start the site in Local, then retry.",
 		);
@@ -535,22 +912,34 @@ export async function refreshApacheService(
 
 	const compiled = apacheCompiledPaths(service);
 	try {
+		assertCurrent();
 		await execFilePromise(
 			httpdBinary,
 			['-k', 'graceful', '-f', compiled.main],
 			apacheCommandOptions(service.env),
 		);
 	} catch (cause) {
+		assertCurrent();
+		if (
+			cause instanceof Error &&
+			/^Local returned (?:an unsafe|a relative) Apache runtime/.test(cause.message)
+		) {
+			throw cause;
+		}
 		throw new Error(
 			"Apache could not gracefully reload this site's validated configuration. Stop and start the site in Local, then retry.",
 			{ cause },
 		);
 	}
+	assertCurrent();
 
 	let reloadedMasterPid: number;
 	try {
-		reloadedMasterPid = await readApacheMasterPid(service);
+		assertCurrent();
+		reloadedMasterPid = await readApacheMasterPid(service, assertCurrent);
+		assertCurrent();
 	} catch (cause) {
+		assertCurrent();
 		throw new Error(
 			"Local's Apache master PID disappeared after the graceful reload. Stop and start the site in Local, then retry.",
 			{ cause },
@@ -569,12 +958,20 @@ export async function refreshApacheService(
 	}));
 	let running = false;
 	for (let attempt = 0; attempt < attempts; attempt += 1) {
-		if (isSiteRunning() && isServiceRunning() && masterProcessExists(masterPid)) {
+		assertCurrent();
+		const stillRunning = isSiteRunning();
+		assertCurrent();
+		const serviceStillRunning = isServiceRunning();
+		assertCurrent();
+		const masterStillRunning = masterProcessExists(masterPid);
+		assertCurrent();
+		if (stillRunning && serviceStillRunning && masterStillRunning) {
 			running = true;
 			break;
 		}
 		if (attempt < attempts - 1) {
 			await wait(intervalMs);
+			assertCurrent();
 		}
 	}
 	if (!running) {

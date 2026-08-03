@@ -44,7 +44,10 @@ export interface ApacheManagedPaths {
 
 export interface ServerManagedFileOptions {
 	apacheHttpdBinary?: string;
+	configPath?: string;
+	runPath?: string;
 	serverKind: Exclude<ServerKind, 'unsupported'>;
+	siteConfigTemplatePath?: string;
 }
 
 export type ManagedFileMutationGuard = () => void | Promise<void>;
@@ -55,31 +58,6 @@ export interface FileSnapshot {
 	/** Strip only this add-on's block if Local creates the core template after the snapshot. */
 	createdTemplateKind?: 'apache' | 'nginx';
 	filePath: string;
-}
-
-export function apacheSnapshotHasCompleteManagedConfig(
-	site: Local.Site,
-	snapshots: FileSnapshot[],
-): boolean {
-	try {
-		const paths = getApacheManagedPaths(site);
-		const content = (filePath: string): string | null => (
-			snapshots.find((snapshot) => snapshot.filePath === filePath)?.content?.toString('utf8') ?? null
-		);
-		const main = content(paths.siteTemplate);
-		const modules = content(paths.modulesTemplate);
-		const include = content(paths.includeTemplate);
-		return Boolean(
-			main && hasApacheManagedBlock(main) &&
-			modules && hasApacheManagedBlock(modules) &&
-			include && hasApacheManagedBlock(include),
-		);
-	} catch (error) {
-		if (isExpectedLifecycleFilesystemAbsence(error)) {
-			return false;
-		}
-		throw error;
-	}
 }
 
 function nearestExistingAncestor(candidatePath: string): string {
@@ -102,6 +80,23 @@ function nearestExistingAncestor(candidatePath: string): string {
 	}
 }
 
+function normalizedPathKey(filePath: string): string {
+	const normalized = path.normalize(filePath);
+	return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+function uniquePaths(paths: string[]): string[] {
+	const seen = new Set<string>();
+	return paths.filter((filePath) => {
+		const key = normalizedPathKey(filePath);
+		if (seen.has(key)) {
+			return false;
+		}
+		seen.add(key);
+		return true;
+	});
+}
+
 function ensureInsideSite(siteRoot: string, candidatePath: string): string {
 	const relative = path.relative(siteRoot, candidatePath);
 	if (relative.startsWith('..') || path.isAbsolute(relative)) {
@@ -121,18 +116,75 @@ function ensureInsideSite(siteRoot: string, candidatePath: string): string {
 	if (realRelative.startsWith('..') || path.isAbsolute(realRelative)) {
 		throw new Error('Local returned an unsafe web-server configuration path through a symbolic link.');
 	}
+	let currentPath = siteRoot;
+	const segments = path.relative(siteRoot, candidatePath).split(path.sep).filter(Boolean);
+	for (const segment of segments) {
+		currentPath = path.join(currentPath, segment);
+		try {
+			const metadata = fsSync.lstatSync(currentPath);
+			if (metadata.isSymbolicLink()) {
+				throw new Error('Local returned an unsafe symbolic link in a web-server configuration path.');
+			}
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+				break;
+			}
+			throw error;
+		}
+	}
 
 	return candidatePath;
 }
 
-export function getManagedPaths(site: Local.Site): ManagedPaths {
-	const siteRoot = path.resolve(site.longPath);
+function configuredTemplatesRoot(site: Local.Site, siteRoot: string): string {
 	const configuredTemplatesPath = (site as Local.Site & {
-		paths?: { confTemplates?: string };
+		paths?: { confTemplates?: unknown };
 	}).paths?.confTemplates;
-	const templatesRoot = path.resolve(configuredTemplatesPath || path.join(siteRoot, 'conf'));
-	const nginxRoot = ensureInsideSite(siteRoot, path.join(templatesRoot, 'nginx'));
+	if (configuredTemplatesPath !== undefined && typeof configuredTemplatesPath !== 'string') {
+		throw new Error('Local returned an invalid web-server template root.');
+	}
+	if (typeof configuredTemplatesPath === 'string' && !path.isAbsolute(configuredTemplatesPath)) {
+		throw new Error('Local returned a relative web-server template root.');
+	}
+	return path.resolve(configuredTemplatesPath || path.join(siteRoot, 'conf'));
+}
 
+function safeServiceRoot(
+	siteRoot: string,
+	configuredPath: string | undefined,
+	description: string,
+): string | undefined {
+	if (configuredPath === undefined) {
+		return undefined;
+	}
+	if (!configuredPath || !path.isAbsolute(configuredPath)) {
+		throw new Error(`Local returned a relative or empty ${description}.`);
+	}
+	return ensureInsideSite(siteRoot, path.resolve(configuredPath));
+}
+
+function managedTemplateRoots(
+	site: Local.Site,
+	serverKind: Exclude<ServerKind, 'unsupported'>,
+	options?: ServerManagedFileOptions,
+): string[] {
+	const siteRoot = path.resolve(site.longPath);
+	const templatesRoot = configuredTemplatesRoot(site, siteRoot);
+	const activeRoot = options?.serverKind === serverKind
+		? safeServiceRoot(
+			siteRoot,
+			options.siteConfigTemplatePath,
+			`${serverKind} site template root`,
+		)
+		: undefined;
+	return uniquePaths([
+		...(activeRoot ? [activeRoot] : []),
+		ensureInsideSite(siteRoot, path.join(templatesRoot, serverKind)),
+		ensureInsideSite(siteRoot, path.join(siteRoot, 'conf', serverKind)),
+	]);
+}
+
+function nginxManagedPathsForRoot(siteRoot: string, nginxRoot: string): ManagedPaths {
 	return {
 		includeTemplate: ensureInsideSite(
 			siteRoot,
@@ -143,14 +195,7 @@ export function getManagedPaths(site: Local.Site): ManagedPaths {
 	};
 }
 
-export function getApacheManagedPaths(site: Local.Site): ApacheManagedPaths {
-	const siteRoot = path.resolve(site.longPath);
-	const configuredTemplatesPath = (site as Local.Site & {
-		paths?: { confTemplates?: string };
-	}).paths?.confTemplates;
-	const templatesRoot = path.resolve(configuredTemplatesPath || path.join(siteRoot, 'conf'));
-	const apacheRoot = ensureInsideSite(siteRoot, path.join(templatesRoot, 'apache'));
-
+function apacheManagedPathsForRoot(siteRoot: string, apacheRoot: string): ApacheManagedPaths {
 	return {
 		includeTemplate: ensureInsideSite(
 			siteRoot,
@@ -162,6 +207,75 @@ export function getApacheManagedPaths(site: Local.Site): ApacheManagedPaths {
 	};
 }
 
+function getManagedPathCandidates(
+	site: Local.Site,
+	options?: ServerManagedFileOptions,
+): ManagedPaths[] {
+	const siteRoot = path.resolve(site.longPath);
+	return managedTemplateRoots(site, 'nginx', options)
+		.map((root) => nginxManagedPathsForRoot(siteRoot, root));
+}
+
+function getApacheManagedPathCandidates(
+	site: Local.Site,
+	options?: ServerManagedFileOptions,
+): ApacheManagedPaths[] {
+	const siteRoot = path.resolve(site.longPath);
+	return managedTemplateRoots(site, 'apache', options)
+		.map((root) => apacheManagedPathsForRoot(siteRoot, root));
+}
+
+export function getManagedPaths(
+	site: Local.Site,
+	options?: ServerManagedFileOptions,
+): ManagedPaths {
+	const [active] = getManagedPathCandidates(site, options);
+	if (!active) {
+		throw new Error('Local did not provide a safe Nginx template root.');
+	}
+
+	return active;
+}
+
+export function getApacheManagedPaths(
+	site: Local.Site,
+	options?: ServerManagedFileOptions,
+): ApacheManagedPaths {
+	const [active] = getApacheManagedPathCandidates(site, options);
+	if (!active) {
+		throw new Error('Local did not provide a safe Apache template root.');
+	}
+
+	return active;
+}
+
+export function getSafeServerConfigPath(
+	_site: Local.Site,
+	options: ServerManagedFileOptions,
+): string {
+	if (!options.configPath || !path.isAbsolute(options.configPath)) {
+		throw new Error(`Local did not provide the ${options.serverKind} compiled configuration root.`);
+	}
+	const configPath = path.resolve(options.configPath);
+	let currentPath = path.parse(configPath).root;
+	for (const segment of path.relative(currentPath, configPath).split(path.sep).filter(Boolean)) {
+		const metadata = fsSync.lstatSync(currentPath);
+		if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+			throw new Error(
+				`Local returned an unsafe ${options.serverKind} compiled configuration root.`,
+			);
+		}
+		currentPath = path.join(currentPath, segment);
+	}
+	const metadata = fsSync.lstatSync(currentPath);
+	if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+		throw new Error(
+			`Local returned an unsafe ${options.serverKind} compiled configuration root.`,
+		);
+	}
+	return configPath;
+}
+
 function isExpectedLifecycleFilesystemAbsence(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException).code;
 	return code === 'ENOENT' || code === 'ENOTDIR' || code === 'ESTALE';
@@ -169,7 +283,8 @@ function isExpectedLifecycleFilesystemAbsence(error: unknown): boolean {
 
 function isRegularFile(filePath: string): boolean {
 	try {
-		return fsSync.statSync(filePath).isFile();
+		const metadata = fsSync.lstatSync(filePath);
+		return metadata.isFile() && !metadata.isSymbolicLink();
 	} catch (error) {
 		if (isExpectedLifecycleFilesystemAbsence(error)) {
 			return false;
@@ -219,6 +334,7 @@ function allManagedParentsReady(paths: ManagedPaths | ApacheManagedPaths): boole
 export function serverManagedFilesystemReady(
 	site: Local.Site,
 	serverKind: ServerKind,
+	options?: ServerManagedFileOptions,
 ): boolean {
 	if (serverKind === 'unsupported' || !site.longPath) {
 		return false;
@@ -226,8 +342,20 @@ export function serverManagedFilesystemReady(
 
 	try {
 		const siteRoot = path.resolve(site.longPath);
+		if (
+			options && (
+				options.configPath !== undefined ||
+				options.siteConfigTemplatePath !== undefined
+			) && (
+				options.serverKind !== serverKind ||
+				options.siteConfigTemplatePath === undefined ||
+				!isRealDirectory(getSafeServerConfigPath(site, options))
+			)
+		) {
+			return false;
+		}
 		if (serverKind === 'nginx') {
-			const paths = getManagedPaths(site);
+			const paths = getManagedPaths(site, options);
 			return (
 				isRealDirectory(siteRoot) &&
 				isRegularFile(paths.siteTemplate) &&
@@ -235,7 +363,7 @@ export function serverManagedFilesystemReady(
 			);
 		}
 
-		const paths = getApacheManagedPaths(site);
+		const paths = getApacheManagedPaths(site, options);
 		const apacheRoot = path.dirname(paths.siteTemplate);
 		const managedIncludesRoot = path.dirname(paths.includeTemplate);
 		return (
@@ -256,8 +384,9 @@ export function serverManagedFilesystemReady(
 function assertServerManagedFilesystemReady(
 	site: Local.Site,
 	serverKind: Exclude<ServerKind, 'unsupported'>,
+	options?: ServerManagedFileOptions,
 ): void {
-	if (!serverManagedFilesystemReady(site, serverKind)) {
+	if (!serverManagedFilesystemReady(site, serverKind, options)) {
 		throw new Error('Local has not finished creating this site web-server configuration.');
 	}
 }
@@ -360,11 +489,12 @@ async function ensureApacheManagedIncludesDirectory(
 	site: Local.Site,
 	paths: ApacheManagedPaths,
 	assertCurrent?: ManagedFileMutationGuard,
+	options?: ServerManagedFileOptions,
 ): Promise<void> {
 	const directoryPath = path.dirname(paths.includeTemplate);
 
 	await runMutationGuard(assertCurrent);
-	assertServerManagedFilesystemReady(site, 'apache');
+	assertServerManagedFilesystemReady(site, 'apache', options);
 	try {
 		const metadata = await fs.lstat(directoryPath);
 		if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
@@ -378,7 +508,7 @@ async function ensureApacheManagedIncludesDirectory(
 	}
 
 	await runMutationGuard(assertCurrent);
-	assertServerManagedFilesystemReady(site, 'apache');
+	assertServerManagedFilesystemReady(site, 'apache', options);
 	try {
 		await fs.mkdir(directoryPath, { mode: 0o755 });
 	} catch (error) {
@@ -394,7 +524,7 @@ async function ensureApacheManagedIncludesDirectory(
 	// Leave an empty managed directory behind if the next guard closes. Local may
 	// have replaced this root, so path-based cleanup could escape the site.
 	await runMutationGuard(assertCurrent);
-	assertServerManagedFilesystemReady(site, 'apache');
+	assertServerManagedFilesystemReady(site, 'apache', options);
 }
 
 function removeTemporaryFile(filePath: string): Promise<void> {
@@ -528,13 +658,19 @@ function atomicWriteSync(
 export async function captureManagedFiles(
 	site: Local.Site,
 	assertCurrent?: ManagedFileMutationGuard,
+	options?: ServerManagedFileOptions,
 ): Promise<FileSnapshot[]> {
-	const paths = await runGuardedRead(assertCurrent, () => getManagedPaths(site));
-	const snapshots = [
+	const pathCandidates = await runGuardedRead(
+		assertCurrent,
+		() => getManagedPathCandidates(site, options),
+	);
+	const snapshots = pathCandidates.flatMap((paths) => [
 		{ filePath: paths.includeTemplate },
 		{ createdTemplateKind: 'nginx' as const, filePath: paths.siteTemplate },
 		{ filePath: paths.trustBundle },
-	];
+	]).filter((snapshot, index, all) => (
+		all.findIndex((candidate) => candidate.filePath === snapshot.filePath) === index
+	));
 	const captured: FileSnapshot[] = [];
 	for (const snapshot of snapshots) {
 		captured.push({
@@ -593,18 +729,31 @@ export async function restoreManagedFiles(
 export async function captureAllManagedFiles(
 	site: Local.Site,
 	assertCurrent?: ManagedFileMutationGuard,
+	options?: ServerManagedFileOptions,
 ): Promise<FileSnapshot[]> {
-	const nginx = await runGuardedRead(assertCurrent, () => getManagedPaths(site));
-	const apache = await runGuardedRead(assertCurrent, () => getApacheManagedPaths(site));
+	const nginx = await runGuardedRead(
+		assertCurrent,
+		() => getManagedPathCandidates(site, options),
+	);
+	const apache = await runGuardedRead(
+		assertCurrent,
+		() => getApacheManagedPathCandidates(site, options),
+	);
 	const snapshots = [
-		{ filePath: nginx.includeTemplate },
-		{ createdTemplateKind: 'nginx' as const, filePath: nginx.siteTemplate },
-		{ filePath: nginx.trustBundle },
-		{ filePath: apache.includeTemplate },
-		{ createdTemplateKind: 'apache' as const, filePath: apache.modulesTemplate },
-		{ createdTemplateKind: 'apache' as const, filePath: apache.siteTemplate },
-		{ filePath: apache.trustBundle },
-	];
+		...nginx.flatMap((paths) => [
+			{ filePath: paths.includeTemplate },
+			{ createdTemplateKind: 'nginx' as const, filePath: paths.siteTemplate },
+			{ filePath: paths.trustBundle },
+		]),
+		...apache.flatMap((paths) => [
+			{ filePath: paths.includeTemplate },
+			{ createdTemplateKind: 'apache' as const, filePath: paths.modulesTemplate },
+			{ createdTemplateKind: 'apache' as const, filePath: paths.siteTemplate },
+			{ filePath: paths.trustBundle },
+		]),
+	].filter((snapshot, index, all) => (
+		all.findIndex((candidate) => candidate.filePath === snapshot.filePath) === index
+	));
 	const captured: FileSnapshot[] = [];
 	for (const snapshot of snapshots) {
 		captured.push({
@@ -620,9 +769,10 @@ export async function applyManagedFiles(
 	origin: NormalizedOrigin,
 	trustedCertificateAuthoritiesPem?: string,
 	assertCurrent?: ManagedFileMutationGuard,
+	options?: ServerManagedFileOptions,
 ): Promise<boolean> {
-	assertServerManagedFilesystemReady(site, 'nginx');
-	const paths = getManagedPaths(site);
+	assertServerManagedFilesystemReady(site, 'nginx', options);
+	const paths = getManagedPaths(site, options);
 	const originalSiteTemplate = await fs.readFile(paths.siteTemplate, 'utf8');
 	const nextSiteTemplate = upsertManagedInclude(originalSiteTemplate);
 	const nextInclude = buildManagedNginxConfig(
@@ -648,40 +798,50 @@ export async function applyManagedFiles(
 	return changed;
 }
 
+async function removeManagedFilesAtPaths(
+	pathCandidates: ManagedPaths[],
+	assertCurrent?: ManagedFileMutationGuard,
+): Promise<boolean> {
+	let changed = false;
+	for (const paths of pathCandidates) {
+		try {
+			const currentSiteTemplate = await fs.readFile(paths.siteTemplate, 'utf8');
+			const nextSiteTemplate = removeManagedInclude(currentSiteTemplate);
+			if (nextSiteTemplate !== currentSiteTemplate) {
+				changed = await writeIfChanged(
+					paths.siteTemplate,
+					nextSiteTemplate,
+					assertCurrent,
+				) || changed;
+			}
+		} catch (error) {
+			if (!isExpectedLifecycleFilesystemAbsence(error)) {
+				throw error;
+			}
+		}
+
+		changed = await removeIfPresent(paths.includeTemplate, assertCurrent) || changed;
+		changed = await removeIfPresent(paths.trustBundle, assertCurrent) || changed;
+	}
+	return changed;
+}
+
 export async function removeManagedFiles(
 	site: Local.Site,
 	assertCurrent?: ManagedFileMutationGuard,
+	options?: ServerManagedFileOptions,
 ): Promise<boolean> {
-	let paths: ManagedPaths;
 	try {
-		paths = getManagedPaths(site);
+		return await removeManagedFilesAtPaths(
+			getManagedPathCandidates(site, options),
+			assertCurrent,
+		);
 	} catch (error) {
 		if (isExpectedLifecycleFilesystemAbsence(error)) {
 			return false;
 		}
 		throw error;
 	}
-	let changed = false;
-
-	try {
-		const currentSiteTemplate = await fs.readFile(paths.siteTemplate, 'utf8');
-		const nextSiteTemplate = removeManagedInclude(currentSiteTemplate);
-		if (nextSiteTemplate !== currentSiteTemplate) {
-			changed = await writeIfChanged(
-				paths.siteTemplate,
-				nextSiteTemplate,
-				assertCurrent,
-			) || changed;
-		}
-	} catch (error) {
-		if (!isExpectedLifecycleFilesystemAbsence(error)) {
-			throw error;
-		}
-	}
-
-	changed = await removeIfPresent(paths.includeTemplate, assertCurrent) || changed;
-	changed = await removeIfPresent(paths.trustBundle, assertCurrent) || changed;
-	return changed;
 }
 
 async function applyApacheManagedFiles(
@@ -690,9 +850,10 @@ async function applyApacheManagedFiles(
 	httpdBinary: string,
 	trustedCertificateAuthoritiesPem?: string,
 	assertCurrent?: ManagedFileMutationGuard,
+	options?: ServerManagedFileOptions,
 ): Promise<boolean> {
-	assertServerManagedFilesystemReady(site, 'apache');
-	const paths = getApacheManagedPaths(site);
+	assertServerManagedFilesystemReady(site, 'apache', options);
+	const paths = getApacheManagedPaths(site, options);
 	const [originalSiteTemplate, originalModulesTemplate] = await Promise.all([
 		fs.readFile(paths.siteTemplate, 'utf8'),
 		fs.readFile(paths.modulesTemplate, 'utf8'),
@@ -708,7 +869,7 @@ async function applyApacheManagedFiles(
 		origin.protocol === 'https:' ? normalizePathForNginx(paths.trustBundle) : undefined,
 	);
 	assertHttpsTrustBundleAvailable(origin, trustedCertificateAuthoritiesPem);
-	await ensureApacheManagedIncludesDirectory(site, paths, assertCurrent);
+	await ensureApacheManagedIncludesDirectory(site, paths, assertCurrent, options);
 
 	let changed = false;
 	if (origin.protocol === 'https:') {
@@ -730,44 +891,56 @@ async function applyApacheManagedFiles(
 	return changed;
 }
 
+async function removeApacheManagedFilesAtPaths(
+	pathCandidates: ApacheManagedPaths[],
+	assertCurrent?: ManagedFileMutationGuard,
+): Promise<boolean> {
+	let changed = false;
+	for (const paths of pathCandidates) {
+		for (const templatePath of [paths.siteTemplate, paths.modulesTemplate]) {
+			try {
+				const current = await fs.readFile(templatePath, 'utf8');
+				const next = removeApacheManagedBlock(current);
+				if (next !== current) {
+					changed = await writeIfChanged(templatePath, next, assertCurrent) || changed;
+				}
+			} catch (error) {
+				if (!isExpectedLifecycleFilesystemAbsence(error)) {
+					throw error;
+				}
+			}
+		}
+		changed = await removeIfPresent(paths.includeTemplate, assertCurrent) || changed;
+		changed = await removeIfPresent(paths.trustBundle, assertCurrent) || changed;
+	}
+	return changed;
+}
+
 async function removeApacheManagedFiles(
 	site: Local.Site,
 	assertCurrent?: ManagedFileMutationGuard,
+	options?: ServerManagedFileOptions,
 ): Promise<boolean> {
-	let paths: ApacheManagedPaths;
 	try {
-		paths = getApacheManagedPaths(site);
+		return await removeApacheManagedFilesAtPaths(
+			getApacheManagedPathCandidates(site, options),
+			assertCurrent,
+		);
 	} catch (error) {
 		if (isExpectedLifecycleFilesystemAbsence(error)) {
 			return false;
 		}
 		throw error;
 	}
-	let changed = false;
-	for (const templatePath of [paths.siteTemplate, paths.modulesTemplate]) {
-		try {
-			const current = await fs.readFile(templatePath, 'utf8');
-			const next = removeApacheManagedBlock(current);
-			if (next !== current) {
-				changed = await writeIfChanged(templatePath, next, assertCurrent) || changed;
-			}
-		} catch (error) {
-			if (!isExpectedLifecycleFilesystemAbsence(error)) {
-				throw error;
-			}
-		}
-	}
-	changed = await removeIfPresent(paths.includeTemplate, assertCurrent) || changed;
-	changed = await removeIfPresent(paths.trustBundle, assertCurrent) || changed;
-	return changed;
 }
 
 export async function removeAllManagedFiles(
 	site: Local.Site,
 	assertCurrent?: ManagedFileMutationGuard,
+	options?: ServerManagedFileOptions,
 ): Promise<boolean> {
-	const nginxChanged = await removeManagedFiles(site, assertCurrent);
-	const apacheChanged = await removeApacheManagedFiles(site, assertCurrent);
+	const nginxChanged = await removeManagedFiles(site, assertCurrent, options);
+	const apacheChanged = await removeApacheManagedFiles(site, assertCurrent, options);
 	return nginxChanged || apacheChanged;
 }
 
@@ -778,7 +951,7 @@ export async function applyServerManagedFiles(
 	trustedCertificateAuthoritiesPem?: string,
 	assertCurrent?: ManagedFileMutationGuard,
 ): Promise<boolean> {
-	assertServerManagedFilesystemReady(site, options.serverKind);
+	assertServerManagedFilesystemReady(site, options.serverKind, options);
 	assertHttpsTrustBundleAvailable(origin, trustedCertificateAuthoritiesPem);
 	let apacheHttpdBinary: string | undefined;
 	if (options.serverKind === 'apache') {
@@ -792,96 +965,52 @@ export async function applyServerManagedFiles(
 		);
 	}
 	if (options.serverKind === 'nginx') {
-		let changed = await removeApacheManagedFiles(site, assertCurrent);
+		let changed = await removeApacheManagedFiles(site, assertCurrent, options);
+		const activePaths = getManagedPaths(site, options);
+		changed = await removeManagedFilesAtPaths(
+			getManagedPathCandidates(site, options).filter((paths) => (
+				paths.siteTemplate !== activePaths.siteTemplate
+			)),
+			assertCurrent,
+		) || changed;
 		changed = await applyManagedFiles(
 			site,
 			origin,
 			trustedCertificateAuthoritiesPem,
 			assertCurrent,
+			options,
 		) || changed;
 		return changed;
 	}
-	const changed = await removeManagedFiles(site, assertCurrent);
+	let changed = await removeManagedFiles(site, assertCurrent, options);
+	const activePaths = getApacheManagedPaths(site, options);
+	changed = await removeApacheManagedFilesAtPaths(
+		getApacheManagedPathCandidates(site, options).filter((paths) => (
+			paths.siteTemplate !== activePaths.siteTemplate
+		)),
+		assertCurrent,
+	) || changed;
 	return await applyApacheManagedFiles(
 		site,
 		origin,
 		apacheHttpdBinary as string,
 		trustedCertificateAuthoritiesPem,
 		assertCurrent,
+		options,
 	) || changed;
 }
 
-export function removeManagedFilesSync(
-	site: Local.Site,
+function removeManagedFilesAtPathsSync(
+	pathCandidates: ManagedPaths[],
 	assertCurrent?: ManagedFileMutationGuardSync,
 ): boolean {
-	let paths: ManagedPaths;
-	try {
-		paths = getManagedPaths(site);
-	} catch (error) {
-		if (isExpectedLifecycleFilesystemAbsence(error)) {
-			return false;
-		}
-		throw error;
-	}
 	let changed = false;
-
-	try {
-		const currentSiteTemplate = fsSync.readFileSync(paths.siteTemplate, 'utf8');
-		const nextSiteTemplate = removeManagedInclude(currentSiteTemplate);
-		if (nextSiteTemplate !== currentSiteTemplate) {
-			atomicWriteSync(paths.siteTemplate, nextSiteTemplate, assertCurrent);
-			changed = true;
-		}
-	} catch (error) {
-		if (!isExpectedLifecycleFilesystemAbsence(error)) {
-			throw error;
-		}
-	}
-
-	for (const filePath of [paths.includeTemplate, paths.trustBundle]) {
+	for (const paths of pathCandidates) {
 		try {
-			fsSync.lstatSync(filePath);
-		} catch (error) {
-			if (isExpectedLifecycleFilesystemAbsence(error)) {
-				continue;
-			}
-			throw error;
-		}
-		assertCurrent?.();
-		try {
-			fsSync.unlinkSync(filePath);
-			changed = true;
-		} catch (error) {
-			if (!isExpectedLifecycleFilesystemAbsence(error)) {
-				throw error;
-			}
-		}
-	}
-
-	return changed;
-}
-
-export function removeAllManagedFilesSync(
-	site: Local.Site,
-	assertCurrent?: ManagedFileMutationGuardSync,
-): boolean {
-	let changed = removeManagedFilesSync(site, assertCurrent);
-	let paths: ApacheManagedPaths;
-	try {
-		paths = getApacheManagedPaths(site);
-	} catch (error) {
-		if (isExpectedLifecycleFilesystemAbsence(error)) {
-			return changed;
-		}
-		throw error;
-	}
-	for (const templatePath of [paths.siteTemplate, paths.modulesTemplate]) {
-		try {
-			const current = fsSync.readFileSync(templatePath, 'utf8');
-			const next = removeApacheManagedBlock(current);
-			if (next !== current) {
-				atomicWriteSync(templatePath, next, assertCurrent);
+			const currentSiteTemplate = fsSync.readFileSync(paths.siteTemplate, 'utf8');
+			const nextSiteTemplate = removeManagedInclude(currentSiteTemplate);
+			if (nextSiteTemplate !== currentSiteTemplate) {
+				atomicWriteSync(paths.siteTemplate, nextSiteTemplate, assertCurrent);
 				changed = true;
 			}
 		} catch (error) {
@@ -889,44 +1018,132 @@ export function removeAllManagedFilesSync(
 				throw error;
 			}
 		}
-	}
-	for (const filePath of [paths.includeTemplate, paths.trustBundle]) {
-		try {
-			fsSync.lstatSync(filePath);
-		} catch (error) {
-			if (isExpectedLifecycleFilesystemAbsence(error)) {
-				continue;
-			}
-			throw error;
-		}
-		assertCurrent?.();
-		try {
-			fsSync.unlinkSync(filePath);
-			changed = true;
-		} catch (error) {
-			if (!isExpectedLifecycleFilesystemAbsence(error)) {
+
+		for (const filePath of [paths.includeTemplate, paths.trustBundle]) {
+			try {
+				fsSync.lstatSync(filePath);
+			} catch (error) {
+				if (isExpectedLifecycleFilesystemAbsence(error)) {
+					continue;
+				}
 				throw error;
+			}
+			assertCurrent?.();
+			try {
+				fsSync.unlinkSync(filePath);
+				changed = true;
+			} catch (error) {
+				if (!isExpectedLifecycleFilesystemAbsence(error)) {
+					throw error;
+				}
 			}
 		}
 	}
 	return changed;
 }
 
-export async function managedArtifactsExist(
+export function removeManagedFilesSync(
 	site: Local.Site,
+	assertCurrent?: ManagedFileMutationGuardSync,
+	options?: ServerManagedFileOptions,
+): boolean {
+	try {
+		return removeManagedFilesAtPathsSync(
+			getManagedPathCandidates(site, options),
+			assertCurrent,
+		);
+	} catch (error) {
+		if (isExpectedLifecycleFilesystemAbsence(error)) {
+			return false;
+		}
+		throw error;
+	}
+}
+
+export function removeAllManagedFilesSync(
+	site: Local.Site,
+	assertCurrent?: ManagedFileMutationGuardSync,
+	options?: ServerManagedFileOptions,
+): boolean {
+	let changed = removeManagedFilesSync(site, assertCurrent, options);
+	let pathCandidates: ApacheManagedPaths[];
+	try {
+		pathCandidates = getApacheManagedPathCandidates(site, options);
+	} catch (error) {
+		if (isExpectedLifecycleFilesystemAbsence(error)) {
+			return changed;
+		}
+		throw error;
+	}
+	for (const paths of pathCandidates) {
+		for (const templatePath of [paths.siteTemplate, paths.modulesTemplate]) {
+			try {
+				const current = fsSync.readFileSync(templatePath, 'utf8');
+				const next = removeApacheManagedBlock(current);
+				if (next !== current) {
+					atomicWriteSync(templatePath, next, assertCurrent);
+					changed = true;
+				}
+			} catch (error) {
+				if (!isExpectedLifecycleFilesystemAbsence(error)) {
+					throw error;
+				}
+			}
+		}
+		for (const filePath of [paths.includeTemplate, paths.trustBundle]) {
+			try {
+				fsSync.lstatSync(filePath);
+			} catch (error) {
+				if (isExpectedLifecycleFilesystemAbsence(error)) {
+					continue;
+				}
+				throw error;
+			}
+			assertCurrent?.();
+			try {
+				fsSync.unlinkSync(filePath);
+				changed = true;
+			} catch (error) {
+				if (!isExpectedLifecycleFilesystemAbsence(error)) {
+					throw error;
+				}
+			}
+		}
+	}
+	return changed;
+}
+
+async function nginxArtifactsExistAtPaths(
+	pathCandidates: ManagedPaths[],
 	assertCurrent?: ManagedFileMutationGuard,
 ): Promise<boolean> {
-	try {
-		const paths = await runGuardedRead(assertCurrent, () => getManagedPaths(site));
+	for (const paths of pathCandidates) {
 		const siteTemplate = await readOptionalFile(paths.siteTemplate, assertCurrent);
 		const includeTemplate = await readOptionalFile(paths.includeTemplate, assertCurrent);
 		const trustBundle = await readOptionalFile(paths.trustBundle, assertCurrent);
 
-		return (
+		if (
 			(siteTemplate !== null && hasManagedInclude(siteTemplate.toString('utf8'))) ||
 			includeTemplate !== null ||
 			trustBundle !== null
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
+export async function managedArtifactsExist(
+	site: Local.Site,
+	assertCurrent?: ManagedFileMutationGuard,
+	options?: ServerManagedFileOptions,
+): Promise<boolean> {
+	try {
+		const pathCandidates = await runGuardedRead(
+			assertCurrent,
+			() => getManagedPathCandidates(site, options),
 		);
+		return await nginxArtifactsExistAtPaths(pathCandidates, assertCurrent);
 	} catch (error) {
 		if (isExpectedLifecycleFilesystemAbsence(error)) {
 			return false;
@@ -938,11 +1155,12 @@ export async function managedArtifactsExist(
 export async function allManagedArtifactsExist(
 	site: Local.Site,
 	assertCurrent?: ManagedFileMutationGuard,
+	options?: ServerManagedFileOptions,
 ): Promise<boolean> {
-	if (await managedArtifactsExist(site, assertCurrent)) {
+	if (await managedArtifactsExist(site, assertCurrent, options)) {
 		return true;
 	}
-	return apacheArtifactsExist(site, assertCurrent);
+	return apacheArtifactsExist(site, assertCurrent, options);
 }
 
 export async function managedFilesMatch(
@@ -950,9 +1168,17 @@ export async function managedFilesMatch(
 	origin: NormalizedOrigin,
 	trustedCertificateAuthoritiesPem?: string,
 	assertCurrent?: ManagedFileMutationGuard,
+	options?: ServerManagedFileOptions,
 ): Promise<boolean> {
 	try {
-		const paths = await runGuardedRead(assertCurrent, () => getManagedPaths(site));
+		const pathCandidates = await runGuardedRead(
+			assertCurrent,
+			() => getManagedPathCandidates(site, options),
+		);
+		const [paths, ...legacyPaths] = pathCandidates;
+		if (!paths) {
+			return false;
+		}
 		const siteTemplate = await runGuardedRead(
 			assertCurrent,
 			() => fs.readFile(paths.siteTemplate, 'utf8'),
@@ -978,7 +1204,8 @@ export async function managedFilesMatch(
 			hasManagedInclude(siteTemplate) &&
 			siteTemplate === expectedSiteTemplate &&
 			includeTemplate === expectedInclude &&
-			trustMatches
+			trustMatches &&
+			!await nginxArtifactsExistAtPaths(legacyPaths, assertCurrent)
 		);
 	} catch (error) {
 		if (isExpectedLifecycleFilesystemAbsence(error)) {
@@ -995,9 +1222,17 @@ async function apacheManagedFilesMatch(
 	httpdBinary: string,
 	trustedCertificateAuthoritiesPem?: string,
 	assertCurrent?: ManagedFileMutationGuard,
+	options?: ServerManagedFileOptions,
 ): Promise<boolean> {
 	try {
-		const paths = await runGuardedRead(assertCurrent, () => getApacheManagedPaths(site));
+		const pathCandidates = await runGuardedRead(
+			assertCurrent,
+			() => getApacheManagedPathCandidates(site, options),
+		);
+		const [paths, ...legacyPaths] = pathCandidates;
+		if (!paths) {
+			return false;
+		}
 		const siteTemplate = await runGuardedRead(
 			assertCurrent,
 			() => fs.readFile(paths.siteTemplate, 'utf8'),
@@ -1031,7 +1266,8 @@ async function apacheManagedFilesMatch(
 			siteTemplate === expectedSite &&
 			modulesTemplate === expectedModules &&
 			includeTemplate === expectedInclude &&
-			trustMatches
+			trustMatches &&
+			!await apacheArtifactsExistAtPaths(legacyPaths, assertCurrent)
 		);
 	} catch (error) {
 		if (isExpectedLifecycleFilesystemAbsence(error)) {
@@ -1054,7 +1290,8 @@ export async function serverManagedFilesMatch(
 			origin,
 			trustedCertificateAuthoritiesPem,
 			assertCurrent,
-		) && !await apacheArtifactsExist(site, assertCurrent);
+			options,
+		) && !await apacheArtifactsExist(site, assertCurrent, options);
 	}
 	if (!options.apacheHttpdBinary) {
 		return false;
@@ -1065,29 +1302,77 @@ export async function serverManagedFilesMatch(
 		options.apacheHttpdBinary,
 		trustedCertificateAuthoritiesPem,
 		assertCurrent,
-	) && !await managedArtifactsExist(site, assertCurrent);
+		options,
+	) && !await managedArtifactsExist(site, assertCurrent, options);
+}
+
+async function apacheArtifactsExistAtPaths(
+	pathCandidates: ApacheManagedPaths[],
+	assertCurrent?: ManagedFileMutationGuard,
+): Promise<boolean> {
+	for (const paths of pathCandidates) {
+		const siteTemplate = await readOptionalFile(paths.siteTemplate, assertCurrent);
+		const modulesTemplate = await readOptionalFile(paths.modulesTemplate, assertCurrent);
+		const includeTemplate = await readOptionalFile(paths.includeTemplate, assertCurrent);
+		const trustBundle = await readOptionalFile(paths.trustBundle, assertCurrent);
+		if (
+			(siteTemplate !== null && hasApacheManagedBlock(siteTemplate.toString('utf8'))) ||
+			(modulesTemplate !== null && hasApacheManagedBlock(modulesTemplate.toString('utf8'))) ||
+			includeTemplate !== null ||
+			trustBundle !== null
+		) {
+			return true;
+		}
+	}
+	return false;
 }
 
 async function apacheArtifactsExist(
 	site: Local.Site,
 	assertCurrent?: ManagedFileMutationGuard,
+	options?: ServerManagedFileOptions,
 ): Promise<boolean> {
 	try {
-		const paths = await runGuardedRead(assertCurrent, () => getApacheManagedPaths(site));
-		const siteTemplate = await readOptionalFile(paths.siteTemplate, assertCurrent);
-		const modulesTemplate = await readOptionalFile(paths.modulesTemplate, assertCurrent);
-		const includeTemplate = await readOptionalFile(paths.includeTemplate, assertCurrent);
-		const trustBundle = await readOptionalFile(paths.trustBundle, assertCurrent);
-		return (
-			(siteTemplate !== null && hasApacheManagedBlock(siteTemplate.toString('utf8'))) ||
-			(modulesTemplate !== null && hasApacheManagedBlock(modulesTemplate.toString('utf8'))) ||
-			includeTemplate !== null ||
-			trustBundle !== null
+		const pathCandidates = await runGuardedRead(
+			assertCurrent,
+			() => getApacheManagedPathCandidates(site, options),
 		);
+		return await apacheArtifactsExistAtPaths(pathCandidates, assertCurrent);
 	} catch (error) {
 		if (isExpectedLifecycleFilesystemAbsence(error)) {
 			return false;
 		}
 		throw error;
 	}
+}
+
+export async function readServerManagedIncludeTemplate(
+	site: Local.Site,
+	options: ServerManagedFileOptions,
+	assertCurrent?: ManagedFileMutationGuard,
+): Promise<string | null> {
+	const paths = await runGuardedRead(
+		assertCurrent,
+		() => options.serverKind === 'nginx'
+			? getManagedPaths(site, options)
+			: getApacheManagedPaths(site, options),
+	);
+	const content = await readOptionalFile(paths.includeTemplate, assertCurrent);
+	return content?.toString('utf8') ?? null;
+}
+
+export async function readApacheManagedModulesTemplate(
+	site: Local.Site,
+	options: ServerManagedFileOptions,
+	assertCurrent?: ManagedFileMutationGuard,
+): Promise<string | null> {
+	if (options.serverKind !== 'apache') {
+		return null;
+	}
+	const paths = await runGuardedRead(
+		assertCurrent,
+		() => getApacheManagedPaths(site, options),
+	);
+	const content = await readOptionalFile(paths.modulesTemplate, assertCurrent);
+	return content?.toString('utf8') ?? null;
 }

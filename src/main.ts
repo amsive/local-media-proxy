@@ -5,7 +5,9 @@
 
 import type * as Local from '@getflywheel/local';
 import * as LocalMain from '@getflywheel/local/main';
+import { createHash } from 'node:crypto';
 import {
+	apacheCompiledConfigMatches,
 	inspectApacheRuntimeCapabilities,
 	refreshApacheService,
 	type ApacheRuntimeService,
@@ -28,7 +30,10 @@ import {
 	type WpEngineOriginMetadata,
 	WpEngineVerificationUnavailableError,
 } from './hosting';
-import { reloadNginxWithFallback } from './nginx';
+import {
+	compileAndValidateNginxConfig,
+	nginxCompiledConfigMatches,
+} from './nginx';
 import {
 	cleanupRequiresRefresh,
 	completeUnresolvedServiceCleanup,
@@ -50,11 +55,12 @@ import {
 } from './origin';
 import {
 	allManagedArtifactsExist,
-	apacheSnapshotHasCompleteManagedConfig,
 	applyServerManagedFiles,
 	captureAllManagedFiles,
 	removeAllManagedFiles,
 	removeAllManagedFilesSync,
+	readApacheManagedModulesTemplate,
+	readServerManagedIncludeTemplate,
 	restoreManagedFiles,
 	serverManagedFilesystemReady,
 	serverManagedFilesMatch,
@@ -170,6 +176,51 @@ async function withSiteLock<T>(siteId: string, operation: () => Promise<T>): Pro
 	}
 }
 
+function stableRuntimeInput(value: unknown, ancestors = new Set<object>()): string {
+	if (value === null) {
+		return 'null';
+	}
+	if (typeof value === 'string') {
+		return `string:${JSON.stringify(value)}`;
+	}
+	if (typeof value === 'number') {
+		return `number:${Number.isNaN(value) ? 'NaN' : String(value)}`;
+	}
+	if (typeof value === 'boolean' || typeof value === 'bigint' || typeof value === 'undefined') {
+		return `${typeof value}:${String(value)}`;
+	}
+	if (typeof value === 'function' || typeof value === 'symbol') {
+		throw new Error('Local returned unsupported web-server compiler inputs.');
+	}
+	if (ancestors.has(value)) {
+		throw new Error('Local returned circular web-server compiler inputs.');
+	}
+	ancestors.add(value);
+	try {
+		if (Array.isArray(value)) {
+			return `array:[${value.map((entry) => stableRuntimeInput(entry, ancestors)).join(',')}]`;
+		}
+		const entries = Object.keys(value).sort().map((key) => (
+			`${JSON.stringify(key)}:${stableRuntimeInput((value as Record<string, unknown>)[key], ancestors)}`
+		));
+		return `object:{${entries.join(',')}}`;
+	} finally {
+		ancestors.delete(value);
+	}
+}
+
+function serviceInputsDigest(service: ApacheRuntimeService | null): string | null {
+	if (!service) {
+		return null;
+	}
+	return createHash('sha256')
+		.update(stableRuntimeInput({
+			configVariables: service.configVariables,
+			env: service.env,
+		}))
+		.digest('hex');
+}
+
 export default function main(context: LocalMain.AddonMainContext): void {
 	const { ipcMain } = context.electron;
 	const {
@@ -215,6 +266,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				? null
 				: server.service?.bin?.[executableName] ?? null,
 			runPath: server.service?.runPath ?? null,
+			serviceInputsDigest: serviceInputsDigest(server.service),
 			serverKind: server.kind,
 			serviceName: server.serviceName,
 			siteConfigTemplatePath: server.service?.siteConfigTemplatePath ?? null,
@@ -247,15 +299,22 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			if (!currentSite) {
 				return false;
 			}
-			const current = currentServerTransactionFingerprint(siteId);
+			const currentServer = resolveServer(currentSite);
+			const current = serverTransactionFingerprint(currentSite, currentServer);
 			if (
 				current === null ||
 				!serverTransactionFingerprintsMatch(expected, current)
 			) {
 				return false;
 			}
-			return expected.serverKind === 'unsupported' ||
-				serverManagedFilesystemReady(currentSite, expected.serverKind);
+			return expected.serverKind === 'unsupported' || (
+				currentServer.kind !== 'unsupported' &&
+				serverManagedFilesystemReady(
+					currentSite,
+					currentServer.kind,
+					managedFileOptions(currentServer),
+				)
+			);
 		} catch {
 			return false;
 		}
@@ -291,9 +350,13 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			if (!shouldReconcileManagedFiles(siteStatus)) {
 				return true;
 			}
-			const server = detectSiteServer(currentSite);
+			const server = resolveServer(currentSite);
 			return server.kind !== 'unsupported' &&
-				!serverManagedFilesystemReady(currentSite, server.kind);
+				!serverManagedFilesystemReady(
+					currentSite,
+					server.kind,
+					managedFileOptions(server),
+				);
 		} catch {
 			return true;
 		}
@@ -311,7 +374,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		}
 		if (
 			server.kind !== 'unsupported' &&
-			!serverManagedFilesystemReady(site, server.kind)
+			!serverManagedFilesystemReady(site, server.kind, managedFileOptions(server))
 		) {
 			throw new Error(
 				'Local has not finished preparing this site\'s web-server files. Wait for Local to finish, then retry.',
@@ -322,14 +385,20 @@ export default function main(context: LocalMain.AddonMainContext): void {
 
 	const managedFileOptions = (server: RuntimeServer): {
 		apacheHttpdBinary?: string;
+		configPath?: string;
+		runPath?: string;
 		serverKind: 'apache' | 'nginx';
+		siteConfigTemplatePath?: string;
 	} => {
 		if (server.kind === 'unsupported') {
 			throw new Error(server.reason || 'This site uses an unsupported web server.');
 		}
 		return {
 			apacheHttpdBinary: server.kind === 'apache' ? server.service?.bin?.httpd : undefined,
+			configPath: server.service?.configPath,
+			runPath: server.service?.runPath,
 			serverKind: server.kind,
+			siteConfigTemplatePath: server.service?.siteConfigTemplatePath,
 		};
 	};
 
@@ -371,10 +440,11 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		if (!shouldReconcileManagedFiles(siteStatus)) {
 			throw new Error(lifecycleUnavailableReason(siteStatus));
 		}
-		const server = detectSiteServer(site);
+		const server = resolveServer(site);
 		if (
 			server.kind !== 'unsupported' &&
-			!serverManagedFilesystemReady(site, server.kind)
+			server.service &&
+			!serverManagedFilesystemReady(site, server.kind, managedFileOptions(server))
 		) {
 			throw new Error(
 				'Local has not finished preparing this site\'s web-server files. Wait for Local to finish, then retry.',
@@ -513,6 +583,43 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		persistSettings(siteId, envelope);
 	};
 
+	const serverCompiledConfigMatches = async (
+		site: Local.Site,
+		server: RuntimeServer,
+		expectManaged: boolean,
+		assertCurrent: () => void = (): void => undefined,
+	): Promise<boolean> => {
+		assertCurrent();
+		if (server.kind === 'unsupported' || !server.service) {
+			return false;
+		}
+		const options = managedFileOptions(server);
+		const expectedManagedInclude = expectManaged
+			? await readServerManagedIncludeTemplate(site, options, assertCurrent)
+			: null;
+		const expectedManagedModules = expectManaged && server.kind === 'apache'
+			? await readApacheManagedModulesTemplate(site, options, assertCurrent)
+			: null;
+		if (
+			expectManaged && (
+				expectedManagedInclude === null ||
+				(server.kind === 'apache' && expectedManagedModules === null)
+			)
+		) {
+			return false;
+		}
+		const matches = server.kind === 'apache'
+			? await apacheCompiledConfigMatches(
+				server.service,
+				expectedManagedInclude,
+				expectedManagedModules,
+				assertCurrent,
+			)
+			: await nginxCompiledConfigMatches(server.service, expectedManagedInclude, assertCurrent);
+		assertCurrent();
+		return matches;
+	};
+
 	const compileAndReload = async (
 		site: Local.Site,
 		server: RuntimeServer,
@@ -523,6 +630,21 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		if (!server.serviceName || server.kind === 'unsupported' || !server.service) {
 			throw new Error(server.reason || 'Local could not load the web-server service for this site.');
 		}
+		const options = managedFileOptions(server);
+		const expectedManagedInclude = expectManaged
+			? await readServerManagedIncludeTemplate(site, options, assertCurrent)
+			: null;
+		const expectedManagedModules = expectManaged && server.kind === 'apache'
+			? await readApacheManagedModulesTemplate(site, options, assertCurrent)
+			: null;
+		if (
+			expectManaged && (
+				expectedManagedInclude === null ||
+				(server.kind === 'apache' && expectedManagedModules === null)
+			)
+		) {
+			throw new Error(`The managed ${server.kind} include template is unavailable.`);
+		}
 		const serviceName = server.serviceName;
 		if (server.kind === 'apache') {
 			const processName = 'httpd';
@@ -530,50 +652,61 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				assertCurrent();
 				return siteProcessManager.hasRunningProcess(site, processName);
 			};
+			const shouldRefreshApacheTarget = (): boolean => {
+				assertCurrent();
+				const siteStatus = siteProcessManager.getSiteStatus(site);
+				const targetWasRunning = targetServiceRunning();
+				if (siteStatus === 'running' && !targetWasRunning) {
+					throw new Error(
+						"Local no longer reports this site's Apache service as running. Stop and start the site in Local, then retry.",
+					);
+				}
+				return shouldRefreshRuntime(siteStatus, targetWasRunning);
+			};
 			const refreshed = await refreshApacheService(
 				site,
 				server.service,
 				configTemplates,
 				LocalMain.execFilePromise,
 				expectManaged,
-				() => shouldRefreshRuntime(
-					siteProcessManager.getSiteStatus(site),
-					targetServiceRunning(),
-				),
+				shouldRefreshApacheTarget,
 				targetServiceRunning,
+				{
+					assertCurrent,
+					expectedManagedInclude: expectedManagedInclude ?? undefined,
+					expectedManagedModules: expectedManagedModules ?? undefined,
+				},
 			);
 			assertCurrent();
 			return refreshed;
 		}
 
-		await configTemplates.compileServiceConfigs(site);
+		await compileAndValidateNginxConfig(
+			site,
+			server.service,
+			configTemplates,
+			LocalMain.execFilePromise,
+			expectedManagedInclude,
+			assertCurrent,
+		);
 		assertCurrent();
 		const targetServiceRunning = (): boolean => {
 			assertCurrent();
 			return siteProcessManager.hasRunningProcess(site, serviceName);
 		};
-		if (shouldRefreshRuntime(
-			siteProcessManager.getSiteStatus(site),
-			targetServiceRunning(),
-		)) {
-			const reloadResult = await reloadNginxWithFallback(
-				server.service,
-				LocalMain.execFilePromise,
-				async () => {
-					assertCurrent();
-					await siteProcessManager.restartSiteService(site, serviceName);
-					assertCurrent();
-					return siteProcessManager.hasRunningProcess(site, serviceName);
-				},
-				() => {
-					assertCurrent();
-					return siteProcessManager.getSiteStatus(site) === 'running' &&
-						siteProcessManager.hasRunningProcess(site);
-				},
+		const siteStatus = siteProcessManager.getSiteStatus(site);
+		const targetWasRunning = targetServiceRunning();
+		if (siteStatus === 'running' && !targetWasRunning) {
+			throw new Error(
+				"Local no longer reports this site's Nginx service as running. Stop and start the site in Local, then retry.",
 			);
+		}
+		if (shouldRefreshRuntime(siteStatus, targetWasRunning)) {
 			assertCurrent();
-			if (reloadResult === 'restarted') {
-				logger.log('warn', `Restarted the ${serviceName} service for site ${site.id} after its Nginx master PID became stale.`);
+			await siteProcessManager.restartSiteService(site, serviceName);
+			assertCurrent();
+			if (!siteProcessManager.hasRunningProcess(site, serviceName)) {
+				throw new Error('Local did not restart the targeted Nginx service with the validated configuration.');
 			}
 			return true;
 		}
@@ -663,7 +796,11 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					currentServer.kind !== server.kind ||
 					currentServer.serviceName !== server.serviceName ||
 					currentSite.longPath !== site.longPath ||
-					!serverManagedFilesystemReady(currentSite, currentServer.kind)
+					!serverManagedFilesystemReady(
+						currentSite,
+						currentServer.kind,
+						managedFileOptions(currentServer),
+					)
 				) {
 					return null;
 				}
@@ -719,12 +856,45 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				rollbackTarget?.server.serviceName &&
 				rollbackTarget.server.kind !== 'unsupported'
 			) {
+				let restoredManagedSourceMatches = false;
+				if (previousEnvelope.enabled) {
+					try {
+						const previousSettings = storedSettingsForServer(
+							previousEnvelope,
+							rollbackTarget.server.kind,
+						);
+						const previousOrigin = validateAndNormalizeOrigin(previousSettings, {
+							requiresOriginIp: rollbackTarget.server.requiresOriginIp,
+						});
+						const trustBundle = previousOrigin.protocol === 'https:'
+							? trustedCertificateAuthoritiesPem()
+							: undefined;
+						restoredManagedSourceMatches = await serverManagedFilesMatch(
+							rollbackTarget.site,
+							previousOrigin,
+							managedFileOptions(rollbackTarget.server),
+							trustBundle,
+							assertRollbackTransactionCurrent,
+						);
+					} catch (error) {
+						if (isServerTransactionChangedError(error)) {
+							throw error;
+						}
+						restoredManagedSourceMatches = false;
+					}
+				}
+				if (!restoredManagedSourceMatches) {
+					await removeAllManagedFiles(
+						rollbackTarget.site,
+						assertRollbackTransactionCurrent,
+						managedFileOptions(rollbackTarget.server),
+					);
+					assertRollbackTransactionCurrent();
+				}
 				await compileAndReload(
 					rollbackTarget.site,
 					rollbackTarget.server,
-					rollbackTarget.server.kind === 'apache'
-						? apacheSnapshotHasCompleteManagedConfig(rollbackTarget.site, snapshots)
-						: previousEnvelope.enabled,
+					restoredManagedSourceMatches,
 					assertRollbackTransactionCurrent,
 				);
 			}
@@ -810,9 +980,11 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			return lifecycleUnavailableSiteState(site, siteStatus);
 		}
 		const detectedServer = detectSiteServer(site);
+		const server = resolveServer(site);
 		if (
 			detectedServer.kind !== 'unsupported' &&
-			!serverManagedFilesystemReady(site, detectedServer.kind)
+			server.service &&
+			!serverManagedFilesystemReady(site, detectedServer.kind, managedFileOptions(server))
 		) {
 			return lifecycleUnavailableSiteState(
 				site,
@@ -820,7 +992,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				'Local has not finished preparing this site\'s web-server files. Media Proxy will remain inactive until they are ready.',
 			);
 		}
-		const server = resolveServer(site);
 		const transaction = serverTransactionFingerprint(site, server);
 		const assertSiteStateTransactionCurrent = (): void => {
 			if (!serverTransactionIsCurrent(siteId, transaction)) {
@@ -835,6 +1006,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		const managedArtifactsPresent = await allManagedArtifactsExist(
 			site,
 			assertSiteStateTransactionCurrent,
+			server.kind === 'unsupported' ? undefined : managedFileOptions(server),
 		);
 		const runtimeUnavailable = server.kind === 'unsupported' || !server.service;
 		let apacheCapabilities: Awaited<ReturnType<typeof inspectApacheRuntimeCapabilities>> | undefined;
@@ -886,6 +1058,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		}
 		const canEnable = server.kind !== 'unsupported' && !enableUnavailableReason;
 		let applied = false;
+		let compiledMatches = false;
 
 		if (server.kind !== 'unsupported' && server.service) {
 			if (settings.enabled) {
@@ -896,13 +1069,20 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					const trustBundle = normalizedOrigin.protocol === 'https:'
 						? trustedCertificateAuthoritiesPem()
 						: undefined;
-					applied = await serverManagedFilesMatch(
+					const sourceMatches = await serverManagedFilesMatch(
 						site,
 						normalizedOrigin,
 						managedFileOptions(server),
 						trustBundle,
 						assertSiteStateTransactionCurrent,
 					);
+					compiledMatches = sourceMatches && await serverCompiledConfigMatches(
+						site,
+						server,
+						true,
+						assertSiteStateTransactionCurrent,
+					);
+					applied = sourceMatches && compiledMatches;
 				} catch (error) {
 					if (isExpectedLifecycleInterruption(siteId, error)) {
 						throw error;
@@ -910,7 +1090,13 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					applied = false;
 				}
 			} else {
-				applied = managedArtifactsPresent;
+				compiledMatches = await serverCompiledConfigMatches(
+					site,
+					server,
+					false,
+					assertSiteStateTransactionCurrent,
+				);
+				applied = managedArtifactsPresent || !compiledMatches;
 			}
 		}
 		const needsAttention = (
@@ -1026,6 +1212,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				snapshots = await captureAllManagedFiles(
 					site,
 					() => assertServerTransactionCurrent(siteId, transaction),
+					managedFileOptions(server),
 				);
 				await runServerTransactionMutation(
 					() => assertServerTransactionCurrent(siteId, transaction),
@@ -1064,10 +1251,11 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		} else {
 			if (
 				(server.kind === 'unsupported' || !server.service) &&
-				(previousSettings.enabled || await allManagedArtifactsExist(
-					site,
-					() => assertServerTransactionCurrent(siteId, transaction),
-				))
+					(previousSettings.enabled || await allManagedArtifactsExist(
+						site,
+						() => assertServerTransactionCurrent(siteId, transaction),
+						server.kind === 'unsupported' ? undefined : managedFileOptions(server),
+					))
 			) {
 				throw new Error(runtimeCleanupUnavailableReason(server));
 			}
@@ -1131,15 +1319,29 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				snapshots = await captureAllManagedFiles(
 					site,
 					() => assertServerTransactionCurrent(siteId, transaction),
+					managedFileOptions(server),
 				);
+				const compiledConfigIsClean = server.kind !== 'unsupported' && server.service
+					? await serverCompiledConfigMatches(
+						site,
+						server,
+						false,
+						() => assertServerTransactionCurrent(siteId, transaction),
+					)
+					: true;
 				const changed = await runServerTransactionMutation(
 					() => assertServerTransactionCurrent(siteId, transaction),
 					() => removeAllManagedFiles(
 						site,
 						() => assertServerTransactionCurrent(siteId, transaction),
+						managedFileOptions(server),
 					),
 				);
-				if ((changed || previousSettings.enabled) && server.kind !== 'unsupported' && server.service) {
+				if (
+					server.kind !== 'unsupported' &&
+					server.service &&
+					(changed || !compiledConfigIsClean)
+				) {
 					await compileAndReload(
 						site,
 						server,
@@ -1193,9 +1395,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		assertExpectedServer(server, expectedServerKind);
 		const transaction = beginInteractiveServerTransaction(site, server);
 		const envelope = readStoredSettingsEnvelope(site, expectedServerKind);
-		if (envelope.enabled === rawEnabled) {
-			return getSiteState(siteId);
-		}
 		const settings = storedSettingsForServer(envelope, expectedServerKind);
 		if (rawEnabled) {
 			return applySettingsLocked(
@@ -1214,15 +1413,23 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			snapshots = await captureAllManagedFiles(
 				site,
 				() => assertServerTransactionCurrent(siteId, transaction),
+				managedFileOptions(server),
+			);
+			const compiledConfigIsClean = await serverCompiledConfigMatches(
+				site,
+				server,
+				false,
+				() => assertServerTransactionCurrent(siteId, transaction),
 			);
 			const changed = await runServerTransactionMutation(
 				() => assertServerTransactionCurrent(siteId, transaction),
 				() => removeAllManagedFiles(
 					site,
 					() => assertServerTransactionCurrent(siteId, transaction),
+					managedFileOptions(server),
 				),
 			);
-			if (changed || envelope.enabled) {
+			if (changed || !compiledConfigIsClean) {
 				await compileAndReload(
 					site,
 					server,
@@ -1367,23 +1574,31 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				}
 
 				const detectedServer = detectSiteServer(site);
-				if (
-					detectedServer.kind === 'unsupported' ||
-					!serverManagedFilesystemReady(site, detectedServer.kind)
-				) {
+				if (detectedServer.kind === 'unsupported') {
 					return;
 				}
 				const server = resolveServer(site);
+				if (!serverManagedFilesystemReady(
+					site,
+					detectedServer.kind,
+					server.service ? managedFileOptions(server) : undefined,
+				)) {
+					return;
+				}
 				const transaction = serverTransactionFingerprint(site, server);
 				const reconciliationCanMutate = (): boolean => {
 					const latestSite = siteData.getSite(siteId);
 					if (!latestSite || !siteStatusAllowsReconciliation(latestSite)) {
 						return false;
 					}
-					const latestServer = detectSiteServer(latestSite);
+					const latestServer = resolveServer(latestSite);
 					if (
 						latestServer.kind === 'unsupported' ||
-						!serverManagedFilesystemReady(latestSite, latestServer.kind)
+						!serverManagedFilesystemReady(
+							latestSite,
+							latestServer.kind,
+							latestServer.service ? managedFileOptions(latestServer) : undefined,
+						)
 					) {
 						return false;
 					}
@@ -1406,7 +1621,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				const reconciledEnvelope = server.kind === 'apache' || server.kind === 'nginx'
 					? carrySiteUrlToPristineServerProfile(intentPreservedEnvelope, server.kind)
 					: intentPreservedEnvelope;
-				const carriedSiteUrl = reconciledEnvelope !== intentPreservedEnvelope;
 				const settings = server.kind === 'apache' || server.kind === 'nginx'
 					? storedSettingsForServer(reconciledEnvelope, server.kind)
 					: fallbackStoredSettings(reconciledEnvelope);
@@ -1415,6 +1629,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					if (!settings.enabled && !await allManagedArtifactsExist(
 						site,
 						assertReconciliationTransactionCurrent,
+						server.kind === 'unsupported' ? undefined : managedFileOptions(server),
 					)) {
 						return;
 					}
@@ -1432,11 +1647,20 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					}
 					return true;
 				};
+				let compiledConfigMatches = false;
 				if (!settings.enabled) {
-					if (!await allManagedArtifactsExist(
+					const managedArtifactsPresent = await allManagedArtifactsExist(
 						site,
 						assertReconciliationTransactionCurrent,
-					)) {
+						managedFileOptions(server),
+					);
+					compiledConfigMatches = await serverCompiledConfigMatches(
+						site,
+						server,
+						false,
+						assertReconciliationTransactionCurrent,
+					);
+					if (!managedArtifactsPresent && compiledConfigMatches) {
 						if (rawStoredSettings !== undefined) {
 							persistReconciledEnvelope();
 						}
@@ -1458,6 +1682,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 						const snapshots = await captureAllManagedFiles(
 							site,
 							assertReconciliationTransactionCurrent,
+							managedFileOptions(server),
 						);
 						if (!reconciliationCanMutate()) {
 							return;
@@ -1471,6 +1696,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 								() => removeAllManagedFiles(
 									site,
 									assertReconciliationTransactionCurrent,
+									managedFileOptions(server),
 								),
 							);
 						} catch (error) {
@@ -1554,33 +1780,31 @@ export default function main(context: LocalMain.AddonMainContext): void {
 						? trustedCertificateAuthoritiesPem()
 						: undefined;
 
-					if (await serverManagedFilesMatch(
+					const managedFilesMatch = await serverManagedFilesMatch(
 						site,
 						normalizedOrigin,
 						managedFileOptions(server),
 						trustBundle,
 						assertReconciliationTransactionCurrent,
-					)) {
-						if (options.refreshMatchingEnabledRuntime || carriedSiteUrl) {
-							if (!reconciliationCanMutate()) {
-								return;
-							}
-							await compileAndReload(
-								site,
-								server,
-								true,
-								assertReconciliationTransactionCurrent,
-							);
-							assertReconciliationTransactionCurrent();
+					);
+					if (managedFilesMatch) {
+						compiledConfigMatches = await serverCompiledConfigMatches(
+							site,
+							server,
+							true,
+							assertReconciliationTransactionCurrent,
+						);
+						if (compiledConfigMatches) {
+							persistReconciledEnvelope();
+							return;
 						}
-						persistReconciledEnvelope();
-						return;
 					}
 				}
 
 				const snapshots = await captureAllManagedFiles(
 					site,
 					assertReconciliationTransactionCurrent,
+					managedFileOptions(server),
 				);
 				try {
 					assertGloballyActive();
@@ -1612,11 +1836,12 @@ export default function main(context: LocalMain.AddonMainContext): void {
 							() => removeAllManagedFiles(
 								site,
 								assertReconciliationTransactionCurrent,
+								managedFileOptions(server),
 							),
 						);
 					}
 
-					if (changed || (settings.enabled && carriedSiteUrl)) {
+					if (changed || !compiledConfigMatches) {
 						await compileAndReload(
 							site,
 							server,
@@ -1735,9 +1960,12 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			}
 
 			if (shouldReconcileManagedFiles(siteStatus)) {
-				let server: SiteServerAdapter;
+				let server: RuntimeServer;
 				try {
-					server = detectSiteServer(site);
+					const detected = detectSiteServer(site);
+					server = detected.kind === 'unsupported'
+						? { ...detected, service: null }
+						: resolveServer(site);
 				} catch (error) {
 					cancelDeferredReconciliation(siteId);
 					logger.log('warn', `Unable to identify the web server for site ${siteId}: ${errorMessage(error)}`);
@@ -1748,7 +1976,11 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					return;
 				}
 				try {
-					pending.stableSamples = serverManagedFilesystemReady(site, server.kind)
+					pending.stableSamples = serverManagedFilesystemReady(
+						site,
+						server.kind,
+						server.service ? managedFileOptions(server) : undefined,
+					)
 						? pending.stableSamples + 1
 						: 0;
 				} catch (error) {
@@ -1800,10 +2032,14 @@ export default function main(context: LocalMain.AddonMainContext): void {
 
 	const globalCleanupFilesystemReady = (
 		site: Local.Site,
-		server: SiteServerAdapter,
+		server: RuntimeServer,
 	): boolean => {
 		if (server.kind === 'apache' || server.kind === 'nginx') {
-			return serverManagedFilesystemReady(site, server.kind);
+			return serverManagedFilesystemReady(
+				site,
+				server.kind,
+				server.service ? managedFileOptions(server) : undefined,
+			);
 		}
 		return serverManagedFilesystemReady(site, 'nginx') ||
 			serverManagedFilesystemReady(site, 'apache');
@@ -1833,9 +2069,15 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		}
 
 		let detectedServer: SiteServerAdapter;
+		let server: RuntimeServer;
 		try {
 			detectedServer = detectSiteServer(site);
-			if (!globalCleanupFilesystemReady(site, detectedServer)) {
+			try {
+				server = resolveServer(site);
+			} catch {
+				server = { ...detectedServer, service: null };
+			}
+			if (!globalCleanupFilesystemReady(site, server)) {
 				return false;
 			}
 		} catch (error) {
@@ -1846,12 +2088,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			return false;
 		}
 
-		let server: RuntimeServer;
-		try {
-			server = resolveServer(site);
-		} catch {
-			server = { ...detectedServer, service: null };
-		}
 		const transaction = serverTransactionFingerprint(site, server);
 		const currentGlobalCleanupTarget = (): Local.Site | null => {
 			try {
@@ -1867,14 +2103,14 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					return null;
 				}
 				const currentDetectedServer = detectSiteServer(currentSite);
-				if (!globalCleanupFilesystemReady(currentSite, currentDetectedServer)) {
-					return null;
-				}
 				let currentServer: RuntimeServer;
 				try {
 					currentServer = resolveServer(currentSite);
 				} catch {
 					currentServer = { ...currentDetectedServer, service: null };
+				}
+				if (!globalCleanupFilesystemReady(currentSite, currentServer)) {
+					return null;
 				}
 				const currentTransaction = serverTransactionFingerprint(
 					currentSite,
@@ -1920,6 +2156,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			forceRefresh = removeAllManagedFilesSync(
 				site,
 				assertSynchronousGlobalCleanupCurrent,
+				server.kind === 'unsupported' ? undefined : managedFileOptions(server),
 			) || forceRefresh;
 			assertSynchronousGlobalCleanupCurrent();
 		} catch (error) {
@@ -1959,10 +2196,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			throw new ServerTransactionChangedError();
 		}
 		const detectedServer = detectSiteServer(site);
-		if (!globalCleanupFilesystemReady(site, detectedServer)) {
-			throw new ServerTransactionChangedError();
-		}
-
 		let server: RuntimeServer;
 		try {
 			server = resolveServer(site);
@@ -1972,6 +2205,9 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				`Could not resolve the site service during global cleanup for site ${site.id}; using fail-closed persistent cleanup. ${errorMessage(error)}`,
 			);
 			server = { ...detectedServer, service: null };
+		}
+		if (!globalCleanupFilesystemReady(site, server)) {
+			throw new ServerTransactionChangedError();
 		}
 		const transaction = serverTransactionFingerprint(site, server);
 		const currentGlobalCleanupTarget = (): {
@@ -1991,14 +2227,14 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					return null;
 				}
 				const currentDetectedServer = detectSiteServer(currentSite);
-				if (!globalCleanupFilesystemReady(currentSite, currentDetectedServer)) {
-					return null;
-				}
 				let currentServer: RuntimeServer;
 				try {
 					currentServer = resolveServer(currentSite);
 				} catch {
 					currentServer = { ...currentDetectedServer, service: null };
+				}
+				if (!globalCleanupFilesystemReady(currentSite, currentServer)) {
+					return null;
 				}
 				const currentTransaction = serverTransactionFingerprint(
 					currentSite,
@@ -2021,6 +2257,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			return allManagedArtifactsExist(
 				site,
 				assertGlobalCleanupTransactionCurrent,
+				server.kind === 'unsupported' ? undefined : managedFileOptions(server),
 			);
 		};
 		const guardedCompileAllConfigs = async (): Promise<void> => {
@@ -2043,7 +2280,15 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			);
 		}
 
-		const requiresRuntimeRefresh = forceRefresh || enabledBeforeCleanup;
+		const compiledConfigIsClean = server.kind !== 'unsupported' && server.service
+			? await serverCompiledConfigMatches(
+				site,
+				server,
+				false,
+				assertGlobalCleanupTransactionCurrent,
+			)
+			: false;
+		const requiresRuntimeRefresh = forceRefresh || enabledBeforeCleanup || !compiledConfigIsClean;
 		const artifactsBeforeCleanup = await guardedManagedArtifactsExist();
 		if (!artifactsBeforeCleanup && !requiresRuntimeRefresh) {
 			assertGlobalCleanupTransactionCurrent();
@@ -2058,6 +2303,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				removeAllManagedFiles: () => removeAllManagedFiles(
 					site,
 					assertGlobalCleanupTransactionCurrent,
+					server.kind === 'unsupported' ? undefined : managedFileOptions(server),
 				),
 			}, requiresRuntimeRefresh);
 			logger.log(
@@ -2068,6 +2314,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			const changed = await removeAllManagedFiles(
 				site,
 				assertGlobalCleanupTransactionCurrent,
+				managedFileOptions(server),
 			);
 			if (changed || requiresRuntimeRefresh) {
 				await compileAndReload(
@@ -2156,7 +2403,13 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					return;
 				}
 				if (shouldReconcileManagedFiles(siteStatus)) {
-					const server = detectSiteServer(site);
+					const detected = detectSiteServer(site);
+					let server: RuntimeServer;
+					try {
+						server = resolveServer(site);
+					} catch {
+						server = { ...detected, service: null };
+					}
 					pending.stableSamples = globalCleanupFilesystemReady(site, server)
 						? pending.stableSamples + 1
 						: 0;
@@ -2338,9 +2591,17 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				};
 			}
 			const detectedServer = detectSiteServer(site);
+			const runtimeServer = detectedServer.kind === 'unsupported'
+				? { ...detectedServer, service: null }
+				: resolveServer(site);
 			if (
 				detectedServer.kind !== 'unsupported' &&
-				!serverManagedFilesystemReady(site, detectedServer.kind)
+				runtimeServer.service &&
+				!serverManagedFilesystemReady(
+					site,
+					detectedServer.kind,
+					managedFileOptions(runtimeServer),
+				)
 			) {
 				return {
 					canAutoPopulate: false,
@@ -2381,18 +2642,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 	);
 
 	ipcMain.handle(IPC_CHANNELS.getSiteState, async (_event, siteId: string) => {
-		try {
-			await reconcileSite(siteId);
-		} catch (error) {
-			if (isExpectedLifecycleInterruption(siteId, error)) {
-				logger.log(
-					'info',
-					`Paused state-read reconciliation for site ${siteId} because Local changed or removed the site.`,
-				);
-			} else {
-				logger.log('warn', `State-read reconciliation failed for site ${siteId}; returning the current persisted state. ${errorMessage(error)}`);
-			}
-		}
 		try {
 			return await getSiteState(siteId);
 		} catch (error) {
