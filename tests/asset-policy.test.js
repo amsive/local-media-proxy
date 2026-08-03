@@ -108,7 +108,11 @@ test('blocks interpreter tokens even when a safe-looking extension follows them'
 		'/wp-content/uploads/payload.pht.pdf',
 		'/wp-content/uploads/archive.phar.zip',
 		'/wp-content/uploads/task.cgi.png',
+		'/wp-content/uploads/task.fcgi.png',
+		'/wp-content/uploads/task.scgi.png',
 		'/wp-content/uploads/script.py.svg',
+		'/wp-content/uploads/script.vbs.svg',
+		'/wp-content/uploads/script.wsf.svg',
 		'/wp-content/uploads/run-bash.mp4',
 		'/wp-content/uploads/handler.aspx.avif',
 		'/wp-content/uploads/template.cfm.jxl',
@@ -120,11 +124,21 @@ test('blocks interpreter tokens even when a safe-looking extension follows them'
 test('blocks browser-active, executable, secret, configuration, database, and backup files', () => {
 	for (const requestPath of [
 		'/wp-content/uploads/index.html',
+		'/wp-content/uploads/index.html.futuremedia',
 		'/wp-content/uploads/app.js',
+		'/wp-content/uploads/app.js.futuremedia',
 		'/wp-content/uploads/module.mjs',
 		'/wp-content/uploads/program.wasm',
+		'/wp-content/uploads/program.wasm.futuremedia',
 		'/wp-content/uploads/legacy.swf',
+		'/wp-content/uploads/application.hta',
 		'/wp-content/uploads/program.exe',
+		'/wp-content/uploads/program.appimage',
+		'/wp-content/uploads/program.run',
+		'/wp-content/uploads/program.scr',
+		'/wp-content/uploads/program.cpl',
+		'/wp-content/uploads/program.ocx',
+		'/wp-content/uploads/program.sys',
 		'/wp-content/uploads/program.class',
 		'/wp-content/uploads/library.dll',
 		'/wp-content/uploads/plugin.so',
@@ -180,6 +194,9 @@ test('exports compatible route and block patterns for both server generators', (
 	assert.equal(blocked.test('/wp-content/uploads/shell.php.jpg'), true);
 	assert.equal(blocked.test('/wp-content/uploads/shell.php;.jpg'), true);
 	assert.equal(blocked.test('/wp-content/uploads/app.js'), true);
+	assert.equal(blocked.test('/wp-content/uploads/app.js.futuremedia'), true);
+	assert.equal(blocked.test('/wp-content/uploads/script.fcgi.jpg'), true);
+	assert.equal(blocked.test('/wp-content/uploads/program.appimage'), true);
 	assert.equal(blocked.test('/wp-content/uploads/document.pdf'), false);
 	assert.equal(blocked.test('/wp-content/uploads/vector.svg'), false);
 	for (const delimiter of ['.', '-', '_', '~', '!', '$', '&', "'", '(', ')', '*', '+', ',', ';', '=', ':', '@']) {

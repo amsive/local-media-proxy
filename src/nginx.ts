@@ -10,6 +10,7 @@ import {
 	MANAGED_MARKER_END,
 	MANAGED_MARKER_START,
 	ORIGIN_REQUEST_USER_AGENT,
+	PROXIED_CONTENT_SECURITY_POLICY,
 } from './constants';
 import {
 	BLOCKED_UPLOAD_ASSET_PATH_PATTERN,
@@ -201,6 +202,7 @@ export function buildManagedNginxConfig(
 		'\tif ($request_method !~ ^(GET|HEAD)$) { return 405; }',
 		'\tif ($http_transfer_encoding != "") { return 400; }',
 		'\tif ($http_content_length !~ ^(?:|0)$) { return 400; }',
+		`\tif ($request_uri !~* ${quoteNginxRegularExpression('^/wp-content/uploads/')}) { return 400; }`,
 		`\tif ($request_uri ~* ${quoteNginxRegularExpression(`^/wp-content/uploads/[^?]*${UNSAFE_RAW_PERCENT_ENCODING_PATTERN}`)}) { return 400; }`,
 		`\tif ($request_uri ~* ${quoteNginxRegularExpression('^/wp-content/uploads/(?:[^?]*/)?(?:\\.|%2e){1,2}(?:/|\\?|$)')}) { return 400; }`,
 		`\tif ($request_uri ~* ${quoteNginxRegularExpression('^/wp-content/uploads/(?:/|[^?]*//)')}) { return 400; }`,
@@ -263,6 +265,7 @@ export function buildManagedNginxConfig(
 		'\tproxy_send_timeout 60s;',
 		'\tadd_header X-Local-Media-Proxy "origin" always;',
 		'\tadd_header X-Content-Type-Options "nosniff" always;',
+		`\tadd_header Content-Security-Policy ${quoteNginx(PROXIED_CONTENT_SECURITY_POLICY)} always;`,
 		'}',
 		'',
 	].join('\n');

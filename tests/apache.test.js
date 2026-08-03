@@ -171,12 +171,22 @@ test('builds a fixed-host local-first Apache proxy with guarded methods, bodies,
 	assert.match(config, /Header always unset Set-Cookie env=LOCAL_MEDIA_PROXY_ORIGIN/);
 	assert.match(config, /Header always set X-Local-Media-Proxy "origin" env=LOCAL_MEDIA_PROXY_ORIGIN/);
 	assert.match(config, /Header always set X-Content-Type-Options "nosniff" env=LOCAL_MEDIA_PROXY_ORIGIN/);
+	assert.match(config, /Header always set Content-Security-Policy "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'" env=LOCAL_MEDIA_PROXY_ORIGIN/);
 	assert.match(config, new RegExp(`RequestHeader set User-Agent "${ORIGIN_REQUEST_USER_AGENT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}" env=LOCAL_MEDIA_PROXY_ORIGIN`));
 	for (const line of config.split('\n').filter((line) => line.includes('RequestHeader '))) {
 		assert.match(line, /env=LOCAL_MEDIA_PROXY_ORIGIN$/, `local request header mutation was not proxy-conditioned: ${line}`);
 	}
 	for (const sensitiveHeader of ['X-WP-Nonce', 'X-API-Key', 'X-Auth-Token', 'X-CSRF-Token']) {
 		assert.match(config, new RegExp(`RequestHeader unset ${sensitiveHeader} env=LOCAL_MEDIA_PROXY_ORIGIN`));
+	}
+	for (const unsafeProxyHeader of [
+		'X-HTTP-Method-Override',
+		'X-Original-URL',
+		'X-Forwarded-Client-Cert',
+		'X-Access-Token',
+		'CF-Access-Client-Secret',
+	]) {
+		assert.match(config, new RegExp(`RequestHeader unset ${unsafeProxyHeader} env=LOCAL_MEDIA_PROXY_ORIGIN`));
 	}
 	assert.doesNotMatch(config, /RequestHeader unset (?:Range|If-Range)/);
 });

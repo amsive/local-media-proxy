@@ -43,6 +43,7 @@ test('builds a local-first, read-only, privacy-preserving HTTPS proxy', () => {
 	assert.match(config, /if \(\$request_method !~ \^\(GET\|HEAD\)\$\) \{ return 405; \}/);
 	assert.match(config, /if \(\$http_transfer_encoding != ""\) \{ return 400; \}/);
 	assert.match(config, /if \(\$http_content_length !~ \^\(\?:\|0\)\$\) \{ return 400; \}/);
+	assert.match(config, /if \(\$request_uri !~\* "\^\/wp-content\/uploads\/"\) \{ return 400; \}/);
 	assert.match(config, /\$request_uri ~\* .*%\(\?:25\|2f\|5c\|3f\|23/);
 	assert.match(config, /\$request_uri ~\* "\^\/wp-content\/uploads\/\(\?:\/\|\[\^\?\]\*\/\/\)"/);
 	assert.match(config, /try_files \$uri @local_media_proxy;/);
@@ -84,6 +85,7 @@ test('builds a local-first, read-only, privacy-preserving HTTPS proxy', () => {
 		assert.match(config, new RegExp(`proxy_set_header ${header} "";`));
 	}
 	assert.match(config, /proxy_hide_header Set-Cookie;/);
+	assert.match(config, /add_header Content-Security-Policy "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'" always;/);
 	assert.match(config, /proxy_buffering off;/);
 	assert.deepEqual(
 		config.split('\n')

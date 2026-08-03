@@ -89,10 +89,13 @@ test('official Local Nginx runtime preserves local files and safely proxies only
 	const backendRequests = [];
 	const rangeBody = Buffer.from('0123456789', 'utf8');
 	const contentTypes = {
+		css: 'text/css',
 		mp3: 'audio/mpeg',
 		mp4: 'video/mp4',
 		pdf: 'application/pdf',
+		svg: 'image/svg+xml',
 		webm: 'video/webm',
+		woff2: 'font/woff2',
 	};
 	const backend = http.createServer((incoming, response) => {
 		backendRequests.push({
@@ -104,7 +107,12 @@ test('official Local Nginx runtime preserves local files and safely proxies only
 		const extension = pathname.slice(pathname.lastIndexOf('.') + 1).toLowerCase();
 		const isRangeFixture = Object.hasOwn(contentTypes, extension);
 		response.statusCode = pathname.includes('not-found') ? 404 : 200;
-		response.setHeader('Content-Type', isRangeFixture ? contentTypes[extension] : 'text/plain');
+		response.setHeader(
+			'Content-Type',
+			pathname.endsWith('/active.futuremedia')
+				? 'text/html'
+				: isRangeFixture ? contentTypes[extension] : 'text/plain',
+		);
 		response.setHeader('Content-Disposition', `inline; filename="asset.${extension}"`);
 		response.setHeader('Set-Cookie', 'origin_session=private; HttpOnly');
 		if (isRangeFixture) {
@@ -223,6 +231,10 @@ test('official Local Nginx runtime preserves local files and safely proxies only
 		);
 		assert.equal(missing.headers['x-local-media-proxy'], 'origin');
 		assert.equal(missing.headers['x-content-type-options'], 'nosniff');
+		assert.equal(
+			missing.headers['content-security-policy'],
+			"sandbox; default-src 'none'; base-uri 'none'; form-action 'none'",
+		);
 		assert.equal(missing.headers['content-type'], 'text/plain');
 		assert.equal(missing.headers['content-disposition'], 'inline; filename="asset.futuremedia"');
 		assert.equal(missing.headers['set-cookie'], undefined);
@@ -244,33 +256,58 @@ test('official Local Nginx runtime preserves local files and safely proxies only
 		assert.equal(notFound.headers['set-cookie'], undefined);
 		assert.equal(backendRequests.length, 2);
 
+		const activeResponse = await request(frontendPort, '/wp-content/uploads/active.futuremedia');
+		assert.equal(activeResponse.statusCode, 200);
+		assert.equal(activeResponse.headers['content-type'], 'text/html');
+		assert.equal(
+			activeResponse.headers['content-security-policy'],
+			"sandbox; default-src 'none'; base-uri 'none'; form-action 'none'",
+		);
+		assert.equal(activeResponse.headers['x-content-type-options'], 'nosniff');
+		assert.equal(activeResponse.headers['x-local-media-proxy'], 'origin');
+
+		const beforeRawNormalization = backendRequests.length;
+		for (const unsafePath of [
+			'//wp-content/uploads/unsafe.futuremedia',
+			'/x/../wp-content/uploads/unsafe.futuremedia',
+			'/%2fwp-content/uploads/unsafe.futuremedia',
+		]) {
+			const blocked = await request(frontendPort, unsafePath);
+			assert.ok(blocked.statusCode >= 400, unsafePath);
+			assert.equal(backendRequests.length, beforeRawNormalization, unsafePath);
+		}
+		const beforeRejectedRequests = backendRequests.length;
+
 		const blockedMethod = await request(frontendPort, '/wp-content/uploads/method.JPG', {
 			body: 'blocked',
 			headers: { 'Content-Length': '7' },
 			method: 'POST',
 		});
 		assert.equal(blockedMethod.statusCode, 405);
-		assert.equal(backendRequests.length, 2);
+		assert.equal(backendRequests.length, beforeRejectedRequests);
 
 		const blockedBody = await request(frontendPort, '/wp-content/uploads/body.JPG', {
 			body: 'blocked',
 			headers: { 'Content-Length': '7' },
 		});
 		assert.equal(blockedBody.statusCode, 400);
-		assert.equal(backendRequests.length, 2);
+		assert.equal(backendRequests.length, beforeRejectedRequests);
 
 		const blockedChunkedBody = await request(frontendPort, '/wp-content/uploads/chunked.JPG', {
 			body: 'blocked',
 			headers: { 'Transfer-Encoding': 'chunked' },
 		});
 		assert.equal(blockedChunkedBody.statusCode, 400);
-		assert.equal(backendRequests.length, 2);
+		assert.equal(backendRequests.length, beforeRejectedRequests);
 
 		const beforeBlocked = backendRequests.length;
 		for (const blockedPath of [
 			'/wp-content/uploads/shell.PHP.jpg',
 			'/wp-content/uploads/app.js',
 			'/wp-content/uploads/index.html',
+			'/wp-content/uploads/index.html.futuremedia',
+			'/wp-content/uploads/app.js.futuremedia',
+			'/wp-content/uploads/program.wasm.futuremedia',
 		]) {
 			const blocked = await request(frontendPort, blockedPath);
 			assert.equal(blocked.statusCode, 404, blockedPath);
@@ -295,6 +332,11 @@ test('official Local Nginx runtime preserves local files and safely proxies only
 			assert.equal(ranged.headers['content-disposition'], `inline; filename="asset.${extension}"`, extension);
 			assert.equal(ranged.headers['x-local-media-proxy'], 'origin', extension);
 			assert.equal(ranged.headers['x-content-type-options'], 'nosniff', extension);
+			assert.equal(
+				ranged.headers['content-security-policy'],
+				"sandbox; default-src 'none'; base-uri 'none'; form-action 'none'",
+				extension,
+			);
 			assert.equal(ranged.headers['set-cookie'], undefined, extension);
 			assert.equal(backendRequests.at(-1).headers.range, 'bytes=2-5', extension);
 			assert.equal(backendRequests.at(-1).headers['if-range'], '"fixture-etag"', extension);

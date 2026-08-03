@@ -37,6 +37,8 @@ const SERVER_INTERPRETER_TOKEN_PATTERN = [
 	'phar',
 	'phps',
 	'cgi',
+	'fcgi',
+	'scgi',
 	'pl',
 	'pm',
 	'py[co]?',
@@ -55,6 +57,13 @@ const SERVER_INTERPRETER_TOKEN_PATTERN = [
 	'bat',
 	'cmd',
 	'ps1',
+	'psd1',
+	'psm1',
+	'vb',
+	'vbe',
+	'vbs',
+	'wsf',
+	'wsh',
 	'asp',
 	'aspx',
 	'asa',
@@ -72,10 +81,13 @@ const SERVER_INTERPRETER_TOKEN_PATTERN = [
 	'cfc',
 ].join('|');
 
-const BLOCKED_FINAL_EXTENSION_PATTERN = [
-	// Browser-executable documents. SVG/SVGZ are intentionally not blocked.
+const BROWSER_ACTIVE_TOKEN_PATTERN = [
 	'htm',
 	'html',
+	'hta',
+	'htc',
+	'mht',
+	'mhtml',
 	'xht',
 	'xhtml',
 	'shtml',
@@ -85,6 +97,11 @@ const BLOCKED_FINAL_EXTENSION_PATTERN = [
 	'jsx',
 	'wasm',
 	'swf',
+].join('|');
+
+const BLOCKED_FINAL_EXTENSION_PATTERN = [
+	// Browser-executable documents. SVG/SVGZ are intentionally not blocked.
+	BROWSER_ACTIVE_TOKEN_PATTERN,
 	// Native packages, binaries, and runtime artifacts.
 	'exe',
 	'dll',
@@ -107,6 +124,18 @@ const BLOCKED_FINAL_EXTENSION_PATTERN = [
 	'ear',
 	'ipa',
 	'node',
+	'appimage',
+	'run',
+	'scr',
+	'cpl',
+	'ocx',
+	'sys',
+	'drv',
+	'lnk',
+	'scf',
+	'gadget',
+	'desktop',
+	'reg',
 	// Obvious secret, configuration, database, and backup material.
 	'env',
 	'ini',
@@ -162,6 +191,7 @@ const SENSITIVE_EXACT_BASENAME_PATTERN = [
  */
 export const BLOCKED_UPLOAD_ASSET_PATH_PATTERN =
 	`(?:^|/)(?:(?:[^/]*[^A-Za-z0-9])?(?:${SERVER_INTERPRETER_TOKEN_PATTERN})(?=[^A-Za-z0-9]|$)[^/]*|` +
+	`(?:[^/]*[^A-Za-z0-9])?(?:${BROWSER_ACTIVE_TOKEN_PATTERN})(?=[^A-Za-z0-9]|$)[^/]*|` +
 	`[^/]*\\.(?:${BLOCKED_FINAL_EXTENSION_PATTERN})|` +
 	`(?:${SENSITIVE_EXACT_BASENAME_PATTERN}))$`;
 
@@ -169,6 +199,10 @@ const SAFE_DECODED_SEGMENT = new RegExp(`^[${PATH_CHARACTER_CLASS}]+$`);
 const SAFE_EXTENSION = new RegExp(`^[A-Za-z0-9][${EXTENSION_CHARACTER_CLASS}]*$`);
 const SERVER_INTERPRETER_TOKEN = new RegExp(
 	`^(?:${SERVER_INTERPRETER_TOKEN_PATTERN})$`,
+	'i',
+);
+const BROWSER_ACTIVE_TOKEN = new RegExp(
+	`^(?:${BROWSER_ACTIVE_TOKEN_PATTERN})$`,
 	'i',
 );
 const BLOCKED_FINAL_EXTENSION = new RegExp(
@@ -200,7 +234,9 @@ function basenameIsBlocked(basename: string): boolean {
 
 	return normalized
 		.split(/[^a-z0-9]+/)
-		.some((token) => SERVER_INTERPRETER_TOKEN.test(token));
+		.some((token) => (
+			SERVER_INTERPRETER_TOKEN.test(token) || BROWSER_ACTIVE_TOKEN.test(token)
+		));
 }
 
 /**
