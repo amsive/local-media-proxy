@@ -72,7 +72,7 @@ test('Apache refresh observes Local runtime process name httpd without using its
 	assert.doesNotMatch(refreshBranch, /restartSiteService/);
 });
 
-test('global disable and uninstall synchronously clean only ready sites before deferred runtime cleanup', () => {
+test('global disable and uninstall clean runtime without changing per-site enabled intent', () => {
 	const cleanupEntry = sourceSection(
 		'const cleanUpForGlobalChange',
 		'const restoreAfterGlobalEnable',
@@ -110,16 +110,7 @@ test('global disable and uninstall synchronously clean only ready sites before d
 		synchronousCleanup,
 		/removeAllManagedFilesSync\([\s\S]{0,120}assertSynchronousGlobalCleanupCurrent/,
 	);
-	assertInOrder(
-		synchronousCleanup,
-		[
-			'removeAllManagedFilesSync(',
-			"if (mode === 'uninstalling')",
-			'persistSettings(',
-			'setStoredSettingsEnabled(latestEnvelope, false)',
-		],
-		'uninstall must remove eligible persistent files before committing durable disabled intent',
-	);
+	assert.doesNotMatch(synchronousCleanup, /persistSettings|setStoredSettingsEnabled/);
 
 	const cleanupWorker = sourceSection(
 		'const cleanupSiteForGlobalChange',
@@ -129,17 +120,13 @@ test('global disable and uninstall synchronously clean only ready sites before d
 	assert.match(cleanupWorker, /removeAllManagedFiles\([\s\S]{0,100}assertGlobalCleanupTransactionCurrent/);
 	assert.match(cleanupWorker, /compileAndReload\([\s\S]{0,120}assertGlobalCleanupTransactionCurrent/);
 	assert.match(cleanupWorker, /const requiresRuntimeRefresh = forceRefresh \|\| enabledBeforeCleanup/);
-	assertInOrder(
-		cleanupWorker,
-		[
-			'const changed = await removeAllManagedFiles(',
-			'await compileAndReload(',
-			'if (await guardedManagedArtifactsExist())',
-			"if (mode === 'uninstalling')",
-			'persistSettings(site.id, setStoredSettingsEnabled(latestEnvelope, false))',
-		],
-		'global cleanup must remove files and refresh runtime before committing uninstall intent',
-	);
+	assertInOrder(cleanupWorker, [
+		'const changed = await removeAllManagedFiles(',
+		'await compileAndReload(',
+		'if (await guardedManagedArtifactsExist())',
+		'assertGlobalCleanupTransactionCurrent();',
+	], 'global cleanup must remove files and refresh runtime transactionally');
+	assert.doesNotMatch(cleanupWorker, /persistSettings|setStoredSettingsEnabled/);
 });
 
 test('startup and Local lifecycle reconciliation wait for stable ready sites without blocking hooks', () => {
@@ -605,6 +592,32 @@ test('global cleanup defers the affected site when synchronous preparation throw
 		statusReadCount: 2,
 		synchronousRemovalCalls: 0,
 	});
+});
+
+test('global disable and uninstall preserve enabled intent through deferred cleanup and re-enable', () => {
+	for (const mode of ['disable', 'uninstall']) {
+		const result = JSON.parse(execFileSync(
+			process.execPath,
+			[
+				path.resolve(__dirname, 'fixtures/global-intent-harness.js'),
+				mode,
+			],
+			{ encoding: 'utf8' },
+		));
+
+		assert.deepEqual(result, {
+			deferredCleanupFailures: 1,
+			disabledApplied: false,
+			enabledApplied: true,
+			failClosedReconciliations: 1,
+			globalAsyncCleanups: 6,
+			invalidApplied: false,
+			mode,
+			settingsWrites: 0,
+			synchronousCleanupFailures: 1,
+			synchronousCleanups: 5,
+		});
+	}
 });
 
 test('Local hooks route global-inactive sites to cleanup and cancel every deferred site task on deletion', () => {

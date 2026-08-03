@@ -1885,11 +1885,10 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			}
 		};
 
-		let envelopeBeforeCleanup: StoredSettingsEnvelope | undefined;
 		let forceRefresh = true;
 		try {
 			assertSynchronousGlobalCleanupCurrent();
-			envelopeBeforeCleanup = readStoredSettingsEnvelope(site, server.kind);
+			const envelopeBeforeCleanup = readStoredSettingsEnvelope(site, server.kind);
 			const settingsBeforeCleanup = server.kind === 'apache' || server.kind === 'nginx'
 				? storedSettingsForServer(envelopeBeforeCleanup, server.kind)
 				: fallbackStoredSettings(envelopeBeforeCleanup);
@@ -1921,28 +1920,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				isExpectedLifecycleInterruption(site.id, error) ? 'info' : 'warn',
 				`Synchronous Media Proxy global cleanup for site ${site.id} was incomplete; deferred cleanup will retry. ${errorMessage(error)}`,
 			);
-		}
-
-		if (mode === 'uninstalling') {
-			try {
-				assertSynchronousGlobalCleanupCurrent();
-				const latestSite = currentGlobalCleanupTarget();
-				if (!latestSite) {
-					throw new ServerTransactionChangedError();
-				}
-				const latestEnvelope = envelopeBeforeCleanup ??
-					readStoredSettingsEnvelope(latestSite, server.kind);
-				assertSynchronousGlobalCleanupCurrent();
-				persistSettings(
-					site.id,
-					setStoredSettingsEnabled(latestEnvelope, false),
-				);
-			} catch (error) {
-				logger.log(
-					isExpectedLifecycleInterruption(site.id, error) ? 'info' : 'warn',
-					`Could not commit durable disabled intent during synchronous uninstall cleanup for site ${site.id}; deferred cleanup will retry. ${errorMessage(error)}`,
-				);
-			}
 		}
 
 		return forceRefresh;
@@ -2044,10 +2021,9 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			assertGlobalCleanupTransactionCurrent();
 		};
 
-		let envelopeBeforeCleanup: StoredSettingsEnvelope | undefined;
 		let enabledBeforeCleanup = true;
 		try {
-			envelopeBeforeCleanup = readStoredSettingsEnvelope(site, server.kind);
+			const envelopeBeforeCleanup = readStoredSettingsEnvelope(site, server.kind);
 			const settingsBeforeCleanup = server.kind === 'apache' || server.kind === 'nginx'
 				? storedSettingsForServer(envelopeBeforeCleanup, server.kind)
 				: fallbackStoredSettings(envelopeBeforeCleanup);
@@ -2099,16 +2075,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		}
 
 		assertGlobalCleanupTransactionCurrent();
-		if (mode === 'uninstalling') {
-			const latestSite = siteData.getSite(site.id);
-			if (!latestSite) {
-				return;
-			}
-			const latestEnvelope = envelopeBeforeCleanup ??
-				readStoredSettingsEnvelope(latestSite, server.kind);
-			assertGlobalCleanupTransactionCurrent();
-			persistSettings(site.id, setStoredSettingsEnabled(latestEnvelope, false));
-		}
 	});
 
 	const scheduleDeferredGlobalCleanup = (
