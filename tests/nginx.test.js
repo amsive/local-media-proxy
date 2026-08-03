@@ -44,6 +44,7 @@ test('builds a local-first, read-only, privacy-preserving HTTPS proxy', () => {
 	assert.match(config, /if \(\$http_transfer_encoding != ""\) \{ return 400; \}/);
 	assert.match(config, /if \(\$http_content_length !~ \^\(\?:\|0\)\$\) \{ return 400; \}/);
 	assert.match(config, /\$request_uri ~\* .*%\(\?:25\|2f\|5c\|3f\|23/);
+	assert.match(config, /\$request_uri ~\* "\^\/wp-content\/uploads\/\(\?:\/\|\[\^\?\]\*\/\/\)"/);
 	assert.match(config, /try_files \$uri @local_media_proxy;/);
 	assert.ok(config.indexOf('try_files $uri') < config.indexOf('if ($uri ~*'));
 	assert.ok(config.indexOf('if ($uri ~*') < config.indexOf('proxy_pass https://'));
