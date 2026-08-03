@@ -61,6 +61,7 @@ import {
 } from './site-config';
 import { detectSiteServer, type SiteServerAdapter } from './server';
 import {
+	carrySiteUrlToPristineServerProfile,
 	fallbackStoredSettings,
 	normalizeStoredSettingsEnvelope,
 	originPairMatches,
@@ -1394,9 +1395,13 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					}
 				};
 				const previousEnvelope = readStoredSettingsEnvelope(site, server.kind);
+				const reconciledEnvelope = server.kind === 'apache' || server.kind === 'nginx'
+					? carrySiteUrlToPristineServerProfile(previousEnvelope, server.kind)
+					: previousEnvelope;
+				const carriedSiteUrl = reconciledEnvelope !== previousEnvelope;
 				const settings = server.kind === 'apache' || server.kind === 'nginx'
-					? storedSettingsForServer(previousEnvelope, server.kind)
-					: fallbackStoredSettings(previousEnvelope);
+					? storedSettingsForServer(reconciledEnvelope, server.kind)
+					: fallbackStoredSettings(reconciledEnvelope);
 				let normalizedOrigin: ReturnType<typeof validateAndNormalizeOrigin> | undefined;
 				if (server.kind === 'unsupported' || !server.service) {
 					if (!settings.enabled && !await allManagedArtifactsExist(
@@ -1407,7 +1412,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					}
 					throw new Error(runtimeCleanupUnavailableReason(server));
 				}
-				const nextEnvelope = setStoredSettingsLastServer(previousEnvelope, server.kind);
+				const nextEnvelope = setStoredSettingsLastServer(reconciledEnvelope, server.kind);
 				const shouldPersistReconciledEnvelope = nextEnvelope !== previousEnvelope ||
 					storedSettingsEnvelopeNeedsMigration(rawStoredSettings);
 				const persistReconciledEnvelope = (): boolean => {
@@ -1506,22 +1511,24 @@ export default function main(context: LocalMain.AddonMainContext): void {
 								cleanupErrors.push(`${server.kind} cleanup: ${errorMessage(error)}`);
 							}
 						}
-						try {
-							if (!persistReconciledEnvelope()) {
-								return rollbackTransaction(
-									site,
-									server,
-									transaction,
-									previousEnvelope,
-									snapshots,
-									new ServerTransactionChangedError(),
-								);
+						if (cleanupErrors.length === 0) {
+							try {
+								if (!persistReconciledEnvelope()) {
+									return rollbackTransaction(
+										site,
+										server,
+										transaction,
+										previousEnvelope,
+										snapshots,
+										new ServerTransactionChangedError(),
+									);
+								}
+							} catch (error) {
+								if (isServerTransactionChangedError(error)) {
+									throw error;
+								}
+								cleanupErrors.push(`settings: ${errorMessage(error)}`);
 							}
-						} catch (error) {
-							if (isServerTransactionChangedError(error)) {
-								throw error;
-							}
-							cleanupErrors.push(`settings: ${errorMessage(error)}`);
 						}
 
 						const reason = errorMessage(validationError);
@@ -1546,7 +1553,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 						trustBundle,
 						assertReconciliationTransactionCurrent,
 					)) {
-						if (options.refreshMatchingEnabledRuntime) {
+						if (options.refreshMatchingEnabledRuntime || carriedSiteUrl) {
 							if (!reconciliationCanMutate()) {
 								return;
 							}
@@ -1601,7 +1608,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 						);
 					}
 
-					if (changed) {
+					if (changed || (settings.enabled && carriedSiteUrl)) {
 						await compileAndReload(
 							site,
 							server,

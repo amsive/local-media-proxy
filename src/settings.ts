@@ -17,6 +17,7 @@ import {
 	sanitizeOriginSource,
 	sanitizeResolvedAt,
 	siteUrlComparisonKey,
+	validateAndNormalizeSiteUrl,
 } from './validation';
 
 type RawStoredSettings = {
@@ -352,6 +353,48 @@ export function setStoredSettingsLastServer(
 	return envelope.lastServerKind === serverKind
 		? envelope
 		: { ...envelope, lastServerKind: serverKind };
+}
+
+function connectionProfileIsPristine(profile: StoredConnectionProfile): boolean {
+	const defaults = defaultConnectionProfile();
+	return (Object.keys(defaults) as Array<keyof StoredConnectionProfile>).every(
+		(key) => profile[key] === defaults[key],
+	);
+}
+
+export function carrySiteUrlToPristineServerProfile(
+	envelope: StoredSettingsEnvelope,
+	destinationServerKind: SupportedServerKind,
+): StoredSettingsEnvelope {
+	const sourceServerKind = envelope.lastServerKind;
+	if (!sourceServerKind || sourceServerKind === destinationServerKind) {
+		return envelope;
+	}
+
+	const destinationProfile = envelope.profiles[destinationServerKind];
+	if (!connectionProfileIsPristine(destinationProfile)) {
+		return envelope;
+	}
+
+	let siteUrl: string;
+	try {
+		siteUrl = validateAndNormalizeSiteUrl(
+			envelope.profiles[sourceServerKind].siteUrl,
+		).siteUrl;
+	} catch {
+		return envelope;
+	}
+
+	return {
+		...envelope,
+		profiles: {
+			...envelope.profiles,
+			[destinationServerKind]: {
+				...destinationProfile,
+				siteUrl,
+			},
+		},
+	};
 }
 
 export function originPairMatches(

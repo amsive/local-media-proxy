@@ -168,6 +168,7 @@ function createSiteState({
 	enableUnavailableReason,
 	lifecycleReady = true,
 	needsAttention,
+	originIp = '192.0.2.10',
 	reason,
 	requiresOriginIp = true,
 	serverKind = 'nginx',
@@ -189,7 +190,7 @@ function createSiteState({
 		serverKind,
 		settings: {
 			enabled,
-			originIp: '192.0.2.10',
+			originIp,
 			siteUrl,
 		},
 		siteStatus,
@@ -2209,6 +2210,108 @@ test('rehydrates the Tools panel for a same-site server switch and ignores stale
 		calls.filter(([channel]) => channel === IPC_CHANNELS.getSiteState).length,
 		3,
 	);
+});
+
+test('renders a handed-off Site URL in both server-switch directions without inventing Nginx IP data', async () => {
+	const discovery = {
+		canAutoPopulate: false,
+		environments: [],
+		message: 'Manual setup',
+		provider: 'none',
+	};
+	const cases = [
+		{
+			from: createSiteState({
+				applied: true,
+				enabled: true,
+				siteUrl: 'https://media.example.com',
+			}),
+			fromServer: 'nginx',
+			to: createSiteState({
+				applied: true,
+				enabled: true,
+				requiresOriginIp: false,
+				serverKind: 'apache',
+				siteUrl: 'https://media.example.com',
+			}),
+			toServer: 'apache',
+		},
+		{
+			from: createSiteState({
+				applied: true,
+				enabled: true,
+				requiresOriginIp: false,
+				serverKind: 'apache',
+				siteUrl: 'https://files.example.com',
+			}),
+			fromServer: 'apache',
+			to: createSiteState({
+				applied: false,
+				canEnable: false,
+				enabled: true,
+				enableUnavailableReason: 'Remote IP address must be a valid IPv4 or IPv6 address.',
+				needsAttention: true,
+				originIp: '',
+				siteUrl: 'https://files.example.com',
+			}),
+			toServer: 'nginx',
+		},
+	];
+
+	for (const switchCase of cases) {
+		let currentState = switchCase.from;
+		const registration = createRendererRegistration(async (channel) => {
+			if (channel === IPC_CHANNELS.getSiteState) {
+				return currentState;
+			}
+			if (channel === IPC_CHANNELS.getOriginDiscoveryOptions) {
+				return discovery;
+			}
+			throw new Error(`Unexpected channel: ${channel}`);
+		});
+		const menuItem = registration.filters.get('siteInfoToolsItem')([])[0];
+		const siteProps = (serverKind) => ({
+			site: {
+				id: 'site-a',
+				name: 'Example site',
+				services: {
+					[serverKind]: {
+						name: serverKind,
+						role: 'http',
+						version: serverKind === 'apache' ? '2.4' : '1.27',
+					},
+				},
+				webServer: serverKind,
+			},
+		});
+		const initialElement = menuItem.render(siteProps(switchCase.fromServer));
+		const harness = createHookHarness(registration.React);
+		harness.render(initialElement.type, initialElement.props);
+		await flushPromises();
+		harness.render(initialElement.type, initialElement.props);
+
+		currentState = switchCase.to;
+		const switchedElement = menuItem.render(siteProps(switchCase.toServer));
+		harness.render(switchedElement.type, switchedElement.props);
+		await flushPromises();
+		const tree = harness.render(switchedElement.type, switchedElement.props);
+		assert.equal(
+			findElement(tree, (node) => node.props?.id === 'local-media-proxy-site-url').props.value,
+			switchCase.to.settings.siteUrl,
+		);
+		assert.doesNotMatch(elementText(tree), /Unsaved changes/);
+		const originIpInput = findElement(
+			tree,
+			(node) => node.props?.id === 'local-media-proxy-origin-ip',
+		);
+		if (switchCase.toServer === 'apache') {
+			assert.equal(originIpInput, null);
+		} else {
+			assert.equal(originIpInput.props.value, '');
+			assert.match(elementText(tree), /Remote IP address must be a valid IPv4 or IPv6 address/);
+			assert.equal(findElement(tree, (node) => node.props?.role === 'switch').props.disabled, true);
+		}
+	}
 });
 
 test('gates Tools controls when the current Apache profile or service cannot enable', async () => {

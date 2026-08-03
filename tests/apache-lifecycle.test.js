@@ -198,9 +198,74 @@ test('startup and Local lifecycle reconciliation wait for stable ready sites wit
 	assert.match(mainSource, /DEFERRED_RECONCILIATION_STABLE_SAMPLES = 2/);
 	assert.match(
 		reconcile,
-		/if \(options\.refreshMatchingEnabledRuntime\) \{[\s\S]{0,300}compileAndReload\([\s\S]{0,120}true,[\s\S]{0,100}assertReconciliationTransactionCurrent/,
+		/if \(options\.refreshMatchingEnabledRuntime \|\| carriedSiteUrl\) \{[\s\S]{0,300}compileAndReload\([\s\S]{0,120}true,[\s\S]{0,100}assertReconciliationTransactionCurrent/,
 	);
 	assert.match(mainSource, /for \(const site of Object\.values\(siteData\.getSites\(\)\)[\s\S]{0,220}scheduleDeferredReconciliation\(site\.id/);
+});
+
+test('server reconciliation carries Site URL inside the site lock and commits it transactionally', () => {
+	const reconcile = mainSource.slice(
+		mainSource.indexOf('const reconcileSite'),
+		mainSource.indexOf('const matchesThisAddon'),
+	);
+	assert.equal(
+		(mainSource.match(/carrySiteUrlToPristineServerProfile\(/g) ?? []).length,
+		1,
+		'Site URL handoff must occur only in server reconciliation',
+	);
+	assertInOrder(
+		reconcile,
+		[
+			'await withSiteLock(siteId, async () => {',
+			'const previousEnvelope = readStoredSettingsEnvelope(site, server.kind)',
+			'carrySiteUrlToPristineServerProfile(previousEnvelope, server.kind)',
+			'const settings =',
+			'storedSettingsForServer(reconciledEnvelope, server.kind)',
+		],
+		'profile handoff must use only the normalized current site envelope under its lock',
+	);
+	assert.match(
+		reconcile,
+		/const nextEnvelope = setStoredSettingsLastServer\(reconciledEnvelope, server\.kind\)/,
+	);
+	assert.match(
+		reconcile,
+		/if \(options\.refreshMatchingEnabledRuntime \|\| carriedSiteUrl\) \{[\s\S]{0,360}compileAndReload\([\s\S]{0,180}persistReconciledEnvelope\(\)/,
+		'a complete carried profile must refresh successfully before it is persisted',
+	);
+	assert.match(
+		reconcile,
+		/if \(changed \|\| \(settings\.enabled && carriedSiteUrl\)\) \{[\s\S]{0,300}compileAndReload\([\s\S]{0,220}persistReconciledEnvelope\(\)/,
+		'a carried profile must establish runtime convergence even if another writer made its files match',
+	);
+
+	const invalidCleanup = reconcile.slice(
+		reconcile.indexOf('catch (validationError)'),
+		reconcile.indexOf('const trustBundle = normalizedOrigin.protocol'),
+	);
+	assertInOrder(
+		invalidCleanup,
+		[
+			'removeAllManagedFiles(',
+			'await compileAndReload(',
+			'if (cleanupErrors.length === 0)',
+			'persistReconciledEnvelope()',
+		],
+		'an incomplete carried profile may persist only after fail-closed cleanup succeeds',
+	);
+	assert.match(
+		invalidCleanup,
+		/rollbackTransaction\([\s\S]{0,180}previousEnvelope,[\s\S]{0,100}snapshots/,
+		'lifecycle rollback must restore the pre-handoff envelope',
+	);
+	assert.doesNotMatch(
+		mainSource.slice(
+			mainSource.indexOf('const getSiteState = async'),
+			mainSource.indexOf('const reconcileSite'),
+		),
+		/carrySiteUrlToPristineServerProfile/,
+		'passive state assembly must not perform a cross-profile handoff',
+	);
 });
 
 test('reconciliation rechecks current status and server identity immediately before mutation branches', () => {
