@@ -6,7 +6,7 @@ Security reports are reviewed on a best-effort basis under the project’s [comm
 
 Security-sensitive behavior includes:
 
-- bypassing the `/wp-content/uploads/` image-only, `GET`/`HEAD`, or local-first request boundaries;
+- bypassing the safe `/wp-content/uploads/`, `GET`/`HEAD`, local-first, or blocked-file request boundaries;
 - forwarding credentials, cookies, request bodies, or unapproved incoming headers;
 - bypassing TLS chain, hostname, or configured-origin verification;
 - writing outside the selected Local site or modifying files outside managed markers;

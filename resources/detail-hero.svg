@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 650" role="img" aria-labelledby="title desc">
   <title id="title">Local Media Proxy settings and local-first request flow</title>
-  <desc id="desc">An Amsive-branded diagram showing existing images served from Local and only missing images fetched through a verified remote connection.</desc>
+  <desc id="desc">An Amsive-branded diagram showing existing upload assets served from Local and only safe missing assets fetched through a verified remote connection.</desc>
   <rect width="1200" height="650" rx="20" fill="#f7f2f8"/>
   <path d="M20 0h1160a20 20 0 0 1 20 20v88H0V20A20 20 0 0 1 20 0Z" fill="#6e187a"/>
   <g fill="#fff" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
@@ -21,7 +21,7 @@
     <rect x="112" y="270" width="48" height="45" rx="7" fill="#d6f2e2"/>
     <circle cx="127" cy="283" r="5" fill="#218455"/>
     <path d="m118 307 11-12 8 8 6-6 9 10" fill="none" stroke="#218455" stroke-linecap="round" stroke-linejoin="round" stroke-width="3"/>
-    <text x="181" y="284" fill="#254231" font-size="16" font-weight="700">Image exists locally</text>
+    <text x="181" y="284" fill="#254231" font-size="16" font-weight="700">Asset exists locally</text>
     <text x="181" y="309" fill="#4d6a59" font-size="14">Serve it immediately from Local</text>
     <rect x="386" y="273" width="62" height="30" rx="15" fill="#d6f2e2"/>
     <text x="417" y="293" fill="#176737" font-size="12" font-weight="700" text-anchor="middle">LOCAL</text>
@@ -29,7 +29,7 @@
     <rect x="92" y="354" width="376" height="116" rx="11" fill="#fcf8fd" stroke="#aa77b1" stroke-dasharray="7 5"/>
     <rect x="112" y="378" width="48" height="45" rx="7" fill="#ead9ed"/>
     <path d="M122 389h28v23h-28zM126 406l7-7 5 5 4-4 5 6" fill="none" stroke="#6e187a" stroke-linecap="round" stroke-linejoin="round" stroke-width="3"/>
-    <text x="181" y="392" fill="#4b2751" font-size="16" font-weight="700">Image is missing</text>
+    <text x="181" y="392" fill="#4b2751" font-size="16" font-weight="700">Safe asset is missing</text>
     <text x="181" y="417" fill="#6f6573" font-size="14">Request only this file remotely</text>
     <text x="181" y="442" fill="#6e187a" font-size="13" font-weight="700">GET and HEAD only</text>
   </g>

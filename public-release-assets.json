@@ -141,9 +141,9 @@
     },
     {
       "path": "resources/detail-hero.svg",
-      "sha256": "9094c14d8534bcc964ad30a320073ed132dfc70c389fd22a4b0bfb34cf446529",
+      "sha256": "9a136421a60ba5ab9ad295cc4547f08ca06905134102b2a6ac9e56003faad3e4",
       "kind": "svg",
-      "reviewedForPublicRelease": "Product detail artwork uses only synthetic example host and address data."
+      "reviewedForPublicRelease": "Product detail artwork uses only synthetic example host and address data; its labels describe safe missing upload assets without changing the reviewed layout."
     },
     {
       "path": "resources/detail-icon.svg",

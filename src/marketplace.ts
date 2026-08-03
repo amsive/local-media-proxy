@@ -57,7 +57,7 @@ function assetUrl(packageRoot: string, ...segments: string[]): string {
 function createOverview(heroUrl: string): string {
 	return `![Local Media Proxy settings and local-first request flow](${heroUrl})
 
-${ADDON_NAME} is an Amsive add-on that keeps cloned WordPress sites lightweight without losing remote imagery. It serves upload images already available in Local and retrieves only missing images from a configured remote site.
+${ADDON_NAME} is an Amsive add-on that keeps cloned WordPress sites lightweight without losing remote upload assets. It serves files already available in Local and retrieves only safe missing assets from a configured remote site.
 
 Configuration is independent for every site, with separate saved profiles for Nginx and Apache. Nginx mode uses a Site URL plus a remote IP and can discover WP Engine or public-DNS candidates without applying them automatically. Apache mode requires only the Site URL and uses its hostname for DNS, HTTP Host, TLS SNI, and certificate verification.
 
@@ -65,7 +65,7 @@ For any provider on Nginx, the Site URL supplies HTTP Host and TLS identity whil
 
 ## How it works
 
-1. A browser requests an image under \`/wp-content/uploads/\`.
+1. A browser requests an asset under \`/wp-content/uploads/\`.
 2. If the file exists locally, Local serves it normally.
 3. If it is missing, the add-on connects to the configured endpoint with a verified TLS identity. Nginx can use a separate remote IP and verified WP Engine identity; Apache deliberately uses the Site URL hostname for the complete connection identity.
 4. The response is streamed to the browser and is not permanently cached locally.
@@ -96,13 +96,13 @@ To disable the fallback, turn off either **Enable for this site** or the compact
 ## Scope and safety
 
 - Supports Local sites using Nginx or Apache.
-- Proxies only missing image files beneath \`/wp-content/uploads/\`.
-- Existing local media always takes priority.
+- Proxies safe missing files beneath \`/wp-content/uploads/\` without enumerating allowed extensions.
+- Existing local files always take priority.
 - Allows only \`GET\` and \`HEAD\` requests.
-- Does not forward cookies, credentials, or request bodies; a fixed add-on User-Agent replaces the browser's identity. Nginx suppresses all incoming request headers before adding its allowlist. Apache 2.4 uses a finite denylist for named credential, nonce, CSRF, sensitive, and client-IP headers because its header module cannot wildcard-remove arbitrary custom request-header names.
-- Apache uses a conservative URL-safe filename matcher; upload filenames containing decoded spaces or other characters outside that allowlist remain local-only.
+- Does not forward cookies, credentials, nonces, forwarding headers, or request bodies; a fixed add-on User-Agent replaces the browser's identity. Only range negotiation needed for media seeking and partial downloads is forwarded.
+- Requires a visible filename with an extension and rejects executable, browser-active, hidden, configuration, secret, database, and backup paths. SVG remains supported as a media format.
 - Apache HTTPS requires Local's platform bundle to include \`mod_ssl\`. The current official Intel macOS +11 bundle is Apache HTTP-only; the site UI detects and explains this before testing or writing configuration.
-- Does not proxy PDFs, video, audio, themes, plugins, API requests, or arbitrary URLs.
+- Supports images, video, audio, captions, PDFs, documents, fonts, archives, generated CSS, data, streaming manifests, and unknown future asset formats. Themes, plugins, API requests, non-upload paths, and arbitrary URLs remain local-only.
 - Supported HTTPS endpoints require a trusted certificate. Apache always verifies the Site URL hostname; Nginx retains its existing guarded support for separately verified WP Engine identities.
 
 ## Troubleshooting
@@ -110,12 +110,23 @@ To disable the fallback, turn off either **Enable for this site** or the compact
 - **Unsupported-server warning:** Use an unambiguous Local Nginx or Apache HTTP service.
 - **Connection test fails:** Verify the URL scheme and optional port. On Nginx, also verify the remote IP and retry a suitable DNS candidate when applicable.
 - **Certificate error:** Confirm the endpoint serves the Site URL hostname and uses a public CA or Cloudflare Origin CA certificate.
-- **An image still fails:** Confirm the exact upload exists on the selected remote site and that its origin, proxy, or CDN permits the add-on's stripped, read-only request.
+- **An asset still fails:** Confirm the exact upload exists on the selected remote site, includes a visible filename and extension, is not in a blocked safety category, and that its origin, proxy, or CDN permits the add-on's stripped, read-only request.
 
 ${ADDON_NAME} is maintained by Amsive LLC and developed by Mark Davoli and Boris Hegedis. It is community-supported software distributed under the [Apache License 2.0](https://github.com/amsive/local-media-proxy/blob/main/LICENSE) without a support SLA. See the [support policy](https://github.com/amsive/local-media-proxy/blob/main/SUPPORT.md) and [trademark policy](https://github.com/amsive/local-media-proxy/blob/main/TRADEMARKS.md).`;
 }
 
 function createCurrentReleaseNotes(): string {
+	return `Version 0.4.0 expands the local-first fallback to safe WordPress upload assets and makes saved site state converge reliably across add-on and web-server changes.
+
+- Missing video, audio, captions, PDFs, documents, fonts, archives, generated CSS, data, streaming manifests, and future asset formats can stream from the configured origin while existing uploads remain local. Unsafe executable, browser-active, hidden, configuration, secret, database, and backup paths remain blocked. ([#32](https://github.com/amsive/local-media-proxy/issues/32))
+- Media and document range requests support seeking and partial downloads on Nginx and Apache. ([#32](https://github.com/amsive/local-media-proxy/issues/32))
+- Per-site enabled intent survives add-on disable and reinstall, and a first-time server change carries only the Site URL into a pristine destination profile. ([#31](https://github.com/amsive/local-media-proxy/issues/31), [#33](https://github.com/amsive/local-media-proxy/issues/33))
+- Managed source, compiled server configuration, and the dashboard are reconciled after upgrades, settings changes, same-value repair requests, and server changes. ([#34](https://github.com/amsive/local-media-proxy/issues/34))
+
+[View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
+}
+
+function createV031ReleaseNotes(): string {
 	return `Version 0.3.1 restores Media Proxy setup on running Apache sites while preserving Local site-lifecycle protections.
 
 - Running Apache sites no longer remain on the web-server preparation screen when Local's core Apache templates are ready but the add-on's own managed-file directory has not been created yet. ([#29](https://github.com/amsive/local-media-proxy/issues/29))
@@ -156,24 +167,19 @@ function createV023ReleaseNotes(): string {
 [View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
 }
 
-function createV022ReleaseNotes(): string {
-	return `Version 0.2.2 makes server changes and origin discovery recover safely.
-
-- Closed apply, disable, toggle, rollback, and background-reconciliation race windows when Local changes a site's web server, service identity, configuration paths, or lifecycle status mid-operation. ([#16](https://github.com/amsive/local-media-proxy/issues/16))
-- Restores settings and managed files after an interrupted lifecycle transaction, and refreshes only the currently selected service when recovery is safe.
-- Stops incomplete invalid-profile cleanup from being reported as successful.
-- Limits user-triggered WP Engine and public-DNS origin discovery to 30 seconds, restores the Tools controls in place, and ignores late provider results. ([#17](https://github.com/amsive/local-media-proxy/issues/17))
-
-[View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
-}
-
 function createPackagedReleaseHistory(): PackagedRelease[] {
 	return [
 		{
 			changelog: createCurrentReleaseNotes(),
-			date: '2026-07-30T00:00:00.000Z',
+			date: '2026-08-03T00:00:00.000Z',
 			id: `${ADDON_ID}-${ADDON_VERSION}`,
 			version: ADDON_VERSION,
+		},
+		{
+			changelog: createV031ReleaseNotes(),
+			date: '2026-07-30T00:00:00.000Z',
+			id: `${ADDON_ID}-0.3.1`,
+			version: '0.3.1',
 		},
 		{
 			changelog: createV030ReleaseNotes(),
@@ -192,12 +198,6 @@ function createPackagedReleaseHistory(): PackagedRelease[] {
 			date: '2026-07-23T00:00:00.000Z',
 			id: `${ADDON_ID}-0.2.3`,
 			version: '0.2.3',
-		},
-		{
-			changelog: createV022ReleaseNotes(),
-			date: '2026-07-22T00:00:00.000Z',
-			id: `${ADDON_ID}-0.2.2`,
-			version: '0.2.2',
 		},
 	];
 }
@@ -244,7 +244,7 @@ export function createMarketplaceDetailPayload(
 					},
 					name: 'Amsive',
 				},
-				excerpt: 'Load missing WordPress upload images from a remote site while keeping existing media local.',
+				excerpt: 'Load safe missing WordPress upload assets from a remote site while keeping existing files local.',
 				name: ADDON_NAME,
 				npmPackageName: ADDON_ID,
 				releases: [

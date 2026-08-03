@@ -1,6 +1,6 @@
 # Local Media Proxy
 
-Local Media Proxy is an [Amsive](https://www.amsive.com/?utm_source=github&utm_medium=referral&utm_campaign=local_media_proxy&utm_content=readme) add-on for [Local](https://localwp.com/) that keeps WordPress uploads out of local clones without breaking image-heavy pages. Existing uploads remain local; only missing images below `/wp-content/uploads/` fall back to a configured production, staging, or development site.
+Local Media Proxy is an [Amsive](https://www.amsive.com/?utm_source=github&utm_medium=referral&utm_campaign=local_media_proxy&utm_content=readme) add-on for [Local](https://localwp.com/) that keeps WordPress uploads out of local clones without breaking asset-heavy pages. Existing uploads remain local; only safe missing assets below `/wp-content/uploads/` fall back to a configured production, staging, or development site.
 
 Local Media Proxy is open-source, community-supported software released under the [Apache License 2.0](LICENSE).
 
@@ -14,7 +14,7 @@ Local Media Proxy is open-source, community-supported software released under th
 - Supports Local sites using Nginx or Apache.
 - Auto-populates connected WP Engine environments and supports manual configuration for other hosts.
 - Uses public DNS suggestions for Nginx only when provider-specific discovery is unavailable.
-- Proxies only missing image requests, allows only `GET` and `HEAD`, and forwards no request body, cookies, or credentials.
+- Proxies safe missing upload assets without enumerating media formats, allows only `GET` and `HEAD`, and forwards no request body, cookies, or credentials.
 - Verifies HTTPS identity and certificate chains against standard public roots and Cloudflare's published Origin CA roots.
 - Applies bounded, reversible managed configuration and removes it when the proxy is disabled.
 - Stays inactive while Local creates a site, performs an initial pull, or deletes it, with no managed-file access or settings writes until the site is lifecycle-ready and running or halted. During transitions, the UI shows a static unavailable state without proxy controls or an indefinite progress indicator.
@@ -47,26 +47,26 @@ Local cannot overwrite an installed add-on with the same slug. To update manuall
    - **Apache:** Enter the Site URL. Apache resolves that hostname directly and does not use a separate remote IP.
 3. Choose **Test connection**. HTTPS checks verify both the certificate chain and expected identity.
 4. Choose **Save & apply**, then turn on **Enable for this site**.
-5. Load an image that is absent locally. A successful fallback returns `200` with `X-Local-Media-Proxy: origin`.
+5. Load an upload asset that is absent locally. A successful fallback returns `200` with `X-Local-Media-Proxy: origin`.
 
 Enter only a URL scheme and hostname plus an optional port, such as `https://example.com`. Do not include credentials, paths, query strings, or fragments. Discovered values are suggestions and are never saved or enabled without an explicit action.
 
 ## How it works
 
 ```text
-Browser requests /wp-content/uploads/.../image.png
+Browser requests /wp-content/uploads/.../asset.ext
              |
              v
        File exists locally? ---- yes ---> serve local file
              |
              no
              v
-Verified remote endpoint ---> stream image response
+Verified remote endpoint ---> stream asset response
 ```
 
 Nginx can connect to a selected IP while preserving the Site URL as the HTTP `Host`. Guarded WP Engine discovery may also preserve a provider-returned direct hostname for TLS verification. Apache uses one validated Site URL hostname for DNS, `Host`, TLS SNI, and certificate identity.
 
-The add-on does not proxy PDFs, video, audio, themes, plugins, APIs, arbitrary missing URLs, or non-upload paths. It streams responses without a persistent media cache.
+The add-on supports images, video, audio, captions, PDFs, documents, fonts, archives, generated CSS, and future file formats without maintaining an extension allowlist. It rejects executable, browser-active, hidden, configuration, secret, database, and backup files; it never proxies themes, plugins, APIs, arbitrary missing URLs, or non-upload paths. Responses stream without a persistent media cache.
 
 ## HTTPS and Cloudflare Origin CA
 

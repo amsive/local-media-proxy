@@ -17,7 +17,7 @@ const {
 } = require('../scripts/verify-third-party');
 
 const REPOSITORY_ROOT = path.resolve(__dirname, '..');
-const REVIEW_DATE = new Date('2026-07-23T12:00:00.000Z');
+const REVIEW_DATE = new Date('2026-08-03T12:00:00.000Z');
 const FIXTURE_PATHS = [
 	'NOTICE',
 	'package-lock.json',
@@ -54,7 +54,7 @@ test('verifies the complete third-party provenance contract offline', () => {
 	assert.deepEqual(result, {
 		dependenciesChecked: 6,
 		materialsChecked: 2,
-		reviewedOn: '2026-07-23',
+		reviewedOn: '2026-08-03',
 	});
 	assert.equal(MAX_REVIEW_AGE_DAYS, 366);
 });
@@ -74,7 +74,7 @@ test('rejects stale provenance', (context) => {
 
 	assert.throws(
 		() => verifyThirdParty({
-			now: new Date('2027-07-25T12:00:00.000Z'),
+			now: new Date('2027-08-05T12:00:00.000Z'),
 			root,
 		}),
 		/Third-party provenance is older than 366 days/,
@@ -84,7 +84,7 @@ test('rejects stale provenance', (context) => {
 test('rejects future-dated provenance', (context) => {
 	const root = createFixture(context);
 	const provenance = readJson(root, 'third-party-materials.json');
-	provenance.reviewedOn = '2026-07-24';
+	provenance.reviewedOn = '2026-08-04';
 	writeJson(root, 'third-party-materials.json', provenance);
 
 	assert.throws(
