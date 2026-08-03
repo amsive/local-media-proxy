@@ -147,6 +147,7 @@ test('builds a fixed-host local-first Apache proxy with guarded methods, bodies,
 	assert.match(config, /ProxyRequests Off/);
 	assert.match(config, /ProxyAddHeaders Off/);
 	assert.match(config, /ProxyPreserveHost Off/);
+	assert.match(config, /Managed route revision: upload-assets-v2/);
 	assert.match(config, /SSLProxyEngine On/);
 	assert.match(config, /SSLProxyVerify require/);
 	assert.match(config, /SSLProxyVerifyDepth 5/);
@@ -160,6 +161,8 @@ test('builds a fixed-host local-first Apache proxy with guarded methods, bodies,
 	assert.match(config, /RewriteCond %\{HTTP:Content-Length\} !\^\(\?:\|0\)\$/);
 	assert.match(config, /RewriteCond "%\{DOCUMENT_ROOT\}\/\$1" !-f/);
 	assert.ok(config.indexOf('RewriteCond $1') < config.indexOf('RewriteCond "%{DOCUMENT_ROOT}/$1" !-f'));
+	assert.match(config, /RewriteCond "%\{DOCUMENT_ROOT\}\/\$1" !-f\nRewriteCond \$1 .*php/);
+	assert.ok(config.indexOf('RewriteCond $1') < config.indexOf('[P,L,NE,QSA'));
 	assert.ok(config.includes('"https://media.example.com:8443/$1"'));
 	assert.match(config, /\[P,L,NE,QSA,NC,E=LOCAL_MEDIA_PROXY_ORIGIN:1\]/);
 	assert.doesNotMatch(config, /192\.0\.2\./);
@@ -175,13 +178,18 @@ test('builds a fixed-host local-first Apache proxy with guarded methods, bodies,
 	for (const sensitiveHeader of ['X-WP-Nonce', 'X-API-Key', 'X-Auth-Token', 'X-CSRF-Token']) {
 		assert.match(config, new RegExp(`RequestHeader unset ${sensitiveHeader} env=LOCAL_MEDIA_PROXY_ORIGIN`));
 	}
+	assert.doesNotMatch(config, /RequestHeader unset (?:Range|If-Range)/);
 });
 
-test('preserves the official vhost route regex and rejects traversal before the local-file check', () => {
+test('shares the future-tolerant asset policy and rejects unsafe paths before the local-file check', () => {
 	for (const requestPath of [
 		'/wp-content/uploads/2026/07/photo.jpg',
 		'/wp-content/uploads/photo%41.webp',
 		'/wp-content/uploads/icons/logo.svg',
+		'/wp-content/uploads/download.pdf',
+		'/wp-content/uploads/movie.mp4',
+		'/wp-content/uploads/data.json',
+		'/wp-content/uploads/new.futuremedia',
 	]) {
 		assert.equal(apacheMediaPathIsProxyEligible(requestPath), true, requestPath);
 	}
@@ -196,7 +204,10 @@ test('preserves the official vhost route regex and rejects traversal before the 
 		'/wp-content/uploads/photo%2541.jpg',
 		'/wp-content/uploads/photo.jpg?target=https://other.example.com',
 		'/wp-content/uploads/photo.jpg#fragment',
-		'/wp-content/uploads/photo.pdf',
+		'/wp-content/uploads/shell.php.jpg',
+		'/wp-content/uploads/index.html',
+		'/wp-content/uploads/program.exe',
+		'/wp-content/uploads/database.sqlite',
 		'/other/uploads/photo.jpg',
 	]) {
 		assert.equal(apacheMediaPathIsProxyEligible(requestPath), false, requestPath);
@@ -204,11 +215,14 @@ test('preserves the official vhost route regex and rejects traversal before the 
 
 	const config = buildManagedApacheConfig(secureOrigin, '/site/ca.pem');
 	assert.match(config, /RewriteRule "\^\/\(wp-content\/uploads\//);
+	const locationMatch = config.split('\n').find((line) => line.startsWith('<LocationMatch')) ?? '';
+	assert.doesNotMatch(locationMatch, /avif|jpe|webp|pdf|mp4|futuremedia/i);
 	for (const line of config.split('\n').filter((line) => line.startsWith('RewriteRule '))) {
 		assert.match(line, /\[[^\]]*NC[^\]]*\]$/);
 	}
 	assert.match(config, /%\(\?:25\)\*\(\?:2f\|5c\|3f\|23\|00\)/);
 	assert.match(config, /RewriteCond \$1 "%" \[OR\]/);
+	assert.match(config, /RewriteCond %\{THE_REQUEST\} .*%\(\?:25\|2f\|5c\|3f\|23/);
 	assert.ok(config.indexOf('RewriteCond $1') < config.indexOf('RewriteCond "%{DOCUMENT_ROOT}/$1" !-f'));
 });
 

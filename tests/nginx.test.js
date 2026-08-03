@@ -38,12 +38,15 @@ const service = {
 test('builds a local-first, read-only, privacy-preserving HTTPS proxy', () => {
 	const config = buildManagedNginxConfig(secureOrigin, '/tmp/local origin-ca.pem');
 
-	assert.match(config, /location ~\* \^\/wp-content\/uploads\//);
-	assert.match(
-		config,
-		/location ~\*[^\n]+\{\n\tif \(\$request_method !~ \^\(GET\|HEAD\)\$\) \{ return 405; \}\n\ttry_files \$uri @local_media_proxy;/,
-	);
+	assert.match(config, /Managed route revision: upload-assets-v2/);
+	assert.match(config, /location ~\* "\^\/wp-content\/uploads\//);
+	assert.match(config, /if \(\$request_method !~ \^\(GET\|HEAD\)\$\) \{ return 405; \}/);
+	assert.match(config, /if \(\$http_transfer_encoding != ""\) \{ return 400; \}/);
+	assert.match(config, /if \(\$http_content_length !~ \^\(\?:\|0\)\$\) \{ return 400; \}/);
+	assert.match(config, /\$request_uri ~\* .*%\(\?:25\|2f\|5c\|3f\|23/);
 	assert.match(config, /try_files \$uri @local_media_proxy;/);
+	assert.ok(config.indexOf('try_files $uri') < config.indexOf('if ($uri ~*'));
+	assert.ok(config.indexOf('if ($uri ~*') < config.indexOf('proxy_pass https://'));
 	assert.doesNotMatch(config, /limit_except/);
 	assert.equal((config.match(/\$request_method/g) ?? []).length, 1);
 	assert.match(config, /proxy_pass https:\/\/192\.0\.2\.10:443;/);
@@ -54,6 +57,8 @@ test('builds a local-first, read-only, privacy-preserving HTTPS proxy', () => {
 	assert.match(config, /proxy_ssl_trusted_certificate "\/tmp\/local origin-ca\.pem";/);
 	assert.match(config, /proxy_pass_request_headers off;/);
 	assert.match(config, /proxy_pass_request_body off;/);
+	assert.match(config, /proxy_set_header Range \$http_range;/);
+	assert.match(config, /proxy_set_header If-Range \$http_if_range;/);
 	assert.match(config, /proxy_set_header Content-Length "";/);
 	assert.match(config, /proxy_set_header Cookie "";/);
 	assert.match(config, /proxy_set_header Authorization "";/);
@@ -79,9 +84,31 @@ test('builds a local-first, read-only, privacy-preserving HTTPS proxy', () => {
 	}
 	assert.match(config, /proxy_hide_header Set-Cookie;/);
 	assert.match(config, /proxy_buffering off;/);
-	assert.doesNotMatch(config, /\$http_/);
+	assert.deepEqual(
+		config.split('\n')
+			.filter((line) => /proxy_set_header .*\$http_/.test(line))
+			.map((line) => line.trim()),
+		[
+			'proxy_set_header Range $http_range;',
+			'proxy_set_header If-Range $http_if_range;',
+		],
+	);
 	assert.doesNotMatch(config, /\$http_user_agent/);
 	assert.doesNotMatch(config, /location \/ \{/);
+});
+
+test('uses a default-allow upload route while blocking active and sensitive misses', () => {
+	const config = buildManagedNginxConfig(secureOrigin, '/tmp/origin-ca.pem');
+	const routeLine = config.split('\n').find((line) => line.startsWith('location ~*')) ?? '';
+
+	assert.match(routeLine, /wp-content\/uploads/);
+	assert.match(routeLine, /A-Za-z0-9/);
+	assert.doesNotMatch(routeLine, /avif|jpe|webp|pdf|mp4|futuremedia/i);
+	for (const token of ['php', 'html', 'wasm', 'exe', 'sqlite', 'backup']) {
+		assert.match(config, new RegExp(token, 'i'));
+	}
+	assert.match(config, /proxy_pass https:[^\n]+;\n/);
+	assert.doesNotMatch(config, /proxy_pass https:[^\n]+\/wp-content/);
 });
 
 test('requires a trust bundle for HTTPS but omits TLS directives for HTTP', () => {

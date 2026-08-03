@@ -88,15 +88,43 @@ test('official Apache +11 runtime preserves local files and safely proxies only 
 }, async () => {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), 'local-media-proxy-apache-runtime-'));
 	const backendRequests = [];
+	const rangeBody = Buffer.from('0123456789', 'utf8');
 	const backend = http.createServer((incoming, response) => {
 		backendRequests.push({
 			headers: incoming.headers,
 			method: incoming.method,
 			url: incoming.url,
 		});
+		const isRangeFixture = incoming.url.includes('/range.') || incoming.url.includes('/head.');
 		response.statusCode = incoming.url.includes('not-found') ? 404 : 200;
-		response.setHeader('Content-Type', 'text/plain');
+		response.setHeader('Content-Type', isRangeFixture ? 'application/octet-stream' : 'text/plain');
+		response.setHeader('Content-Disposition', 'inline; filename="origin-asset.bin"');
 		response.setHeader('Set-Cookie', 'origin_session=private; HttpOnly');
+		if (isRangeFixture) {
+			response.setHeader('Accept-Ranges', 'bytes');
+			const range = incoming.headers.range?.match(/^bytes=(\d+)-(\d*)$/);
+			if (range) {
+				const start = Number(range[1]);
+				const requestedEnd = range[2] ? Number(range[2]) : rangeBody.length - 1;
+				if (start >= rangeBody.length || requestedEnd < start) {
+					response.statusCode = 416;
+					response.setHeader('Content-Range', `bytes */${rangeBody.length}`);
+					response.setHeader('Content-Length', '0');
+					response.end();
+					return;
+				}
+				const end = Math.min(requestedEnd, rangeBody.length - 1);
+				const selected = rangeBody.subarray(start, end + 1);
+				response.statusCode = 206;
+				response.setHeader('Content-Range', `bytes ${start}-${end}/${rangeBody.length}`);
+				response.setHeader('Content-Length', String(selected.length));
+				response.end(selected);
+				return;
+			}
+			response.setHeader('Content-Length', String(rangeBody.length));
+			response.end(rangeBody);
+			return;
+		}
 		response.end(`backend:${incoming.url}`);
 	});
 	let apache;
@@ -109,7 +137,10 @@ test('official Apache +11 runtime preserves local files and safely proxies only 
 		const documentRoot = path.join(root, 'htdocs');
 		const uploads = path.join(documentRoot, 'wp-content', 'uploads');
 		await fs.mkdir(uploads, { recursive: true });
-		await fs.writeFile(path.join(uploads, 'local.JPG'), 'local-body');
+		await Promise.all([
+			fs.writeFile(path.join(uploads, 'local.JPG'), 'local-body'),
+			fs.writeFile(path.join(uploads, 'local.js'), 'local-script-body'),
+		]);
 
 		const origin = validateAndNormalizeOrigin({
 			originIp: '',
@@ -162,6 +193,11 @@ test('official Apache +11 runtime preserves local files and safely proxies only 
 		assert.equal(local.headers['x-local-only'], 'preserved');
 		assert.equal(local.headers['x-local-media-proxy'], undefined);
 		assert.equal(backendRequests.length, 0);
+		const localBlockedType = await request(frontendPort, '/wp-content/uploads/local.js');
+		assert.equal(localBlockedType.statusCode, 200);
+		assert.equal(localBlockedType.body, 'local-script-body');
+		assert.equal(localBlockedType.headers['x-local-media-proxy'], undefined);
+		assert.equal(backendRequests.length, 0);
 
 		const missing = await request(frontendPort, '/wp-content/uploads/missing.JPG', {
 			headers: {
@@ -179,6 +215,7 @@ test('official Apache +11 runtime preserves local files and safely proxies only 
 		assert.equal(missing.body, 'backend:/wp-content/uploads/missing.JPG');
 		assert.equal(missing.headers['x-local-media-proxy'], 'origin');
 		assert.equal(missing.headers['x-content-type-options'], 'nosniff');
+		assert.equal(missing.headers['content-disposition'], 'inline; filename="origin-asset.bin"');
 		assert.equal(missing.headers['set-cookie'], undefined);
 		assert.equal(backendRequests.length, 1);
 		assert.equal(backendRequests[0].headers.host, `127.0.0.1:${backendAddress.port}`);
@@ -234,6 +271,87 @@ test('official Apache +11 runtime preserves local files and safely proxies only 
 			assert.equal(blocked.statusCode, 400, unsafePath);
 			assert.equal(backendRequests.length, 2, unsafePath);
 		}
+
+		const queryString = await request(
+			frontendPort,
+			'/wp-content/uploads/new.futuremedia?cache=one%20two&size=large',
+		);
+		assert.equal(queryString.statusCode, 200);
+		assert.equal(
+			queryString.body,
+			'backend:/wp-content/uploads/new.futuremedia?cache=one%20two&size=large',
+		);
+		assert.equal(queryString.headers['x-local-media-proxy'], 'origin');
+		assert.equal(backendRequests.at(-1).url, '/wp-content/uploads/new.futuremedia?cache=one%20two&size=large');
+
+		const beforeBlocked = backendRequests.length;
+		for (const blockedPath of [
+			'/wp-content/uploads/index.html',
+			'/wp-content/uploads/app.js',
+			'/wp-content/uploads/shell.PHP.jpg',
+			'/wp-content/uploads/shell.php;.jpg',
+			'/wp-content/uploads/shell.php%3B.jpg',
+			'/wp-content/uploads/program.exe',
+			'/wp-content/uploads/web.config',
+			'/wp-content/uploads/database.sqlite',
+			'/wp-content/uploads/site.backup',
+			'/wp-content/uploads/.hidden.pdf',
+			'/wp-content/uploads/no-extension',
+		]) {
+			const blocked = await request(frontendPort, blockedPath);
+			assert.equal(blocked.statusCode, 404, blockedPath);
+			assert.equal(backendRequests.length, beforeBlocked, blockedPath);
+		}
+
+		const rangedVideo = await request(frontendPort, '/wp-content/uploads/range.mp4', {
+			headers: {
+				Authorization: 'Bearer private',
+				Cookie: 'private=cookie',
+				'If-Range': '"fixture-etag"',
+				Range: 'bytes=2-5',
+			},
+		});
+		assert.equal(rangedVideo.statusCode, 206);
+		assert.equal(rangedVideo.body, '2345');
+		assert.equal(rangedVideo.headers['accept-ranges'], 'bytes');
+		assert.equal(rangedVideo.headers['content-range'], 'bytes 2-5/10');
+		assert.equal(rangedVideo.headers['content-length'], '4');
+		assert.equal(rangedVideo.headers['content-type'], 'application/octet-stream');
+		assert.equal(rangedVideo.headers['content-disposition'], 'inline; filename="origin-asset.bin"');
+		assert.equal(rangedVideo.headers['x-local-media-proxy'], 'origin');
+		assert.equal(rangedVideo.headers['x-content-type-options'], 'nosniff');
+		assert.equal(rangedVideo.headers['set-cookie'], undefined);
+		assert.equal(backendRequests.at(-1).headers.range, 'bytes=2-5');
+		assert.equal(backendRequests.at(-1).headers['if-range'], '"fixture-etag"');
+		assert.equal(backendRequests.at(-1).headers.authorization, undefined);
+		assert.equal(backendRequests.at(-1).headers.cookie, undefined);
+
+		const rangedAudio = await request(frontendPort, '/wp-content/uploads/range.mp3', {
+			headers: { Range: 'bytes=0-1' },
+		});
+		assert.equal(rangedAudio.statusCode, 206);
+		assert.equal(rangedAudio.body, '01');
+		assert.equal(rangedAudio.headers['content-range'], 'bytes 0-1/10');
+
+		const unsatisfiedPdf = await request(frontendPort, '/wp-content/uploads/range.pdf', {
+			headers: { Range: 'bytes=99-' },
+		});
+		assert.equal(unsatisfiedPdf.statusCode, 416);
+		assert.equal(unsatisfiedPdf.body, '');
+		assert.equal(unsatisfiedPdf.headers['content-range'], 'bytes */10');
+		assert.equal(unsatisfiedPdf.headers['x-local-media-proxy'], 'origin');
+		assert.equal(unsatisfiedPdf.headers['set-cookie'], undefined);
+
+		const headVideo = await request(frontendPort, '/wp-content/uploads/head.webm', {
+			method: 'HEAD',
+		});
+		assert.equal(headVideo.statusCode, 200);
+		assert.equal(headVideo.body, '');
+		assert.equal(headVideo.headers['content-length'], '10');
+		assert.equal(headVideo.headers['accept-ranges'], 'bytes');
+		assert.equal(headVideo.headers['x-local-media-proxy'], 'origin');
+		assert.equal(headVideo.headers['set-cookie'], undefined);
+		assert.equal(backendRequests.at(-1).method, 'HEAD');
 	} finally {
 		if (apache && apache.exitCode === null) {
 			apache.kill('SIGTERM');
