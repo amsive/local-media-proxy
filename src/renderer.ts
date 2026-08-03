@@ -34,6 +34,8 @@ import {
 export const IPC_READ_DEADLINE_MS = 15_000;
 export const IPC_DISCOVERY_DEADLINE_MS = 30_000;
 export const IPC_MUTATION_DEADLINE_MS = 90_000;
+export const PASSIVE_STATE_REFRESH_DELAY_MS = 1_000;
+export const PASSIVE_STATE_REFRESH_MAX_ATTEMPTS = 3;
 
 const IPC_DEADLINE_ERROR_NAME = 'LocalMediaProxyIpcDeadlineError';
 const OVERVIEW_STATE_TIMEOUT_MESSAGE = 'Media Proxy status could not be confirmed within 15 seconds. Its status is unconfirmed.';
@@ -230,7 +232,7 @@ export interface SiteStatusPresentation {
 
 export function proxyPrivacySummary(serverKind: ServerKind): string {
 	return serverKind === 'apache'
-		? 'Only GET and HEAD are allowed; request bodies and named credential, nonce, CSRF, sensitive, and client-IP headers are stripped. Apache 2.4 cannot wildcard-remove arbitrary custom header names. Controlled Host and fixed add-on User-Agent headers are used for compatibility.'
+		? 'Only GET and HEAD are allowed; request bodies and standard browser, credential, nonce, CSRF, tracing, and client-IP headers are stripped. Missing-asset requests with unknown data-bearing headers fail closed before reaching the origin. Controlled Host and fixed add-on User-Agent headers are used for compatibility.'
 		: 'Only GET and HEAD are allowed; incoming visitor headers and request bodies are not forwarded, and a fixed add-on User-Agent is used for compatibility.';
 }
 
@@ -238,6 +240,30 @@ export interface OverviewProxyStatusPresentation {
 	className: string;
 	detail: string;
 	label: 'Active' | 'Checking…' | 'Inactive' | 'Needs attention' | 'Unavailable';
+}
+
+export function siteStateNeedsPassiveRefresh(siteState: SiteState): boolean {
+	const {
+		applied,
+		canEnable,
+		cleanupSupported,
+		lifecycleReady,
+		needsAttention,
+		settings,
+	} = siteState;
+	return Boolean(lifecycleReady &&
+		needsAttention &&
+		(
+			(
+				canEnable &&
+				settings.enabled &&
+				!applied
+			) || (
+				!settings.enabled &&
+				cleanupSupported &&
+				applied
+			)
+		));
 }
 
 export function overviewProxyStatusPresentation(
@@ -542,6 +568,8 @@ export default function renderer(context: RendererContext): void {
 		React.useEffect(() => {
 			const epoch = ++siteEpoch.current;
 			operationEpoch.current += 1;
+			const passiveOperationEpoch = operationEpoch.current;
+			let passiveRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 			pendingFocusHandoff.current = null;
 			setBusy(false);
 			setOperationError('');
@@ -558,28 +586,60 @@ export default function renderer(context: RendererContext): void {
 				};
 			}
 
-			withIpcDeadline(
-				ipcRenderer.invoke(IPC_CHANNELS.getSiteState, site.id),
-				IPC_READ_DEADLINE_MS,
-				OVERVIEW_STATE_TIMEOUT_MESSAGE,
-			)
-				.then((value: unknown) => {
-					if (siteEpoch.current === epoch) {
-						setSiteStateSnapshot({
-							identity: statusIdentity,
-							value: value as SiteState,
-						});
-					}
-				})
-				.catch((error: unknown) => {
-					if (siteEpoch.current === epoch) {
-						setSiteStateSnapshot({ identity: statusIdentity, value: null });
-						setOperationError(cleanIpcError(error));
-						setTooltipOpen(true);
-					}
-				});
+			const loadState = (attempt: number): void => {
+				if (
+					siteEpoch.current !== epoch ||
+					operationEpoch.current !== passiveOperationEpoch
+				) {
+					return;
+				}
+				void withIpcDeadline(
+					ipcRenderer.invoke(IPC_CHANNELS.getSiteState, site.id),
+					IPC_READ_DEADLINE_MS,
+					OVERVIEW_STATE_TIMEOUT_MESSAGE,
+				)
+					.then((value: unknown) => {
+						if (
+							siteEpoch.current !== epoch ||
+							operationEpoch.current !== passiveOperationEpoch
+						) {
+							return;
+						}
+						const nextState = value as SiteState;
+						setSiteStateSnapshot({ identity: statusIdentity, value: nextState });
+						if (
+							siteStateNeedsPassiveRefresh(nextState) &&
+							attempt < PASSIVE_STATE_REFRESH_MAX_ATTEMPTS
+						) {
+							passiveRefreshTimer = setTimeout(
+								() => loadState(attempt + 1),
+								PASSIVE_STATE_REFRESH_DELAY_MS,
+							);
+						}
+					})
+					.catch((error: unknown) => {
+						if (
+							siteEpoch.current !== epoch ||
+							operationEpoch.current !== passiveOperationEpoch
+						) {
+							return;
+						}
+						if (attempt === 0) {
+							setSiteStateSnapshot({ identity: statusIdentity, value: null });
+							setOperationError(cleanIpcError(error));
+							setTooltipOpen(true);
+						} else if (attempt < PASSIVE_STATE_REFRESH_MAX_ATTEMPTS) {
+							passiveRefreshTimer = setTimeout(
+								() => loadState(attempt + 1),
+								PASSIVE_STATE_REFRESH_DELAY_MS,
+							);
+						}
+					});
+			};
+			loadState(0);
 
 			return () => {
+				clearTimeout(passiveRefreshTimer);
 				clearTimeout(tooltipTimer.current);
 				tooltipTimer.current = undefined;
 				if (siteEpoch.current === epoch) {
@@ -907,7 +967,9 @@ export default function renderer(context: RendererContext): void {
 
 		React.useEffect(() => {
 			const epoch = ++siteEpoch.current;
+			let passiveRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 			const cleanUp = (): void => {
+				clearTimeout(passiveRefreshTimer);
 				if (siteEpoch.current === epoch) {
 					const token = activeProbeToken.current;
 					if (token) {
@@ -922,6 +984,7 @@ export default function renderer(context: RendererContext): void {
 			};
 			discoveryEpoch.current += 1;
 			operationEpoch.current += 1;
+			const passiveOperationEpoch = operationEpoch.current;
 			pendingFocusHandoff.current = null;
 			setBusy('');
 			setLoadedIdentity(null);
@@ -946,6 +1009,49 @@ export default function renderer(context: RendererContext): void {
 				return cleanUp;
 			}
 
+			const schedulePassiveRefresh = (nextState: SiteState, attempt: number): void => {
+				if (
+					!siteStateNeedsPassiveRefresh(nextState) ||
+					attempt >= PASSIVE_STATE_REFRESH_MAX_ATTEMPTS ||
+					siteEpoch.current !== epoch ||
+					operationEpoch.current !== passiveOperationEpoch
+				) {
+					return;
+				}
+				passiveRefreshTimer = setTimeout(() => {
+					if (
+						siteEpoch.current !== epoch ||
+						operationEpoch.current !== passiveOperationEpoch
+					) {
+						return;
+					}
+					void withIpcDeadline(
+						ipcRenderer.invoke(IPC_CHANNELS.getSiteState, site.id),
+						IPC_READ_DEADLINE_MS,
+						TOOLS_STATE_TIMEOUT_MESSAGE,
+					)
+						.then((value: unknown) => {
+							if (
+								siteEpoch.current !== epoch ||
+								operationEpoch.current !== passiveOperationEpoch
+							) {
+								return;
+							}
+							const refreshedState = value as SiteState;
+							setSiteState(refreshedState);
+							schedulePassiveRefresh(refreshedState, attempt + 1);
+						})
+						.catch(() => {
+							if (
+								siteEpoch.current === epoch &&
+								operationEpoch.current === passiveOperationEpoch
+							) {
+								schedulePassiveRefresh(nextState, attempt + 1);
+							}
+						});
+				}, PASSIVE_STATE_REFRESH_DELAY_MS);
+			};
+
 			withIpcDeadline(
 				ipcRenderer.invoke(IPC_CHANNELS.getSiteState, site.id),
 				IPC_READ_DEADLINE_MS,
@@ -953,7 +1059,9 @@ export default function renderer(context: RendererContext): void {
 			)
 				.then((value: unknown) => {
 					if (siteEpoch.current === epoch) {
-						hydrate(value as SiteState);
+						const nextState = value as SiteState;
+						hydrate(nextState);
+						schedulePassiveRefresh(nextState, 0);
 					}
 				})
 				.catch((error: unknown) => {
@@ -1445,6 +1553,7 @@ export default function renderer(context: RendererContext): void {
 
 		const supported = siteState?.supported === true;
 		const cleanupSupported = siteState?.cleanupSupported === true;
+		const settingsReadOnly = siteState?.settingsReadOnly === true;
 		const requiresOriginIp = siteState?.requiresOriginIp === true;
 		const isApplied = Boolean(siteState?.applied);
 		const persistedEnabled = Boolean(siteState?.settings.enabled);
@@ -1482,8 +1591,16 @@ export default function renderer(context: RendererContext): void {
 			enabled,
 			capabilityBlocksSave,
 		);
-		const canSave = draftDirty && actionAvailability.canSave;
-		const canToggleEnabled = siteState?.canEnable === true && (
+		const canRepairUnchangedProfile = Boolean(
+			!draftDirty &&
+			enabled &&
+			persistedEnabled &&
+			siteState?.needsAttention &&
+			siteState.canEnable,
+		);
+		const canSave = !settingsReadOnly &&
+			(draftDirty || canRepairUnchangedProfile) && actionAvailability.canSave;
+		const canToggleEnabled = !settingsReadOnly && siteState?.canEnable === true && (
 			!persistedEnabled || cleanupSupported
 		);
 		const toggleBlockedByDraft = draftDirty;
@@ -1510,7 +1627,7 @@ export default function renderer(context: RendererContext): void {
 		const canDiscoverFromDns = siteUrlIsUsableForDns(siteUrl);
 		const testControl = connectionTestControlState(
 			busy,
-			supported && !capabilityBlocksTest,
+			supported && !settingsReadOnly && !capabilityBlocksTest,
 			Boolean(siteUrl.trim() && (!requiresOriginIp || originIp.trim())),
 		);
 		const toolsBusyAnnouncement = busy === 'toggling'
@@ -1548,6 +1665,14 @@ export default function renderer(context: RendererContext): void {
 					role: 'status',
 				},
 				siteState?.reason || 'This site uses an unsupported web server.',
+			),
+			siteState?.settingsReadOnly && siteState.reason && e(
+				'div',
+				{
+					className: 'LocalMediaProxy__Banner LocalMediaProxy__Banner--warning',
+					role: 'status',
+				},
+				siteState.reason,
 			),
 			siteState?.httpsUnavailableReason && e(
 				'div',
@@ -1630,7 +1755,7 @@ export default function renderer(context: RendererContext): void {
 								'select',
 								{
 									className: 'LocalMediaProxy__Input LocalMediaProxy__Select',
-									disabled: Boolean(busy),
+									disabled: Boolean(busy) || settingsReadOnly,
 									id: `${ADDON_ID}-environment`,
 									onChange: (event: { target: { value: HostingEnvironment } }) => {
 										setSelectedEnvironment(event.target.value);
@@ -1649,7 +1774,7 @@ export default function renderer(context: RendererContext): void {
 						),
 						e('button', {
 							className: 'LocalMediaProxy__Button LocalMediaProxy__Button--Secondary',
-							disabled: Boolean(busy) || !selectedEnvironment,
+							disabled: Boolean(busy) || settingsReadOnly || !selectedEnvironment,
 							onClick: () => discover('wpengine'),
 							type: 'button',
 						}, busy === 'discovering' ? 'Discovering…' : 'Auto-populate from WP Engine'),
@@ -1668,7 +1793,7 @@ export default function renderer(context: RendererContext): void {
 								: `${ADDON_ID}-site-url-help`,
 							'aria-invalid': fieldsMissing && !siteUrl.trim(),
 							className: `LocalMediaProxy__Input${fieldsMissing && !siteUrl.trim() ? ' LocalMediaProxy__Input--Invalid' : ''}`,
-							disabled: !supported || Boolean(busy),
+							disabled: !supported || settingsReadOnly || Boolean(busy),
 							id: `${ADDON_ID}-site-url`,
 							onChange: (event: { target: { value: string } }) => editSiteUrl(event.target.value),
 							placeholder: 'https://example.com',
@@ -1697,7 +1822,7 @@ export default function renderer(context: RendererContext): void {
 									: `${ADDON_ID}-origin-ip-help`,
 								'aria-invalid': fieldsMissing && !originIp.trim(),
 								className: `LocalMediaProxy__Input${fieldsMissing && !originIp.trim() ? ' LocalMediaProxy__Input--Invalid' : ''}`,
-								disabled: !supported || Boolean(busy),
+								disabled: !supported || settingsReadOnly || Boolean(busy),
 								id: `${ADDON_ID}-origin-ip`,
 								onChange: (event: { target: { value: string } }) => editOriginIp(event.target.value),
 								placeholder: '203.0.113.10',
@@ -1707,7 +1832,7 @@ export default function renderer(context: RendererContext): void {
 							discoveryLayout !== 'pending' && e('button', {
 								'aria-describedby': `${ADDON_ID}-dns-help`,
 								className: 'LocalMediaProxy__Button LocalMediaProxy__Button--Secondary LocalMediaProxy__Button--Dns',
-								disabled: Boolean(busy) || !supported || !canDiscoverFromDns,
+								disabled: Boolean(busy) || settingsReadOnly || !supported || !canDiscoverFromDns,
 								onClick: () => discover('dns'),
 								type: 'button',
 							}, busy === 'discovering' ? 'Finding…' : 'Find via public DNS'),
@@ -1732,7 +1857,7 @@ export default function renderer(context: RendererContext): void {
 									'select',
 									{
 										className: 'LocalMediaProxy__Input LocalMediaProxy__Select',
-										disabled: Boolean(busy),
+										disabled: Boolean(busy) || settingsReadOnly,
 										id: `${ADDON_ID}-candidate`,
 										onChange: (event: { target: { value: string } }) => chooseCandidate(event.target.value),
 										value: selectedCandidate,

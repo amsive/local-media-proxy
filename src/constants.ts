@@ -9,6 +9,35 @@ export const ADDON_VERSION = '0.4.0';
 export const ORIGIN_REQUEST_USER_AGENT = `${ADDON_NAME}/${ADDON_VERSION}`;
 export const PROXIED_CONTENT_SECURITY_POLICY =
 	"sandbox; default-src 'none'; base-uri 'none'; form-action 'none'";
+export const PROXIED_RESPONSE_HEADERS_TO_STRIP = [
+	'Accept-CH',
+	'Alt-Svc',
+	'Authentication-Info',
+	'Clear-Site-Data',
+	'Content-Location',
+	'Content-Security-Policy',
+	'Content-Security-Policy-Report-Only',
+	'Critical-CH',
+	'NEL',
+	'Origin-Trial',
+	'Proxy-Authenticate',
+	'Proxy-Authentication-Info',
+	'Refresh',
+	'Report-To',
+	'Reporting-Endpoints',
+	'Service-Worker-Allowed',
+	'Set-Cookie',
+	'Set-Cookie2',
+	'Strict-Transport-Security',
+	'X-Content-Type-Options',
+	'X-Accel-Buffering',
+	'X-Accel-Charset',
+	'X-Accel-Expires',
+	'X-Accel-Limit-Rate',
+	'X-Accel-Redirect',
+	'X-Local-Media-Proxy',
+	'WWW-Authenticate',
+] as const;
 
 export const MANUAL_WPENGINE_TLS_HOSTNAME = 'origin.wpengine.com';
 

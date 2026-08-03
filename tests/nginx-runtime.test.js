@@ -19,6 +19,16 @@ const { buildManagedNginxConfig } = require('../lib/nginx');
 const { validateAndNormalizeOrigin } = require('../lib/validation');
 
 const runtimeNginx = process.env.LOCAL_MEDIA_PROXY_NGINX_BIN;
+const strippedResponseHeaders = [
+	'clear-site-data',
+	'content-security-policy-report-only',
+	'nel',
+	'report-to',
+	'reporting-endpoints',
+	'service-worker-allowed',
+	'set-cookie',
+	'x-accel-redirect',
+];
 
 function nginxQuote(value) {
 	return `"${value
@@ -61,6 +71,33 @@ function request(port, requestPath, options = {}) {
 			outgoing.write(options.body);
 		}
 		outgoing.end();
+	});
+}
+
+function rawMethodRequest(port, method, requestPath) {
+	return new Promise((resolve, reject) => {
+		const socket = net.createConnection({ host: '127.0.0.1', port });
+		let response = '';
+		socket.setEncoding('utf8');
+		socket.on('connect', () => {
+			socket.end(
+				`${method} ${requestPath} HTTP/1.1\r\n` +
+				`Host: 127.0.0.1:${port}\r\n` +
+				'Connection: close\r\n\r\n',
+			);
+		});
+		socket.on('data', (chunk) => {
+			response += chunk;
+		});
+		socket.on('error', reject);
+		socket.on('end', () => {
+			const match = response.match(/^HTTP\/\d(?:\.\d)? (\d{3})/);
+			if (!match) {
+				reject(new Error(`Invalid raw HTTP response: ${response.slice(0, 80)}`));
+				return;
+			}
+			resolve({ statusCode: Number(match[1]) });
+		});
 	});
 }
 
@@ -115,6 +152,16 @@ test('official Local Nginx runtime preserves local files and safely proxies only
 		);
 		response.setHeader('Content-Disposition', `inline; filename="asset.${extension}"`);
 		response.setHeader('Set-Cookie', 'origin_session=private; HttpOnly');
+		response.setHeader('Clear-Site-Data', '"*"');
+		response.setHeader('Content-Security-Policy', 'default-src *');
+		response.setHeader('Content-Security-Policy-Report-Only', 'default-src *');
+		response.setHeader('NEL', '{"report_to":"origin"}');
+		response.setHeader('Report-To', '{"group":"origin"}');
+		response.setHeader('Reporting-Endpoints', 'origin="https://reports.example.com"');
+		response.setHeader('Service-Worker-Allowed', '/');
+		response.setHeader('X-Accel-Redirect', '/local-secret');
+		response.setHeader('X-Content-Type-Options', 'unsafe-origin-value');
+		response.setHeader('X-Local-Media-Proxy', 'spoofed-origin-value');
 		if (isRangeFixture) {
 			response.setHeader('Accept-Ranges', 'bytes');
 			const range = incoming.headers.range?.match(/^bytes=(\d+)-(\d*)$/);
@@ -155,6 +202,8 @@ test('official Local Nginx runtime preserves local files and safely proxies only
 		await Promise.all([
 			fs.writeFile(path.join(uploads, 'local.JPG'), 'local-body'),
 			fs.writeFile(path.join(uploads, 'local.js'), 'local-script-body'),
+			fs.writeFile(path.join(uploads, 'local.php'), 'local-php-source-must-not-leak'),
+			fs.writeFile(path.join(documentRoot, 'local-secret'), 'must-not-be-served'),
 		]);
 
 		const origin = validateAndNormalizeOrigin({
@@ -177,6 +226,9 @@ test('official Local Nginx runtime preserves local files and safely proxies only
 			`\t\troot ${nginxQuote(documentRoot)};`,
 			'\t\tlocation = /ready { return 204; }',
 			managedConfig.split('\n').map((line) => `\t\t${line}`).join('\n'),
+			'\t\tlocation ~* \\.(?:jpe?g|gif|png|svg)$ { try_files $uri @legacy_proxy; }',
+			`\t\tlocation @legacy_proxy { proxy_pass http://127.0.0.1:${backendAddress.port}; }`,
+			'\t\tlocation ~ \\.php$ { return 403; }',
 			'\t}',
 			'}',
 			'',
@@ -200,6 +252,11 @@ test('official Local Nginx runtime preserves local files and safely proxies only
 		assert.equal(localBlockedType.statusCode, 200);
 		assert.equal(localBlockedType.body, 'local-script-body');
 		assert.equal(localBlockedType.headers['x-local-media-proxy'], undefined);
+		assert.equal(backendRequests.length, 0);
+		const localInterpreter = await request(frontendPort, '/wp-content/uploads/local.php');
+		assert.equal(localInterpreter.statusCode, 404);
+		assert.notEqual(localInterpreter.body, 'local-php-source-must-not-leak');
+		assert.equal(localInterpreter.headers['x-local-media-proxy'], undefined);
 		assert.equal(backendRequests.length, 0);
 
 		const missing = await request(
@@ -237,7 +294,9 @@ test('official Local Nginx runtime preserves local files and safely proxies only
 		);
 		assert.equal(missing.headers['content-type'], 'text/plain');
 		assert.equal(missing.headers['content-disposition'], 'inline; filename="asset.futuremedia"');
-		assert.equal(missing.headers['set-cookie'], undefined);
+		for (const header of strippedResponseHeaders) {
+			assert.equal(missing.headers[header], undefined, header);
+		}
 		assert.equal(backendRequests.length, 1);
 		assert.equal(backendRequests[0].url, '/wp-content/uploads/new.futuremedia?cache=one%20two&size=large');
 		assert.deepEqual(
@@ -271,6 +330,9 @@ test('official Local Nginx runtime preserves local files and safely proxies only
 			'//wp-content/uploads/unsafe.futuremedia',
 			'/x/../wp-content/uploads/unsafe.futuremedia',
 			'/%2fwp-content/uploads/unsafe.futuremedia',
+			'/wp-content/uploads/unsafe\\path.futuremedia',
+			'/wp-content/uploads/unsafe.jpg:preview.futuremedia',
+			'/wp-content/uploads/unsafe.jpg%3Apreview.futuremedia',
 		]) {
 			const blocked = await request(frontendPort, unsafePath);
 			assert.ok(blocked.statusCode >= 400, unsafePath);
@@ -285,6 +347,16 @@ test('official Local Nginx runtime preserves local files and safely proxies only
 		});
 		assert.equal(blockedMethod.statusCode, 405);
 		assert.equal(backendRequests.length, beforeRejectedRequests);
+		for (const method of ['get', 'head']) {
+			const lowercaseMethod = await rawMethodRequest(
+				frontendPort,
+				method,
+				'/wp-content/uploads/lowercase-method.futuremedia',
+			);
+			assert.ok(lowercaseMethod.statusCode >= 400, method);
+			assert.ok(lowercaseMethod.statusCode < 500, method);
+			assert.equal(backendRequests.length, beforeRejectedRequests, method);
+		}
 
 		const blockedBody = await request(frontendPort, '/wp-content/uploads/body.JPG', {
 			body: 'blocked',
@@ -303,15 +375,31 @@ test('official Local Nginx runtime preserves local files and safely proxies only
 		const beforeBlocked = backendRequests.length;
 		for (const blockedPath of [
 			'/wp-content/uploads/shell.PHP.jpg',
+			'/wp-content/uploads/shell.php/image.jpg',
+			'/wp-content/uploads/shell.php123/image.jpg',
 			'/wp-content/uploads/app.js',
 			'/wp-content/uploads/index.html',
 			'/wp-content/uploads/index.html.futuremedia',
+			'/wp-content/uploads/index.shtm',
 			'/wp-content/uploads/app.js.futuremedia',
 			'/wp-content/uploads/program.wasm.futuremedia',
 		]) {
 			const blocked = await request(frontendPort, blockedPath);
 			assert.equal(blocked.statusCode, 404, blockedPath);
 			assert.equal(backendRequests.length, beforeBlocked, blockedPath);
+		}
+
+		for (const allowedPath of [
+			'/wp-content/uploads/html-guide.pdf',
+			'/wp-content/uploads/node-js-handbook.pdf',
+			'/wp-content/uploads/wasm-talk.mp4',
+			'/wp-content/uploads/app/image.jpg',
+			'/wp-content/uploads/config/image.jpg',
+			'/wp-content/uploads/js/image.jpg',
+		]) {
+			const allowed = await request(frontendPort, allowedPath);
+			assert.equal(allowed.statusCode, 200, allowedPath);
+			assert.equal(allowed.headers['x-local-media-proxy'], 'origin', allowedPath);
 		}
 
 		for (const [extension, contentType] of Object.entries(contentTypes)) {

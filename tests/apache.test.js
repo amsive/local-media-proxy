@@ -168,6 +168,7 @@ test('derives guarded module paths from the exact Local +11 platform archive lay
 	assert.equal(upsertApacheModules(applied, httpd, true), applied);
 	assert.match(applied, /<IfModule !proxy_http_module>\r\n\tLoadModule proxy_http_module "\/opt\/Local\/lightning-services\/apache-2\.4\.43\+11\/bin\/darwin-arm64\/modules\/mod_proxy_http\.so"/);
 	assert.match(applied, /mod_headers\.so/);
+	assert.match(applied, /mod_setenvif\.so/);
 	assert.match(applied, /mod_ssl\.so/);
 	const windowsApplied = upsertApacheModules(
 		'# human module\n',
@@ -190,6 +191,7 @@ test('reports HTTPS capability from the validated Local bundle platform instead 
 			fs.writeFile(binary, ''),
 			fs.writeFile(path.join(platformRoot, 'modules', 'mod_proxy_http.so'), ''),
 			fs.writeFile(path.join(platformRoot, 'modules', 'mod_headers.so'), ''),
+			fs.writeFile(path.join(platformRoot, 'modules', 'mod_setenvif.so'), ''),
 		]);
 		const capabilities = await inspectApacheRuntimeCapabilities(binary);
 		assert.equal(capabilities.http, true);
@@ -205,8 +207,10 @@ test('builds a fixed-host local-first Apache proxy with guarded methods, bodies,
 	const config = buildManagedApacheConfig(secureOrigin, '/site/conf/apache/origin ca.pem');
 
 	assert.match(config, /ProxyRequests Off/);
-	assert.match(config, /ProxyAddHeaders Off/);
-	assert.match(config, /ProxyPreserveHost Off/);
+	assert.match(config, /<LocationMatch[^>]+>\n\tProxyAddHeaders Off\n\tProxyErrorOverride Off\n\tProxyPreserveHost Off/);
+	assert.equal((config.match(/ProxyAddHeaders Off/g) ?? []).length, 1);
+	assert.equal((config.match(/ProxyErrorOverride Off/g) ?? []).length, 1);
+	assert.equal((config.match(/ProxyPreserveHost Off/g) ?? []).length, 1);
 	assert.match(config, /Managed route revision: upload-assets-v2/);
 	assert.match(config, /SSLProxyEngine On/);
 	assert.match(config, /SSLProxyVerify require/);
@@ -216,19 +220,41 @@ test('builds a fixed-host local-first Apache proxy with guarded methods, bodies,
 	assert.match(config, /RewriteRule "\^\/\(wp-content\/uploads\//);
 	assert.ok(config.includes('\\.'));
 	assert.ok(!config.includes('\\\\.'));
-	assert.match(config, /RewriteCond %\{REQUEST_METHOD\} !\^\(\?:GET\|HEAD\)\$/);
+	assert.match(config, /RewriteCond %\{REQUEST_METHOD\} !\^\(\?:GET\|HEAD\)\$$/m);
+	assert.doesNotMatch(config, /RewriteCond %\{REQUEST_METHOD\}[^\n]*\[NC\]/);
 	assert.match(config, /RewriteCond %\{HTTP:Transfer-Encoding\} !\^\$/);
 	assert.match(config, /RewriteCond %\{HTTP:Content-Length\} !\^\(\?:\|0\)\$/);
+	assert.match(config, /SetEnvIfNoCase .*Host.*If-Range.*Range.*User-Agent.* "\.\+" LOCAL_MEDIA_PROXY_UNKNOWN_HEADER=1/);
+	assert.match(config, /RewriteCond %\{ENV:LOCAL_MEDIA_PROXY_UNKNOWN_HEADER\} =1/);
+	assert.match(config, /RewriteCond %\{THE_REQUEST\} "!\\s\/wp-content\/uploads\/" \[NC\]/);
+	assert.match(config, /RewriteCond %\{THE_REQUEST\} .*x5c/);
 	assert.match(config, /RewriteCond "%\{DOCUMENT_ROOT\}\/\$1" !-f/);
 	assert.ok(config.indexOf('RewriteCond $1') < config.indexOf('RewriteCond "%{DOCUMENT_ROOT}/$1" !-f'));
+	assert.ok(
+		config.indexOf('RewriteCond "%{DOCUMENT_ROOT}/$1" !-f') <
+		config.indexOf('RewriteCond %{ENV:LOCAL_MEDIA_PROXY_UNKNOWN_HEADER} =1'),
+	);
 	assert.match(config, /RewriteCond "%\{DOCUMENT_ROOT\}\/\$1" !-f\nRewriteCond \$1 .*php/);
 	assert.ok(config.indexOf('RewriteCond $1') < config.indexOf('[P,L,NE,QSA'));
 	assert.ok(config.includes('"https://media.example.com:8443/$1"'));
 	assert.match(config, /\[P,L,NE,QSA,NC,E=LOCAL_MEDIA_PROXY_ORIGIN:1\]/);
 	assert.doesNotMatch(config, /192\.0\.2\./);
-	assert.doesNotMatch(config, /ProxyPassReverse|Redirect/);
-	assert.match(config, /Header unset Set-Cookie env=LOCAL_MEDIA_PROXY_ORIGIN/);
-	assert.match(config, /Header always unset Set-Cookie env=LOCAL_MEDIA_PROXY_ORIGIN/);
+	assert.doesNotMatch(config, /ProxyPassReverse|^[\t ]*Redirect\b/m);
+	for (const header of [
+		'Set-Cookie',
+		'Clear-Site-Data',
+		'Service-Worker-Allowed',
+		'Content-Security-Policy',
+		'Content-Security-Policy-Report-Only',
+		'X-Content-Type-Options',
+		'X-Local-Media-Proxy',
+		'Report-To',
+		'Reporting-Endpoints',
+		'NEL',
+	]) {
+		assert.match(config, new RegExp(`Header unset ${header} env=LOCAL_MEDIA_PROXY_ORIGIN`));
+		assert.match(config, new RegExp(`Header always unset ${header} env=LOCAL_MEDIA_PROXY_ORIGIN`));
+	}
 	assert.match(config, /Header always set X-Local-Media-Proxy "origin" env=LOCAL_MEDIA_PROXY_ORIGIN/);
 	assert.match(config, /Header always set X-Content-Type-Options "nosniff" env=LOCAL_MEDIA_PROXY_ORIGIN/);
 	assert.match(config, /Header always set Content-Security-Policy "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'" env=LOCAL_MEDIA_PROXY_ORIGIN/);
@@ -236,8 +262,26 @@ test('builds a fixed-host local-first Apache proxy with guarded methods, bodies,
 	for (const line of config.split('\n').filter((line) => line.includes('RequestHeader '))) {
 		assert.match(line, /env=LOCAL_MEDIA_PROXY_ORIGIN$/, `local request header mutation was not proxy-conditioned: ${line}`);
 	}
-	for (const sensitiveHeader of ['X-WP-Nonce', 'X-API-Key', 'X-Auth-Token', 'X-CSRF-Token']) {
+	for (const sensitiveHeader of [
+		'X-WP-Nonce',
+		'X-API-Key',
+		'X-Auth-Token',
+		'X-CSRF-Token',
+		'X-Playback-Session-Id',
+	]) {
 		assert.match(config, new RegExp(`RequestHeader unset ${sensitiveHeader} env=LOCAL_MEDIA_PROXY_ORIGIN`));
+	}
+	for (const visitorHeader of [
+		'Accept',
+		'Accept-Language',
+		'Baggage',
+		'Sec-CH-UA',
+		'Sec-Fetch-Site',
+		'Sentry-Trace',
+		'Traceparent',
+		'X-Request-ID',
+	]) {
+		assert.match(config, new RegExp(`RequestHeader unset ${visitorHeader} env=LOCAL_MEDIA_PROXY_ORIGIN`));
 	}
 	for (const unsafeProxyHeader of [
 		'X-HTTP-Method-Override',
@@ -260,6 +304,9 @@ test('shares the future-tolerant asset policy and rejects unsafe paths before th
 		'/wp-content/uploads/movie.mp4',
 		'/wp-content/uploads/data.json',
 		'/wp-content/uploads/new.futuremedia',
+		'/wp-content/uploads/app/image.jpg',
+		'/wp-content/uploads/config/image.jpg',
+		'/wp-content/uploads/js/image.jpg',
 	]) {
 		assert.equal(apacheMediaPathIsProxyEligible(requestPath), true, requestPath);
 	}
@@ -276,8 +323,14 @@ test('shares the future-tolerant asset policy and rejects unsafe paths before th
 		'/wp-content/uploads/photo.jpg#fragment',
 		'/wp-content/uploads/shell.php.jpg',
 		'/wp-content/uploads/index.html',
+		'/wp-content/uploads/index.shtm',
 		'/wp-content/uploads/program.exe',
 		'/wp-content/uploads/database.sqlite',
+		'/wp-content/uploads/shell.php/image.jpg',
+		'/wp-content/uploads/shell.php123/image.jpg',
+		'/wp-content/uploads/photo.jpg:preview.futuremedia',
+		'/wp-content/uploads/photo.jpg%3Apreview.futuremedia',
+		'/wp-content/uploads/photo\\name.jpg',
 		'/other/uploads/photo.jpg',
 	]) {
 		assert.equal(apacheMediaPathIsProxyEligible(requestPath), false, requestPath);

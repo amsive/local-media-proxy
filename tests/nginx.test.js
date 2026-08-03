@@ -29,6 +29,10 @@ const {
 	MANAGED_MARKER_START,
 	ORIGIN_REQUEST_USER_AGENT,
 } = require('../lib/constants');
+const {
+	NGINX_HARD_BLOCKED_UPLOAD_ASSET_URI_PATTERN,
+	NGINX_UPLOAD_ASSET_URI_PATTERN,
+} = require('../lib/asset-policy');
 const { validateAndNormalizeOrigin } = require('../lib/validation');
 
 const secureOrigin = validateAndNormalizeOrigin({
@@ -85,12 +89,14 @@ test('builds a local-first, read-only, privacy-preserving HTTPS proxy', () => {
 	const config = buildManagedNginxConfig(secureOrigin, '/tmp/local origin-ca.pem');
 
 	assert.match(config, /Managed route revision: upload-assets-v2/);
-	assert.match(config, /location ~\* "\^\/wp-content\/uploads\//);
+	assert.match(config, /location ~\* "\^\(\?!/);
+	assert.match(config, /\/wp-content\/uploads\//);
 	assert.match(config, /if \(\$request_method !~ \^\(GET\|HEAD\)\$\) \{ return 405; \}/);
 	assert.match(config, /if \(\$http_transfer_encoding != ""\) \{ return 400; \}/);
 	assert.match(config, /if \(\$http_content_length !~ \^\(\?:\|0\)\$\) \{ return 400; \}/);
 	assert.match(config, /if \(\$request_uri !~\* "\^\/wp-content\/uploads\/"\) \{ return 400; \}/);
 	assert.match(config, /\$request_uri ~\* .*%\(\?:25\|2f\|5c\|3f\|23/);
+	assert.match(config, /\$request_uri ~\* .*x5c/);
 	assert.match(config, /\$request_uri ~\* "\^\/wp-content\/uploads\/\(\?:\/\|\[\^\?\]\*\/\/\)"/);
 	assert.match(config, /try_files \$uri @local_media_proxy;/);
 	assert.ok(config.indexOf('try_files $uri') < config.indexOf('if ($uri ~*'));
@@ -130,7 +136,21 @@ test('builds a local-first, read-only, privacy-preserving HTTPS proxy', () => {
 	]) {
 		assert.match(config, new RegExp(`proxy_set_header ${header} "";`));
 	}
-	assert.match(config, /proxy_hide_header Set-Cookie;/);
+	assert.match(config, /proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;/);
+	for (const header of [
+		'Set-Cookie',
+		'Clear-Site-Data',
+		'Service-Worker-Allowed',
+		'Content-Security-Policy',
+		'Content-Security-Policy-Report-Only',
+		'X-Content-Type-Options',
+		'X-Local-Media-Proxy',
+		'Report-To',
+		'Reporting-Endpoints',
+		'NEL',
+	]) {
+		assert.match(config, new RegExp(`proxy_hide_header ${header};`));
+	}
 	assert.match(config, /add_header Content-Security-Policy "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'" always;/);
 	assert.match(config, /proxy_buffering off;/);
 	assert.deepEqual(
@@ -148,11 +168,26 @@ test('builds a local-first, read-only, privacy-preserving HTTPS proxy', () => {
 
 test('uses a default-allow upload route while blocking active and sensitive misses', () => {
 	const config = buildManagedNginxConfig(secureOrigin, '/tmp/origin-ca.pem');
-	const routeLine = config.split('\n').find((line) => line.startsWith('location ~*')) ?? '';
+	const routeLines = config.split('\n').filter((line) => line.startsWith('location ~*'));
+	const routeLine = routeLines.find((line) => line.includes('(?!')) ?? '';
+	const route = new RegExp(NGINX_UPLOAD_ASSET_URI_PATTERN, 'i');
+	const hardBlockedRoute = new RegExp(NGINX_HARD_BLOCKED_UPLOAD_ASSET_URI_PATTERN, 'i');
 
+	assert.equal(routeLines.length, 3);
+	assert.ok(config.indexOf('return 404; }') < config.indexOf('try_files $uri'));
+	assert.ok(config.lastIndexOf('try_files $uri =404; }') > config.indexOf('try_files $uri @local_media_proxy'));
 	assert.match(routeLine, /wp-content\/uploads/);
+	assert.match(routeLine, /\(\?!/);
 	assert.match(routeLine, /A-Za-z0-9/);
 	assert.doesNotMatch(routeLine, /avif|jpe|webp|pdf|mp4|futuremedia/i);
+	assert.equal(route.test('/wp-content/uploads/new.futuremedia'), true);
+	assert.equal(route.test('/wp-content/uploads/shell.php'), false);
+	assert.equal(route.test('/wp-content/uploads/shell.php/image.jpg'), false);
+	assert.equal(route.test('/wp-content/uploads/active.html.jpg'), false);
+	assert.equal(hardBlockedRoute.test('/wp-content/uploads/local.php'), true);
+	assert.equal(hardBlockedRoute.test('/wp-content/uploads/nested/shell.php/image.jpg'), true);
+	assert.equal(hardBlockedRoute.test('/wp-content/uploads/.hidden/image.jpg'), true);
+	assert.equal(hardBlockedRoute.test('/wp-content/uploads/local.js'), false);
 	for (const token of ['php', 'html', 'wasm', 'exe', 'sqlite', 'backup']) {
 		assert.match(config, new RegExp(token, 'i'));
 	}
@@ -308,6 +343,18 @@ test('passive Nginx parity rejects stale, unloaded, and symlinked compiled state
 		assert.equal(await nginxCompiledConfigMatches(runtimeService, expected.include), true);
 		assert.equal(await fsPromises.readFile(expected.compiled.include, 'utf8'), before);
 
+		const unrelatedSiteConfig = path.join(root, 'unrelated', 'site.conf');
+		await fsPromises.writeFile(
+			expected.compiled.main,
+			`events {}\nhttp {\n\tinclude "${unrelatedSiteConfig}";\n}\n`,
+		);
+		assert.equal(
+			await nginxCompiledConfigMatches(runtimeService, expected.include),
+			false,
+			'an unrelated absolute path ending in site.conf must not satisfy authoritative parity',
+		);
+
+		await writeCompiledNginxFixture(runtimeService, true);
 		await fsPromises.appendFile(
 			expected.compiled.site,
 			`include "includes/${path.basename(expected.compiled.include)}";\n`,

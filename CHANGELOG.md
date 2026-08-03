@@ -12,8 +12,8 @@ This release expands the local-first fallback to safe missing upload assets and 
 
 ### Added
 
-- Missing video, audio, caption, document, font, archive, generated stylesheet, data, manifest, and future upload formats can now stream from the configured origin without maintaining an extension allowlist. Existing local files always win, and unsafe executable, browser-active, hidden, configuration, secret, database, and backup paths remain blocked. ([#32](https://github.com/amsive/local-media-proxy/issues/32))
-- Read-only range requests now support seeking and partial downloads for video, audio, and documents on both Nginx and Apache. Query strings are preserved for cache busting while credentials, cookies, request bodies, and unapproved headers remain stripped. ([#32](https://github.com/amsive/local-media-proxy/issues/32))
+- Missing video, audio, caption, document, font, archive, generated stylesheet, data, manifest, and future upload formats can now stream from the configured origin without maintaining an extension allowlist. Existing eligible local files always win, while unsafe executable, browser-active, hidden, configuration, secret, database, backup, and malformed upload paths fail closed instead of falling through to another proxy rule. ([#32](https://github.com/amsive/local-media-proxy/issues/32))
+- Read-only range requests now support seeking and partial downloads for video, audio, and documents on both Nginx and Apache. Query strings are preserved for cache busting while credentials, cookies, request bodies, standard browser identity, and tracing headers remain stripped. Origin-controlled cookies, browser-state controls, reporting endpoints, and conflicting security headers are also removed. ([#32](https://github.com/amsive/local-media-proxy/issues/32))
 
 ### Changed
 

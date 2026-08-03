@@ -1,6 +1,6 @@
 # Local Media Proxy
 
-Local Media Proxy is an [Amsive](https://www.amsive.com/?utm_source=github&utm_medium=referral&utm_campaign=local_media_proxy&utm_content=readme) add-on for [Local](https://localwp.com/) that keeps WordPress uploads out of local clones without breaking asset-heavy pages. Existing uploads remain local; only safe missing assets below `/wp-content/uploads/` fall back to a configured production, staging, or development site.
+Local Media Proxy is an [Amsive](https://www.amsive.com/?utm_source=github&utm_medium=referral&utm_campaign=local_media_proxy&utm_content=readme) add-on for [Local](https://localwp.com/) that keeps WordPress uploads out of local clones without breaking asset-heavy pages. Existing eligible uploads remain local; only safe missing assets below `/wp-content/uploads/` fall back to a configured production, staging, or development site.
 
 Local Media Proxy is open-source, community-supported software released under the [Apache License 2.0](LICENSE).
 

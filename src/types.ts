@@ -86,6 +86,7 @@ export interface SiteState {
 	requiresOriginIp: boolean;
 	serverKind: ServerKind;
 	settings: StoredSettings;
+	settingsReadOnly?: boolean;
 	siteStatus: string;
 	supported: boolean;
 	supportsHttpsOrigin: boolean;

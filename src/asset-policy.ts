@@ -6,8 +6,8 @@
 export const UPLOAD_ASSET_ROUTE_REVISION = 'upload-assets-v2';
 export const UPLOAD_ASSET_PATH_PREFIX = '/wp-content/uploads/';
 
-const PATH_CHARACTER_CLASS = "A-Za-z0-9._~!$&'()*+,;=:@-";
-const NON_HIDDEN_PATH_CHARACTER_CLASS = "A-Za-z0-9_~!$&'()*+,;=:@-";
+const PATH_CHARACTER_CLASS = "A-Za-z0-9._~!$&'()*+,;=@-";
+const NON_HIDDEN_PATH_CHARACTER_CLASS = "A-Za-z0-9_~!$&'()*+,;=@-";
 const EXTENSION_CHARACTER_CLASS = 'A-Za-z0-9_-';
 
 export const UPLOAD_ASSET_SEGMENT_PATTERN =
@@ -30,7 +30,7 @@ export const UNSAFE_RAW_PERCENT_ENCODING_PATTERN =
 	'%(?:25|2f|5c|3f|23|0[0-9a-f]|1[0-9a-f]|7f)';
 
 const SERVER_INTERPRETER_TOKEN_PATTERN = [
-	'php[0-9]{0,2}',
+	'php[0-9]*',
 	'pht',
 	'phtm',
 	'phtml',
@@ -84,13 +84,17 @@ const SERVER_INTERPRETER_TOKEN_PATTERN = [
 const BROWSER_ACTIVE_TOKEN_PATTERN = [
 	'htm',
 	'html',
+	'dhtml',
 	'hta',
 	'htc',
 	'mht',
 	'mhtml',
+	'shtm',
 	'xht',
+	'xhtm',
 	'xhtml',
 	'shtml',
+	'stm',
 	'js',
 	'mjs',
 	'cjs',
@@ -184,16 +188,31 @@ const SENSITIVE_EXACT_BASENAME_PATTERN = [
 ].join('|');
 
 /**
- * This expression is applied to the complete upload path. Interpreter tokens
- * are blocked at every non-alphanumeric boundary in the basename so a
- * harmless-looking final extension or delimiter cannot conceal an executable
- * suffix.
+ * This expression is applied to the complete upload path. Every segment is
+ * checked so path-info routing cannot conceal an interpreter file behind a
+ * safe final filename. Browser-active formats are treated as extensions,
+ * while interpreter tokens remain blocked at every non-alphanumeric boundary.
  */
 export const BLOCKED_UPLOAD_ASSET_PATH_PATTERN =
 	`(?:^|/)(?:(?:[^/]*[^A-Za-z0-9])?(?:${SERVER_INTERPRETER_TOKEN_PATTERN})(?=[^A-Za-z0-9]|$)[^/]*|` +
-	`(?:[^/]*[^A-Za-z0-9])?(?:${BROWSER_ACTIVE_TOKEN_PATTERN})(?=[^A-Za-z0-9]|$)[^/]*|` +
+	`[^/]*\\.(?:${BROWSER_ACTIVE_TOKEN_PATTERN})(?=\\.|$)[^/]*|` +
 	`[^/]*\\.(?:${BLOCKED_FINAL_EXTENSION_PATTERN})|` +
-	`(?:${SENSITIVE_EXACT_BASENAME_PATTERN}))$`;
+	`(?:${SENSITIVE_EXACT_BASENAME_PATTERN}))(?=/|$)`;
+
+/**
+ * Keep policy-blocked paths out of Nginx's broad local-first proxy location.
+ * The generated Nginx boundary hard-blocks hidden/interpreter paths and keeps
+ * other ineligible requests local-only ahead of later custom proxy locations.
+ */
+export const NGINX_UPLOAD_ASSET_URI_PATTERN =
+	`^(?!.*${BLOCKED_UPLOAD_ASSET_PATH_PATTERN})/wp-content/uploads/${UPLOAD_ASSET_RELATIVE_PATH_PATTERN}$`;
+const NGINX_HARD_BLOCKED_UPLOAD_ASSET_PATH_PATTERN =
+	`(?:^|/)(?:(?:[^/]*[^A-Za-z0-9])?(?:${SERVER_INTERPRETER_TOKEN_PATTERN})(?=[^A-Za-z0-9]|$)[^/]*|` +
+	`\\.[^/]*|web\\.config)(?=/|$)`;
+export const NGINX_HARD_BLOCKED_UPLOAD_ASSET_URI_PATTERN =
+	`^/wp-content/uploads(?=/).*${NGINX_HARD_BLOCKED_UPLOAD_ASSET_PATH_PATTERN}`;
+export const NGINX_UPLOADS_CATCH_ALL_URI_PATTERN =
+	'^/wp-content/uploads(?:/|$)';
 
 const SAFE_DECODED_SEGMENT = new RegExp(`^[${PATH_CHARACTER_CLASS}]+$`);
 const SAFE_EXTENSION = new RegExp(`^[A-Za-z0-9][${EXTENSION_CHARACTER_CLASS}]*$`);
@@ -221,22 +240,30 @@ const UNSAFE_RAW_PERCENT_ENCODING = new RegExp(
 	'i',
 );
 
-function basenameIsBlocked(basename: string): boolean {
-	const normalized = basename.toLowerCase();
+function pathSegmentIsBlocked(segment: string): boolean {
+	const normalized = segment.toLowerCase();
 	if (SENSITIVE_EXACT_BASENAMES.has(normalized)) {
 		return true;
 	}
 
-	const extension = normalized.slice(normalized.lastIndexOf('.') + 1);
-	if (BLOCKED_FINAL_EXTENSION.test(extension)) {
+	const extensionSeparator = normalized.lastIndexOf('.');
+	const extension = extensionSeparator >= 0
+		? normalized.slice(extensionSeparator + 1)
+		: '';
+	if (extension && BLOCKED_FINAL_EXTENSION.test(extension)) {
+		return true;
+	}
+
+	if (normalized
+		.split(/[^a-z0-9]+/)
+		.some((token) => SERVER_INTERPRETER_TOKEN.test(token))) {
 		return true;
 	}
 
 	return normalized
-		.split(/[^a-z0-9]+/)
-		.some((token) => (
-			SERVER_INTERPRETER_TOKEN.test(token) || BROWSER_ACTIVE_TOKEN.test(token)
-		));
+		.split('.')
+		.slice(1)
+		.some((token) => BROWSER_ACTIVE_TOKEN.test(token));
 }
 
 /**
@@ -287,5 +314,5 @@ export function uploadAssetPathIsProxyEligible(requestPath: string): boolean {
 		return false;
 	}
 
-	return !basenameIsBlocked(basename);
+	return !decodedSegments.some((segment) => pathSegmentIsBlocked(segment));
 }

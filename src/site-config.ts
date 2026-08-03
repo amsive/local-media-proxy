@@ -170,15 +170,25 @@ function managedTemplateRoots(
 ): string[] {
 	const siteRoot = path.resolve(site.longPath);
 	const templatesRoot = configuredTemplatesRoot(site, siteRoot);
-	const activeRoot = options?.serverKind === serverKind
+	const currentServiceRoot = options
 		? safeServiceRoot(
 			siteRoot,
 			options.siteConfigTemplatePath,
-			`${serverKind} site template root`,
+			`${options.serverKind} site template root`,
 		)
 		: undefined;
+	const authoritativeRoot = currentServiceRoot && options
+		? options.serverKind === serverKind
+			? currentServiceRoot
+			: path.basename(currentServiceRoot).toLowerCase() === options.serverKind
+				? ensureInsideSite(
+					siteRoot,
+					path.join(path.dirname(currentServiceRoot), serverKind),
+				)
+				: undefined
+		: undefined;
 	return uniquePaths([
-		...(activeRoot ? [activeRoot] : []),
+		...(authoritativeRoot ? [authoritativeRoot] : []),
 		ensureInsideSite(siteRoot, path.join(templatesRoot, serverKind)),
 		ensureInsideSite(siteRoot, path.join(siteRoot, 'conf', serverKind)),
 	]);

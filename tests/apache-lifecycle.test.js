@@ -198,7 +198,7 @@ test('startup and Local lifecycle reconciliation wait for stable ready sites wit
 	assert.match(reconcile, /compiledConfigMatches = await serverCompiledConfigMatches\(/);
 	assert.match(
 		reconcile,
-		/if \(compiledConfigMatches\) \{[\s\S]{0,100}persistReconciledEnvelope\(\);[\s\S]{0,80}return/,
+		/compiledConfigMatches &&[\s\S]{0,100}!options\.refreshMatchingEnabledRuntime[\s\S]{0,120}return persistReconciledEnvelope\(\)/,
 	);
 	assert.match(mainSource, /for \(const site of Object\.values\(siteData\.getSites\(\)\)[\s\S]{0,220}scheduleDeferredReconciliation\(site\.id/);
 });
@@ -210,19 +210,19 @@ test('server reconciliation carries Site URL inside the site lock and commits it
 	);
 	assert.equal(
 		(mainSource.match(/carrySiteUrlToPristineServerProfile\(/g) ?? []).length,
-		1,
-		'Site URL handoff must occur only in server reconciliation',
+		3,
+		'Site URL handoff must be projected by passive state and enabled-only toggles, then persisted transactionally',
 	);
 	assert.equal(
 		(mainSource.match(/preserveStoredBlankCurrentProfile\(/g) ?? []).length,
-		1,
-		'legacy blank intent must be preserved only in server reconciliation',
+		3,
+		'legacy blank intent must be honored by passive state, enabled-only toggles, and reconciliation',
 	);
 	assertInOrder(
 		reconcile,
 		[
 			'await withSiteLock(siteId, async () => {',
-			'const previousEnvelope = readStoredSettingsEnvelope(site, server.kind)',
+			'previousEnvelope = readStoredSettingsEnvelope(site, server.kind)',
 			'preserveStoredBlankCurrentProfile(',
 			'carrySiteUrlToPristineServerProfile(intentPreservedEnvelope, server.kind)',
 			'const settings =',
@@ -236,12 +236,12 @@ test('server reconciliation carries Site URL inside the site lock and commits it
 	);
 	assert.match(
 		reconcile,
-		/if \(managedFilesMatch\) \{[\s\S]{0,260}serverCompiledConfigMatches\([\s\S]{0,180}if \(compiledConfigMatches\) \{[\s\S]{0,100}persistReconciledEnvelope\(\)/,
+		/if \(managedFilesMatch\) \{[\s\S]{0,260}serverCompiledConfigMatches\([\s\S]{0,240}compiledConfigMatches &&[\s\S]{0,160}persistReconciledEnvelope\(\)/,
 		'a complete carried profile may be persisted without mutation only after exact compiled convergence',
 	);
 	assert.match(
 		reconcile,
-		/if \(changed \|\| !compiledConfigMatches\) \{[\s\S]{0,300}compileAndReload\([\s\S]{0,220}persistReconciledEnvelope\(\)/,
+		/changed \|\|[\s\S]{0,80}!compiledConfigMatches \|\|[\s\S]{0,140}refreshMatchingEnabledRuntime[\s\S]{0,320}compileAndReload\([\s\S]{0,220}persistReconciledEnvelope\(\)/,
 		'a carried profile must establish runtime convergence whenever source or compiled state is stale',
 	);
 
@@ -264,13 +264,15 @@ test('server reconciliation carries Site URL inside the site lock and commits it
 		/rollbackTransaction\([\s\S]{0,180}previousEnvelope,[\s\S]{0,100}snapshots/,
 		'lifecycle rollback must restore the pre-handoff envelope',
 	);
+	const passiveState = mainSource.slice(
+		mainSource.indexOf('const getSiteState = async'),
+		mainSource.indexOf('const applySettingsLocked'),
+	);
+	assert.match(passiveState, /carrySiteUrlToPristineServerProfile\(intentPreservedEnvelope, server\.kind\)/);
 	assert.doesNotMatch(
-		mainSource.slice(
-			mainSource.indexOf('const getSiteState = async'),
-			mainSource.indexOf('const reconcileSite'),
-		),
-		/carrySiteUrlToPristineServerProfile/,
-		'passive state assembly must not perform a cross-profile handoff',
+		passiveState,
+		/persistSettings|applyServerManagedFiles|removeAllManagedFiles|compileAndReload/,
+		'passive cross-profile projection must not mutate settings, files, or runtime',
 	);
 });
 
@@ -401,6 +403,16 @@ test('interactive apply, save-disable, and toggle commit settings only after fil
 	assertInOrder(
 		toggle,
 		[
+			'previousEnvelope = readStoredSettingsEnvelope(site, expectedServerKind)',
+			'preserveStoredBlankCurrentProfile(',
+			'carrySiteUrlToPristineServerProfile(',
+			'const settings = storedSettingsForServer(envelope, expectedServerKind)',
+		],
+		'enabled-only toggles must use the same in-lock server-switch projection as passive state',
+	);
+	assertInOrder(
+		toggle,
+		[
 			'try {',
 			'snapshots = await captureAllManagedFiles(',
 			'removeAllManagedFiles(',
@@ -481,7 +493,15 @@ test('state and discovery reads stay metadata-only until Local lifecycle and tem
 	);
 	assert.match(stateReader, /return lifecycleUnavailableSiteState\(null, 'deleting'\)/);
 	assert.match(stateReader, /lifecycleReady: true/);
-	assert.match(mainSource, /const lifecycleUnavailableSiteState[\s\S]{0,900}lifecycleReady: false/);
+	const lifecycleUnavailableState = mainSource.slice(
+		mainSource.indexOf('const lifecycleUnavailableSiteState'),
+		mainSource.indexOf('const getSiteState = async'),
+	);
+	assert.match(lifecycleUnavailableState, /lifecycleReady: false/);
+	assert.match(
+		lifecycleUnavailableState,
+		/try \{[\s\S]{0,320}readStoredSettingsEnvelope[\s\S]{0,520}catch \(settingsError\)[\s\S]{0,220}failClosedSettingsForInvalidEnvelope/,
+	);
 
 	const discoveryHandler = mainSource.slice(
 		mainSource.indexOf('ipcMain.handle(IPC_CHANNELS.getOriginDiscoveryOptions'),
@@ -515,9 +535,47 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 	assert.deepEqual(passive.state, {
 		applied: false,
 		needsAttention: true,
+		reason: 'The nginx profile is enabled, but its managed proxy configuration is not applied.',
+		siteUrl: 'http://media.example.com',
 		siteStatus: 'running',
 	});
 	assert.deepEqual(passive.updates, []);
+
+	const projectedSwitch = runScenario('passive-switch-projection');
+	assert.deepEqual(projectedSwitch.calls, []);
+	assert.deepEqual(projectedSwitch.state, {
+		applied: false,
+		needsAttention: false,
+		siteUrl: 'https://carried.example.com',
+		siteStatus: 'running',
+	});
+	assert.deepEqual(projectedSwitch.updates, []);
+
+	const immediateSwitchEnable = runScenario('immediate-apache-switch-enable');
+	assert.equal(immediateSwitchEnable.projectedSiteUrl, 'https://carried.example.com');
+	assert.deepEqual(immediateSwitchEnable.calls, [
+		'probeOrigin',
+		'captureAllManagedFiles',
+		'applyServerManagedFiles',
+		'compileApache:managed',
+		'updateSite',
+	]);
+	assert.equal(immediateSwitchEnable.operationError, undefined);
+	assert.equal(immediateSwitchEnable.finalStoredSettings.enabled, true);
+	assert.equal(
+		immediateSwitchEnable.finalStoredSettings.profiles.apache.siteUrl,
+		'https://carried.example.com',
+	);
+	assert.equal(immediateSwitchEnable.state?.applied, true);
+
+	const unresolvedDisabled = runScenario('supported-service-unavailable-disabled');
+	assert.deepEqual(unresolvedDisabled.calls, []);
+	assert.equal(unresolvedDisabled.state.applied, false);
+	assert.equal(unresolvedDisabled.state.needsAttention, true);
+	assert.equal(unresolvedDisabled.state.siteUrl, 'http://media.example.com');
+	assert.equal(unresolvedDisabled.state.siteStatus, 'running');
+	assert.match(unresolvedDisabled.state.reason, /runtime cleanup cannot be verified/i);
+	assert.deepEqual(unresolvedDisabled.updates, []);
 
 	const startupNoop = runScenario('startup-noop');
 	assert.deepEqual(startupNoop.calls, []);
@@ -532,6 +590,120 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 	]);
 	assert.equal(startupRepair.restartCalls, 1);
 
+	for (const scenario of ['preflight-status-retry', 'preflight-service-retry']) {
+		const retriedPreflight = runScenario(scenario);
+		assert.ok(retriedPreflight.preflightTimersAfterFailure > 0);
+		assert.ok(retriedPreflight.preflightTimersAfterOneRecoverySample > 0);
+		assert.equal(retriedPreflight.preflightCallsAfterOneRecoverySample, 0);
+		assert.equal(retriedPreflight.pendingTimers, 0);
+		assert.deepEqual(retriedPreflight.calls, [
+			'captureAllManagedFiles',
+			'applyServerManagedFiles',
+			'compileNginx:managed',
+			'restart:nginx-1.26.1+3',
+		]);
+		assert.equal(retriedPreflight.restartCalls, 1);
+	}
+
+	const interruptedReconciliation = runScenario('reconciliation-interruption-retry');
+	assert.ok(interruptedReconciliation.retryTimersAfterFailure > 0);
+	assert.equal(interruptedReconciliation.pendingTimers, 0);
+	assert.deepEqual(interruptedReconciliation.calls, [
+		'captureAllManagedFiles',
+		'applyServerManagedFiles',
+		'compileNginx:managed',
+		'captureAllManagedFiles',
+		'applyServerManagedFiles',
+		'compileNginx:managed',
+		'restart:nginx-1.26.1+3',
+	]);
+	assert.equal(interruptedReconciliation.restartCalls, 1);
+
+	for (const scenario of ['site-start-matching', 'global-enable-matching']) {
+		const forcedRefresh = runScenario(scenario);
+		assert.deepEqual(forcedRefresh.calls, [
+			'captureAllManagedFiles',
+			'applyServerManagedFiles',
+			'compileNginx:managed',
+			'restart:nginx-1.26.1+3',
+		]);
+		assert.equal(
+			forcedRefresh.restartCalls,
+			1,
+			`${scenario} must converge an already matching active runtime`,
+		);
+	}
+
+	for (const scenario of ['corrupt-schema-version', 'corrupt-profile-envelope']) {
+		const corrupt = runScenario(scenario);
+		assert.deepEqual(corrupt.calls, [
+			'removeAllManagedFiles',
+			'compileNginx:clean',
+			'restart:nginx-1.26.1+3',
+		]);
+		assert.equal(corrupt.restartCalls, 1);
+		assert.deepEqual(corrupt.updates, []);
+		assert.deepEqual(
+			corrupt.finalStoredSettings,
+			corrupt.storedSettingsBeforeReconciliation,
+			`${scenario} cleanup must retain the unsupported stored value`,
+		);
+	}
+
+	const retriedCorruptCleanup = runScenario('corrupt-cleanup-retry');
+	assert.deepEqual(retriedCorruptCleanup.calls, [
+		'removeAllManagedFiles',
+		'compileNginx:clean',
+		'removeAllManagedFiles',
+		'compileNginx:clean',
+		'restart:nginx-1.26.1+3',
+	]);
+	assert.ok(retriedCorruptCleanup.retryTimersAfterFailure > 0);
+	assert.equal(retriedCorruptCleanup.pendingTimers, 0);
+	assert.equal(retriedCorruptCleanup.restartCalls, 1);
+	assert.deepEqual(retriedCorruptCleanup.updates, []);
+	assert.deepEqual(
+		retriedCorruptCleanup.finalStoredSettings,
+		retriedCorruptCleanup.storedSettingsBeforeReconciliation,
+		'corrupt cleanup retries must retain the unsupported stored value',
+	);
+
+	const passiveCorruptState = runScenario('corrupt-passive-state');
+	assert.deepEqual(passiveCorruptState.calls, []);
+	assert.equal(passiveCorruptState.state?.applied, false);
+	assert.equal(passiveCorruptState.state?.needsAttention, true);
+	assert.equal(passiveCorruptState.stateCanEnable, false);
+	assert.equal(passiveCorruptState.stateCleanupSupported, true);
+	assert.equal(passiveCorruptState.stateEnabledIntent, true);
+	assert.equal(passiveCorruptState.stateSettingsReadOnly, true);
+	assert.match(passiveCorruptState.state?.reason, /unsupported schema version/i);
+	assert.match(passiveCorruptState.state?.reason, /cleanup is pending/i);
+	assert.deepEqual(passiveCorruptState.updates, []);
+
+	const transitioningCorruptState = runScenario('corrupt-passive-transitioning');
+	assert.deepEqual(transitioningCorruptState.calls, []);
+	assert.equal(transitioningCorruptState.stateCanEnable, false);
+	assert.equal(transitioningCorruptState.stateEnabledIntent, true);
+	assert.equal(transitioningCorruptState.stateLifecycleReady, false);
+	assert.equal(transitioningCorruptState.stateSettingsReadOnly, true);
+	assert.match(transitioningCorruptState.state?.reason, /starting|changing|available/i);
+	assert.match(transitioningCorruptState.state?.reason, /unsupported schema version/i);
+	assert.deepEqual(transitioningCorruptState.updates, []);
+	assert.deepEqual(
+		transitioningCorruptState.finalStoredSettings,
+		transitioningCorruptState.storedSettingsBeforeReconciliation,
+	);
+
+	const deferredCorruptCleanup = runScenario('corrupt-service-unavailable');
+	assert.deepEqual(deferredCorruptCleanup.calls, []);
+	assert.equal(deferredCorruptCleanup.restartCalls, 0);
+	assert.equal(deferredCorruptCleanup.updates.length, 0);
+	assert.ok(deferredCorruptCleanup.pendingTimers > 0);
+	assert.deepEqual(
+		deferredCorruptCleanup.finalStoredSettings,
+		deferredCorruptCleanup.storedSettingsBeforeReconciliation,
+	);
+
 	const haltedRepair = runScenario('same-value-halted-repair');
 	assert.deepEqual(haltedRepair.calls, [
 		'probeOrigin',
@@ -544,6 +716,7 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 	assert.deepEqual(haltedRepair.state, {
 		applied: true,
 		needsAttention: false,
+		siteUrl: 'http://media.example.com',
 		siteStatus: 'halted',
 	});
 
@@ -619,7 +792,7 @@ test('enabled-only toggle cleanup preserves both saved connection profiles trans
 		],
 		'toggle cleanup must retain profiles while committing disabled intent last',
 	);
-	assert.match(toggle, /rollbackTransaction\([\s\S]{0,160}envelope,[\s\S]{0,100}snapshots/);
+	assert.match(toggle, /rollbackTransaction\([\s\S]{0,160}previousEnvelope,[\s\S]{0,100}snapshots/);
 	assert.doesNotMatch(toggle, /replaceStoredSettingsForServer/);
 });
 

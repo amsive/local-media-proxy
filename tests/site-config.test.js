@@ -73,7 +73,7 @@ async function makeDualServerSite() {
 		fs.writeFile(path.join(apacheRoot, 'modules.conf.hbs'), apacheModules),
 		fs.writeFile(path.join(apacheRoot, 'site.conf.hbs'), apacheMain),
 		fs.writeFile(httpd, ''),
-		...['mod_proxy_http.so', 'mod_headers.so', 'mod_ssl.so'].map((filename) => (
+		...['mod_proxy_http.so', 'mod_headers.so', 'mod_setenvif.so', 'mod_ssl.so'].map((filename) => (
 			fs.writeFile(path.join(serviceRoot, 'modules', filename), '')
 		)),
 	]);
@@ -1364,6 +1364,70 @@ test('cross-server switches remove inactive artifacts in both directions', async
 		assert.equal(await allManagedArtifactsExist(fixture.site), false);
 	} finally {
 		await fixture.cleanup();
+	}
+});
+
+test('cross-server switches clean sibling authoritative service template roots', async () => {
+	const fixture = await makeDualServerSite();
+	const runtimeRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'local-media-proxy-runtime-switch-')));
+	try {
+		const serviceTemplatesRoot = path.join(fixture.site.longPath, 'active-service');
+		const nginxRoot = path.join(serviceTemplatesRoot, 'nginx');
+		const apacheRoot = path.join(serviceTemplatesRoot, 'apache');
+		const nginxConfigRoot = path.join(runtimeRoot, 'nginx');
+		const apacheConfigRoot = path.join(runtimeRoot, 'apache');
+		await Promise.all([
+			fs.mkdir(path.join(nginxRoot, 'includes'), { recursive: true }),
+			fs.mkdir(path.join(apacheRoot, 'includes'), { recursive: true }),
+			fs.mkdir(nginxConfigRoot, { recursive: true }),
+			fs.mkdir(apacheConfigRoot, { recursive: true }),
+		]);
+		await Promise.all([
+			fs.writeFile(path.join(nginxRoot, 'site.conf.hbs'), fixture.original),
+			fs.writeFile(path.join(apacheRoot, 'site.conf.hbs'), fixture.apacheMain),
+			fs.writeFile(path.join(apacheRoot, 'modules.conf.hbs'), fixture.apacheModules),
+		]);
+
+		const trustBundle = '-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----\n';
+		const nginxOrigin = validateAndNormalizeOrigin({
+			originIp: '192.0.2.10',
+			siteUrl: 'https://media.example.com',
+		});
+		const nginxOptions = {
+			configPath: nginxConfigRoot,
+			serverKind: 'nginx',
+			siteConfigTemplatePath: nginxRoot,
+		};
+		const nginxPaths = getManagedPaths(fixture.site, nginxOptions);
+		await applyServerManagedFiles(fixture.site, nginxOrigin, nginxOptions, trustBundle);
+		assert.match(await fs.readFile(nginxPaths.siteTemplate, 'utf8'), /BEGIN Local Media Proxy/);
+
+		const apacheOrigin = validateAndNormalizeOrigin({
+			originIp: '',
+			siteUrl: 'https://media.example.com',
+		}, { requiresOriginIp: false });
+		const apacheOptions = {
+			apacheHttpdBinary: fixture.httpd,
+			configPath: apacheConfigRoot,
+			serverKind: 'apache',
+			siteConfigTemplatePath: apacheRoot,
+		};
+		const apachePaths = getApacheManagedPaths(fixture.site, apacheOptions);
+		await applyServerManagedFiles(fixture.site, apacheOrigin, apacheOptions, trustBundle);
+		assert.equal(await fs.readFile(nginxPaths.siteTemplate, 'utf8'), fixture.original);
+		await assert.rejects(fs.access(nginxPaths.includeTemplate));
+		await assert.rejects(fs.access(nginxPaths.trustBundle));
+		assert.match(await fs.readFile(apachePaths.siteTemplate, 'utf8'), /BEGIN Local Media Proxy/);
+
+		await applyServerManagedFiles(fixture.site, nginxOrigin, nginxOptions, trustBundle);
+		assert.equal(await fs.readFile(apachePaths.siteTemplate, 'utf8'), fixture.apacheMain);
+		assert.equal(await fs.readFile(apachePaths.modulesTemplate, 'utf8'), fixture.apacheModules);
+		await assert.rejects(fs.access(apachePaths.includeTemplate));
+		await assert.rejects(fs.access(apachePaths.trustBundle));
+		assert.match(await fs.readFile(nginxPaths.siteTemplate, 'utf8'), /BEGIN Local Media Proxy/);
+	} finally {
+		await fixture.cleanup();
+		await fs.rm(runtimeRoot, { force: true, recursive: true });
 	}
 });
 
