@@ -362,6 +362,38 @@ function connectionProfileIsPristine(profile: StoredConnectionProfile): boolean 
 	);
 }
 
+export function preserveStoredBlankCurrentProfile(
+	envelope: StoredSettingsEnvelope,
+	storedValue: unknown,
+	currentServerKind: SupportedServerKind,
+): StoredSettingsEnvelope {
+	// v0.3.x could persist an intentionally cleared current profile without a
+	// touched marker. Stamp only that exact stored/current case before v0.4.0
+	// can later mistake it for an untouched server-switch destination.
+	const raw = rawObject(storedValue);
+	const rawProfiles = rawObject(raw?.profiles);
+	if (
+		raw?.schemaVersion !== 2 ||
+		envelope.lastServerKind !== currentServerKind ||
+		!rawProfiles ||
+		!Object.prototype.hasOwnProperty.call(rawProfiles, currentServerKind) ||
+		!connectionProfileIsPristine(envelope.profiles[currentServerKind])
+	) {
+		return envelope;
+	}
+
+	return {
+		...envelope,
+		profiles: {
+			...envelope.profiles,
+			[currentServerKind]: {
+				...envelope.profiles[currentServerKind],
+				originSource: 'manual',
+			},
+		},
+	};
+}
+
 export function carrySiteUrlToPristineServerProfile(
 	envelope: StoredSettingsEnvelope,
 	destinationServerKind: SupportedServerKind,

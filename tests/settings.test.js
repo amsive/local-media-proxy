@@ -13,6 +13,7 @@ const {
 	normalizeStoredSettings,
 	normalizeStoredSettingsEnvelope,
 	originPairMatches,
+	preserveStoredBlankCurrentProfile,
 	replaceStoredSettingsForServer,
 	serializeStoredSettings,
 	serializeStoredSettingsEnvelope,
@@ -304,8 +305,8 @@ test('carries only Site URL from Apache into pristine Nginx and still requires i
 	);
 });
 
-test('does not overwrite a v0.3.1-stamped blank current profile', () => {
-	const envelope = normalizeStoredSettingsEnvelope({
+test('stamps a v0.3.1 blank current profile before switch-away and switch-back', () => {
+	const stored = {
 		enabled: true,
 		lastServerKind: 'apache',
 		profiles: {
@@ -316,10 +317,54 @@ test('does not overwrite a v0.3.1-stamped blank current profile', () => {
 			},
 		},
 		schemaVersion: 2,
-	});
+	};
+	const envelope = preserveStoredBlankCurrentProfile(
+		normalizeStoredSettingsEnvelope(stored),
+		stored,
+		'apache',
+	);
 
 	assert.strictEqual(carrySiteUrlToPristineServerProfile(envelope, 'apache'), envelope);
 	assert.equal(envelope.profiles.apache.siteUrl, '');
+	assert.equal(envelope.profiles.apache.originSource, 'manual');
+
+	const switchedAway = setStoredSettingsLastServer(envelope, 'nginx');
+	assert.strictEqual(
+		carrySiteUrlToPristineServerProfile(switchedAway, 'apache'),
+		switchedAway,
+	);
+});
+
+test('preserves only an existing blank profile recorded as current', () => {
+	const stored = {
+		enabled: false,
+		lastServerKind: 'nginx',
+		profiles: {
+			apache: {},
+			nginx: {},
+		},
+		schemaVersion: 2,
+	};
+	const envelope = normalizeStoredSettingsEnvelope(stored);
+
+	assert.notStrictEqual(preserveStoredBlankCurrentProfile(envelope, stored, 'nginx'), envelope);
+	assert.strictEqual(preserveStoredBlankCurrentProfile(envelope, stored, 'apache'), envelope);
+	assert.strictEqual(preserveStoredBlankCurrentProfile(envelope, undefined, 'nginx'), envelope);
+	const configuredEnvelope = normalizeStoredSettingsEnvelope({
+		...stored,
+		profiles: {
+			...stored.profiles,
+			nginx: { siteUrl: 'https://configured.example.com' },
+		},
+	});
+	assert.strictEqual(
+		preserveStoredBlankCurrentProfile(
+			configuredEnvelope,
+			stored,
+			'nginx',
+		),
+		configuredEnvelope,
+	);
 });
 
 test('does not overwrite an intentionally cleared or otherwise non-pristine profile', () => {

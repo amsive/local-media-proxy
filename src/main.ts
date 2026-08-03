@@ -65,6 +65,7 @@ import {
 	fallbackStoredSettings,
 	normalizeStoredSettingsEnvelope,
 	originPairMatches,
+	preserveStoredBlankCurrentProfile,
 	replaceStoredSettingsForServer,
 	serializeStoredSettingsEnvelope,
 	setStoredSettingsEnabled,
@@ -1395,10 +1396,17 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					}
 				};
 				const previousEnvelope = readStoredSettingsEnvelope(site, server.kind);
-				const reconciledEnvelope = server.kind === 'apache' || server.kind === 'nginx'
-					? carrySiteUrlToPristineServerProfile(previousEnvelope, server.kind)
+				const intentPreservedEnvelope = server.kind === 'apache' || server.kind === 'nginx'
+					? preserveStoredBlankCurrentProfile(
+						previousEnvelope,
+						rawStoredSettings,
+						server.kind,
+					)
 					: previousEnvelope;
-				const carriedSiteUrl = reconciledEnvelope !== previousEnvelope;
+				const reconciledEnvelope = server.kind === 'apache' || server.kind === 'nginx'
+					? carrySiteUrlToPristineServerProfile(intentPreservedEnvelope, server.kind)
+					: intentPreservedEnvelope;
+				const carriedSiteUrl = reconciledEnvelope !== intentPreservedEnvelope;
 				const settings = server.kind === 'apache' || server.kind === 'nginx'
 					? storedSettingsForServer(reconciledEnvelope, server.kind)
 					: fallbackStoredSettings(reconciledEnvelope);

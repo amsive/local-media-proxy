@@ -200,12 +200,18 @@ test('server reconciliation carries Site URL inside the site lock and commits it
 		1,
 		'Site URL handoff must occur only in server reconciliation',
 	);
+	assert.equal(
+		(mainSource.match(/preserveStoredBlankCurrentProfile\(/g) ?? []).length,
+		1,
+		'legacy blank intent must be preserved only in server reconciliation',
+	);
 	assertInOrder(
 		reconcile,
 		[
 			'await withSiteLock(siteId, async () => {',
 			'const previousEnvelope = readStoredSettingsEnvelope(site, server.kind)',
-			'carrySiteUrlToPristineServerProfile(previousEnvelope, server.kind)',
+			'preserveStoredBlankCurrentProfile(',
+			'carrySiteUrlToPristineServerProfile(intentPreservedEnvelope, server.kind)',
 			'const settings =',
 			'storedSettingsForServer(reconciledEnvelope, server.kind)',
 		],
