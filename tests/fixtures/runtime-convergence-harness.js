@@ -691,7 +691,7 @@ if (isRouterScenario) {
 if (
 	isRouterScenario ||
 	staleServerScenarios.has(scenario) ||
-	scenario === 'target-service-missing-restart-timeout'
+	missingTargetProcessScenarios.has(scenario)
 ) {
 	Object.defineProperty(process, 'platform', {
 		...originalPlatformDescriptor,
