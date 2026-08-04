@@ -19,6 +19,7 @@ This release expands the local-first fallback to safe missing upload assets and 
 
 - First-time web-server profile changes carry only a validated canonical Site URL into a truly untouched destination profile. Apache-to-Nginx changes still require their own remote IP, and existing or intentionally cleared profiles are never overwritten. ([#33](https://github.com/amsive/local-media-proxy/issues/33))
 - Updated the development-only `@types/node` declaration package and its recorded provenance from 26.1.1 to 26.1.2 through Dependabot [#35](https://github.com/amsive/local-media-proxy/pull/35). This maintenance change does not alter the packaged runtime.
+- Updated the optional `undici` package in the development-only Local SDK dependency tree from 7.28.0 to 7.29.0 through Dependabot [#37](https://github.com/amsive/local-media-proxy/pull/37), incorporating upstream security fixes without changing the packaged add-on runtime.
 
 ### Fixed
 
