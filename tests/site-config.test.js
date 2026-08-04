@@ -239,7 +239,7 @@ test('detects and replaces pre-revision image-only routes on both supported serv
 		);
 		assert.match(
 			await fs.readFile(nginxPaths.includeTemplate, 'utf8'),
-			/Managed route revision: upload-assets-v2/,
+			/Managed route revision: upload-assets-v3/,
 		);
 
 		await removeAllManagedFiles(fixture.site);
@@ -272,7 +272,7 @@ test('detects and replaces pre-revision image-only routes on both supported serv
 		);
 		assert.match(
 			await fs.readFile(apachePaths.includeTemplate, 'utf8'),
-			/Managed route revision: upload-assets-v2/,
+			/Managed route revision: upload-assets-v3/,
 		);
 	} finally {
 		await fixture.cleanup();

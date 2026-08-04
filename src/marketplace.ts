@@ -101,6 +101,7 @@ To disable the fallback, turn off either **Enable for this site** or the compact
 - Allows only \`GET\` and \`HEAD\` requests.
 - Does not forward cookies, credentials, nonces, forwarding headers, or request bodies; a fixed add-on User-Agent replaces the browser's identity. Nginx reconstructs only range negotiation. Apache admits and strips a bounded set of standard browser and Local-router headers before preserving range requests; an unknown header name makes that missing-asset request fail closed.
 - Requires a visible filename with an extension and rejects executable, browser-active, hidden, configuration, secret, database, and backup paths. SVG remains supported as a media format.
+- Rejects browser execution destinations for missing assets and removes upstream redirect targets while retaining document and embed support for PDFs, SVG, and other media.
 - Apache HTTPS requires Local's platform bundle to include \`mod_ssl\`. The current official Intel macOS +11 bundle is Apache HTTP-only; the site UI detects and explains this before testing or writing configuration.
 - Supports images, video, audio, captions, PDFs, documents, fonts, archives, generated CSS, data, streaming manifests, and unknown future asset formats. Themes, plugins, API requests, non-upload paths, and arbitrary URLs remain local-only.
 - Supported HTTPS endpoints require a trusted certificate. Apache always verifies the Site URL hostname; Nginx retains its existing guarded support for separately verified WP Engine identities.
@@ -118,10 +119,10 @@ ${ADDON_NAME} is maintained by Amsive LLC and developed by Mark Davoli and Boris
 function createCurrentReleaseNotes(): string {
 	return `Version 0.4.0 expands the local-first fallback to safe WordPress upload assets and makes saved site state converge reliably across add-on and web-server changes.
 
-- Missing video, audio, captions, PDFs, documents, fonts, archives, generated CSS, data, streaming manifests, and future asset formats can stream from the configured origin while existing eligible uploads remain local. Unsafe executable, browser-active, hidden, configuration, secret, database, backup, and malformed upload paths fail closed. ([#32](https://github.com/amsive/local-media-proxy/issues/32))
+- Missing video, audio, captions, PDFs, documents, fonts, archives, generated CSS, data, streaming manifests, and future asset formats can stream from the configured origin while existing eligible uploads remain local. Unsafe executable, browser-active, hidden, configuration, secret, database, backup, malformed, and browser-execution requests fail closed; upstream redirect targets are not exposed to the local browser. ([#32](https://github.com/amsive/local-media-proxy/issues/32))
 - Media and document range requests support seeking and partial downloads on Nginx and Apache. ([#32](https://github.com/amsive/local-media-proxy/issues/32))
 - Per-site enabled intent survives v0.4.0 add-on disable and reinstall, and a first-time server change carries only the Site URL into a pristine destination profile. Replacing an earlier release may require enabling a site once because its older uninstaller runs first. ([#31](https://github.com/amsive/local-media-proxy/issues/31), [#33](https://github.com/amsive/local-media-proxy/issues/33))
-- Managed source, compiled server configuration, and the targeted runtime converge after upgrades, settings changes, same-value repair requests, and server changes; passive dashboard reads report drift without modifying the site. ([#34](https://github.com/amsive/local-media-proxy/issues/34))
+- Managed source, compiled server configuration, and the targeted runtime converge after upgrades, settings changes, same-value repair requests, and server changes; passive dashboard reads and untouched disabled profiles do not modify the site. ([#34](https://github.com/amsive/local-media-proxy/issues/34))
 
 [View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
 }

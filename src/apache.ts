@@ -9,6 +9,7 @@ import path from 'node:path';
 import type * as Local from '@getflywheel/local';
 import {
 	APACHE_UPLOAD_ASSET_ROUTE_PATTERN,
+	BLOCKED_BROWSER_FETCH_DESTINATION_PATTERN,
 	BLOCKED_UPLOAD_ASSET_PATH_PATTERN,
 	UNSAFE_RAW_PERCENT_ENCODING_PATTERN,
 	UPLOAD_ASSET_ROUTE_REVISION,
@@ -579,6 +580,9 @@ export function buildManagedApacheConfig(
 		'RewriteCond $1 "%(?:25)*(?:2f|5c|3f|23|00)" [NC,OR]',
 		'RewriteCond $1 "%(?![0-9a-f]{2})" [NC]',
 		`RewriteRule ${quoteApachePattern(route, 'Apache asset route')} - [R=400,L,NC]`,
+		'RewriteCond "%{DOCUMENT_ROOT}/$1" !-f',
+		`RewriteCond %{HTTP:Sec-Fetch-Dest} ${quoteApachePattern(BLOCKED_BROWSER_FETCH_DESTINATION_PATTERN, 'Apache blocked Fetch Metadata destination')} [NC]`,
+		`RewriteRule ${quoteApachePattern(route, 'Apache asset route')} - [R=404,L,NC]`,
 		'RewriteCond "%{DOCUMENT_ROOT}/$1" !-f',
 		'RewriteCond %{ENV:LOCAL_MEDIA_PROXY_UNKNOWN_HEADER} =1',
 		`RewriteRule ${quoteApachePattern(route, 'Apache asset route')} - [R=400,L,NC]`,

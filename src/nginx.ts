@@ -16,6 +16,7 @@ import {
 	PROXIED_RESPONSE_HEADERS_TO_STRIP,
 } from './constants';
 import {
+	BLOCKED_BROWSER_FETCH_DESTINATION_PATTERN,
 	BLOCKED_UPLOAD_ASSET_PATH_PATTERN,
 	NGINX_HARD_BLOCKED_UPLOAD_ASSET_URI_PATTERN,
 	NGINX_UPLOAD_ASSET_URI_PATTERN,
@@ -660,11 +661,13 @@ export function buildManagedNginxConfig(
 		'',
 		'location @local_media_proxy {',
 		`\tif ($uri ~* ${quoteNginxRegularExpression(BLOCKED_UPLOAD_ASSET_PATH_PATTERN)}) { return 404; }`,
+		`\tif ($http_sec_fetch_dest ~* ${quoteNginxRegularExpression(BLOCKED_BROWSER_FETCH_DESTINATION_PATTERN)}) { return 404; }`,
 		`\tproxy_pass ${origin.protocol}//${formatProxyIp(origin.originIp)}:${origin.port};`,
 		`\tproxy_set_header Host ${quoteNginx(origin.hostHeader)};`,
 		`\tproxy_set_header User-Agent ${quoteNginx(ORIGIN_REQUEST_USER_AGENT)};`,
 		'\tproxy_set_header Range $http_range;',
 		'\tproxy_set_header If-Range $http_if_range;',
+		'\tproxy_set_header Sec-Fetch-Dest "";',
 		...tlsDirectives,
 		'\tproxy_http_version 1.1;',
 		'\tproxy_pass_request_headers off;',

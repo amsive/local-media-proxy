@@ -8,9 +8,11 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
+	BLOCKED_BROWSER_FETCH_DESTINATION_PATTERN,
 	BLOCKED_UPLOAD_ASSET_PATH_PATTERN,
 	UPLOAD_ASSET_ROUTE_REVISION,
 	UPLOAD_ASSET_URI_PATTERN,
+	uploadAssetFetchDestinationIsProxyEligible,
 	uploadAssetPathIsProxyEligible,
 } = require('../lib/asset-policy');
 
@@ -116,7 +118,53 @@ test('allows current media, documents, data, and unknown future upload formats',
 	for (const requestPath of allowedPaths) {
 		assert.equal(uploadAssetPathIsProxyEligible(requestPath), true, requestPath);
 	}
-	assert.equal(UPLOAD_ASSET_ROUTE_REVISION, 'upload-assets-v2');
+	assert.equal(UPLOAD_ASSET_ROUTE_REVISION, 'upload-assets-v3');
+});
+
+test('allows passive/core Fetch Metadata destinations and rejects browser execution destinations', () => {
+	for (const destination of [
+		undefined,
+		null,
+		'',
+		' ',
+		'audio',
+		'document',
+		'empty',
+		'embed',
+		'fencedframe',
+		'font',
+		'frame',
+		'iframe',
+		'image',
+		'json',
+		'manifest',
+		'object',
+		'report',
+		'style',
+		'track',
+		'video',
+	]) {
+		assert.equal(uploadAssetFetchDestinationIsProxyEligible(destination), true, destination);
+	}
+
+	for (const destination of [
+		'audioworklet',
+		'paintworklet',
+		'script',
+		'SCRIPT',
+		'serviceworker',
+		'sharedworker',
+		'worker',
+		'xslt',
+		'image, script',
+	]) {
+		assert.equal(uploadAssetFetchDestinationIsProxyEligible(destination), false, destination);
+	}
+
+	const blockedDestination = new RegExp(BLOCKED_BROWSER_FETCH_DESTINATION_PATTERN, 'i');
+	assert.equal(blockedDestination.test('image'), false);
+	assert.equal(blockedDestination.test('image, script'), true);
+	assert.equal(blockedDestination.test('scripted'), false);
 });
 
 test('blocks interpreter tokens even when a safe-looking extension follows them', () => {

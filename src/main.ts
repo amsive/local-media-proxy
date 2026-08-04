@@ -78,6 +78,7 @@ import {
 	setStoredSettingsLastServer,
 	storedSettingsEnvelopeNeedsMigration,
 	storedSettingsForServer,
+	storedSettingsRequireBackgroundReconciliation,
 } from './settings';
 import type {
 	OriginDiscoveryRequest,
@@ -1663,7 +1664,10 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					return true;
 				}
 				const rawStoredSettings = (site as SiteWithSettings)[SITE_SETTINGS_KEY];
-				if (options.configuredOnly && rawStoredSettings === undefined) {
+				if (
+					options.configuredOnly &&
+					!storedSettingsRequireBackgroundReconciliation(rawStoredSettings)
+				) {
 					return true;
 				}
 				const siteStatusAllowsReconciliation = (candidate: Local.Site): boolean => (
@@ -2065,6 +2069,17 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		options: ReconcileOptions,
 	): void => {
 		const existing = deferredReconciliations.get(siteId);
+		if (!existing && options.configuredOnly) {
+			const site = siteData.getSite(siteId);
+			if (
+				!site ||
+				!storedSettingsRequireBackgroundReconciliation(
+					(site as SiteWithSettings)[SITE_SETTINGS_KEY],
+				)
+			) {
+				return;
+			}
+		}
 		if (existing) {
 			existing.options = {
 				configuredOnly: existing.options.configuredOnly && options.configuredOnly,
@@ -2111,6 +2126,15 @@ export default function main(context: LocalMain.AddonMainContext): void {
 
 			const site = siteData.getSite(siteId);
 			if (!site) {
+				cancelDeferredReconciliation(siteId);
+				return;
+			}
+			if (
+				pending.options.configuredOnly &&
+				!storedSettingsRequireBackgroundReconciliation(
+					(site as SiteWithSettings)[SITE_SETTINGS_KEY],
+				)
+			) {
 				cancelDeferredReconciliation(siteId);
 				return;
 			}
@@ -2974,7 +2998,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 
 	for (const site of Object.values(siteData.getSites()) as Local.Site[]) {
 		scheduleDeferredReconciliation(site.id, {
-			configuredOnly: false,
+			configuredOnly: true,
 			refreshMatchingEnabledRuntime: false,
 		});
 	}

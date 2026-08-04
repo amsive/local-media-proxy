@@ -111,7 +111,7 @@ Module._load = function loadWithLocalStub(request, parent, isMain) {
 try {
 	const main = require(path.join(libRoot, 'main.js')).default;
 	main({ electron: { ipcMain } });
-	assert.equal(timers.size, 1, 'startup should schedule one reconciliation timer');
+	assert.equal(timers.size, 0, 'startup should skip an untouched disabled site');
 
 	ipcMain.emit('addonInstallerService:disable', {}, {
 		name: 'local-media-proxy',

@@ -22,6 +22,7 @@ const runtimeNginx = process.env.LOCAL_MEDIA_PROXY_NGINX_BIN;
 const strippedResponseHeaders = [
 	'clear-site-data',
 	'content-security-policy-report-only',
+	'location',
 	'nel',
 	'report-to',
 	'reporting-endpoints',
@@ -144,10 +145,14 @@ test('official Local Nginx runtime preserves local files and safely proxies only
 		const extension = pathname.slice(pathname.lastIndexOf('.') + 1).toLowerCase();
 		const isRangeFixture = Object.hasOwn(contentTypes, extension);
 		response.statusCode = pathname.includes('not-found') ? 404 : 200;
+		if (pathname.endsWith('/redirect.futuremedia')) {
+			response.statusCode = 302;
+			response.setHeader('Location', 'https://outside.example.com/active.js');
+		}
 		response.setHeader(
 			'Content-Type',
 			pathname.endsWith('/active.futuremedia')
-				? 'text/html'
+				? 'application/javascript'
 				: isRangeFixture ? contentTypes[extension] : 'text/plain',
 		);
 		response.setHeader('Content-Disposition', `inline; filename="asset.${extension}"`);
@@ -272,6 +277,7 @@ test('official Local Nginx runtime preserves local files and safely proxies only
 					'Proxy-Authorization': 'Basic private',
 					Range: 'bytes=2-5',
 					Referer: 'https://private.example.com/path',
+					'Sec-Fetch-Dest': 'image',
 					'X-API-Key': 'private',
 					'X-Auth-Token': 'private',
 					'X-CSRF-Token': 'private',
@@ -317,13 +323,51 @@ test('official Local Nginx runtime preserves local files and safely proxies only
 
 		const activeResponse = await request(frontendPort, '/wp-content/uploads/active.futuremedia');
 		assert.equal(activeResponse.statusCode, 200);
-		assert.equal(activeResponse.headers['content-type'], 'text/html');
+		assert.equal(activeResponse.headers['content-type'], 'application/javascript');
 		assert.equal(
 			activeResponse.headers['content-security-policy'],
 			"sandbox; default-src 'none'; base-uri 'none'; form-action 'none'",
 		);
 		assert.equal(activeResponse.headers['x-content-type-options'], 'nosniff');
 		assert.equal(activeResponse.headers['x-local-media-proxy'], 'origin');
+
+		const beforeActiveDestinations = backendRequests.length;
+		for (const destination of [
+			'audioworklet',
+			'paintworklet',
+			'SCRIPT',
+			'serviceworker',
+			'sharedworker',
+			'worker',
+			'xslt',
+		]) {
+			const blocked = await request(
+				frontendPort,
+				`/wp-content/uploads/active-${destination.toLowerCase()}.futuremedia`,
+				{ headers: { 'Sec-Fetch-Dest': destination } },
+			);
+			assert.equal(blocked.statusCode, 404, destination);
+			assert.equal(backendRequests.length, beforeActiveDestinations, destination);
+		}
+		for (const [assetPath, destination, contentType] of [
+			['/wp-content/uploads/object.pdf', 'object', 'application/pdf'],
+			['/wp-content/uploads/embed.svg', 'embed', 'image/svg+xml'],
+			['/wp-content/uploads/frame.pdf', 'iframe', 'application/pdf'],
+		]) {
+			const allowed = await request(frontendPort, assetPath, {
+				headers: { 'Sec-Fetch-Dest': destination },
+			});
+			assert.equal(allowed.statusCode, 200, destination);
+			assert.equal(allowed.headers['content-type'], contentType, destination);
+			assert.equal(allowed.headers['x-local-media-proxy'], 'origin', destination);
+			assert.equal(backendRequests.at(-1).headers['sec-fetch-dest'], undefined, destination);
+		}
+
+		const redirect = await request(frontendPort, '/wp-content/uploads/redirect.futuremedia');
+		assert.equal(redirect.statusCode, 302);
+		assert.equal(redirect.headers.location, undefined);
+		assert.equal(redirect.headers['x-local-media-proxy'], 'origin');
+		assert.equal(backendRequests.length, beforeActiveDestinations + 4);
 
 		const beforeRawNormalization = backendRequests.length;
 		for (const unsafePath of [

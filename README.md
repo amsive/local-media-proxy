@@ -66,7 +66,7 @@ Verified remote endpoint ---> stream asset response
 
 Nginx can connect to a selected IP while preserving the Site URL as the HTTP `Host`. Guarded WP Engine discovery may also preserve a provider-returned direct hostname for TLS verification. Apache uses one validated Site URL hostname for DNS, `Host`, TLS SNI, and certificate identity.
 
-The add-on supports images, video, audio, captions, PDFs, documents, fonts, archives, generated CSS, and future file formats without maintaining an extension allowlist. It rejects executable, browser-active, hidden, configuration, secret, database, and backup files; it never proxies themes, plugins, APIs, arbitrary missing URLs, or non-upload paths. Responses stream without a persistent media cache.
+The add-on supports images, video, audio, captions, PDFs, documents, fonts, archives, generated CSS, and future file formats without maintaining an extension allowlist. It rejects executable, browser-active, hidden, configuration, secret, database, and backup files; browser execution destinations fail closed, and upstream redirect targets are not exposed to the local browser. It never proxies themes, plugins, APIs, arbitrary missing URLs, or non-upload paths. Responses stream without a persistent media cache.
 
 ## HTTPS and Cloudflare Origin CA
 

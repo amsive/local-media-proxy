@@ -150,7 +150,10 @@ test('startup and Local lifecycle reconciliation wait for stable ready sites wit
 	assert.match(reconcile, /removeAllManagedFiles\([\s\S]{0,80}site,[\s\S]{0,100}assertReconciliationTransactionCurrent/);
 	assert.match(reconcile, /compileAndReload\([\s\S]{0,80}site,[\s\S]{0,80}server,[\s\S]{0,80}settings\.enabled,[\s\S]{0,80}assertReconciliationTransactionCurrent/);
 	assert.doesNotMatch(reconcile, /forcedAfterSiteStarted/);
-	assert.match(reconcile, /options\.configuredOnly && rawStoredSettings === undefined[\s\S]{0,80}return/);
+	assert.match(
+		reconcile,
+		/options\.configuredOnly &&[\s\S]{0,100}!storedSettingsRequireBackgroundReconciliation\(rawStoredSettings\)[\s\S]{0,80}return/,
+	);
 	assert.match(reconcile, /shouldReconcileManagedFiles\(siteProcessManager\.getSiteStatus\(candidate\)\)/);
 	assert.ok(
 		reconcile.indexOf('siteStatusAllowsReconciliation(site)') < reconcile.indexOf('const detectedServer = detectSiteServer(site)') &&
@@ -194,13 +197,29 @@ test('startup and Local lifecycle reconciliation wait for stable ready sites wit
 	assert.match(mainSource, /HooksMain\.addAction\('siteDeleted'[\s\S]{0,300}cancelDeferredReconciliation\(siteId\)[\s\S]{0,120}cancelOriginProbesForSite\(siteId\)/);
 	assert.match(mainSource, /DEFERRED_RECONCILIATION_MAX_ATTEMPTS = 900/);
 	assert.match(mainSource, /DEFERRED_RECONCILIATION_STABLE_SAMPLES = 2/);
+	const scheduler = sourceSection(
+		'const scheduleDeferredReconciliation',
+		'const cancelDeferredGlobalCleanup',
+	);
+	assert.match(
+		scheduler,
+		/!existing && options\.configuredOnly[\s\S]{0,260}!storedSettingsRequireBackgroundReconciliation\([\s\S]{0,120}SITE_SETTINGS_KEY[\s\S]{0,100}return/,
+	);
+	assert.ok(
+		scheduler.indexOf('storedSettingsRequireBackgroundReconciliation(') <
+			scheduler.indexOf('siteProcessManager.getSiteStatus(site)'),
+		'passive reconciliation must reject pristine settings before reading service lifecycle or paths',
+	);
 	assert.match(reconcile, /const managedFilesMatch = await serverManagedFilesMatch\(/);
 	assert.match(reconcile, /compiledConfigMatches = await serverCompiledConfigMatches\(/);
 	assert.match(
 		reconcile,
 		/compiledConfigMatches &&[\s\S]{0,100}!options\.refreshMatchingEnabledRuntime[\s\S]{0,120}return persistReconciledEnvelope\(\)/,
 	);
-	assert.match(mainSource, /for \(const site of Object\.values\(siteData\.getSites\(\)\)[\s\S]{0,220}scheduleDeferredReconciliation\(site\.id/);
+	assert.match(
+		mainSource,
+		/for \(const site of Object\.values\(siteData\.getSites\(\)\)[\s\S]{0,220}scheduleDeferredReconciliation\(site\.id, \{[\s\S]{0,100}configuredOnly: true/,
+	);
 });
 
 test('server reconciliation carries Site URL inside the site lock and commits it transactionally', () => {
@@ -580,6 +599,56 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 	const startupNoop = runScenario('startup-noop');
 	assert.deepEqual(startupNoop.calls, []);
 	assert.equal(startupNoop.restartCalls, 0);
+
+	for (const scenario of [
+		'startup-pristine-disabled-nginx',
+		'site-added-pristine-disabled-nginx',
+		'site-start-pristine-disabled-nginx',
+		'global-enable-pristine-disabled-nginx',
+	]) {
+		const pristineDisabledNginx = runScenario(scenario);
+		assert.equal(pristineDisabledNginx.compiledMatches, false);
+		assert.equal(pristineDisabledNginx.compiledMatchChecks, 0);
+		assert.equal(pristineDisabledNginx.filesystemReadyChecks, 0);
+		assert.equal(pristineDisabledNginx.managedArtifactChecks, 0);
+		assert.equal(pristineDisabledNginx.serviceLookupCalls, 0);
+		assert.equal(pristineDisabledNginx.siteStatusCalls, 0);
+		assert.equal(pristineDisabledNginx.pendingTimers, 0);
+		assert.deepEqual(pristineDisabledNginx.calls, []);
+		assert.deepEqual(pristineDisabledNginx.updates, []);
+		assert.equal(pristineDisabledNginx.restartCalls, 0);
+		assert.deepEqual(
+			pristineDisabledNginx.finalStoredSettings,
+			pristineDisabledNginx.storedSettingsBeforeReconciliation,
+		);
+	}
+
+	const pristineDisabledApache = runScenario('startup-pristine-disabled-apache');
+	assert.deepEqual(pristineDisabledApache.calls, ['updateSite']);
+	assert.equal(pristineDisabledApache.compiledMatchChecks, 1);
+	assert.equal(pristineDisabledApache.managedArtifactChecks, 1);
+	assert.equal(pristineDisabledApache.pendingTimers, 0);
+	assert.equal(pristineDisabledApache.restartCalls, 0);
+	assert.equal(pristineDisabledApache.updates.length, 1);
+	assert.equal(pristineDisabledApache.finalStoredSettings.enabled, false);
+	assert.equal(pristineDisabledApache.finalStoredSettings.lastServerKind, 'apache');
+	assert.equal(pristineDisabledApache.finalStoredSettings.profiles.apache.originSource, 'manual');
+	assert.deepEqual(pristineDisabledApache.finalStoredSettings.profiles.nginx, {
+		originIp: '',
+		productionUrl: '',
+		siteUrl: '',
+	});
+
+	const configuredDisabledNginx = runScenario('startup-configured-disabled-nginx');
+	assert.deepEqual(configuredDisabledNginx.calls, [
+		'captureAllManagedFiles',
+		'removeAllManagedFiles',
+		'compileNginx:clean',
+		'restart:nginx-1.26.1+3',
+	]);
+	assert.equal(configuredDisabledNginx.compiledMatchChecks, 1);
+	assert.equal(configuredDisabledNginx.pendingTimers, 0);
+	assert.deepEqual(configuredDisabledNginx.updates, []);
 
 	const startupRepair = runScenario('startup-compiled-drift');
 	assert.deepEqual(startupRepair.calls, [

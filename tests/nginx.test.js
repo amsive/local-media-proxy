@@ -88,7 +88,7 @@ async function writeCompiledNginxFixture(runtimeService, managed = true) {
 test('builds a local-first, read-only, privacy-preserving HTTPS proxy', () => {
 	const config = buildManagedNginxConfig(secureOrigin, '/tmp/local origin-ca.pem');
 
-	assert.match(config, /Managed route revision: upload-assets-v2/);
+	assert.match(config, /Managed route revision: upload-assets-v3/);
 	assert.match(config, /location ~\* "\^\(\?!/);
 	assert.match(config, /\/wp-content\/uploads\//);
 	assert.match(config, /if \(\$request_method !~ \^\(GET\|HEAD\)\$\) \{ return 405; \}/);
@@ -101,6 +101,12 @@ test('builds a local-first, read-only, privacy-preserving HTTPS proxy', () => {
 	assert.match(config, /try_files \$uri @local_media_proxy;/);
 	assert.ok(config.indexOf('try_files $uri') < config.indexOf('if ($uri ~*'));
 	assert.ok(config.indexOf('if ($uri ~*') < config.indexOf('proxy_pass https://'));
+	assert.match(config, /if \(\$http_sec_fetch_dest ~\* .*script.*\) \{ return 404; \}/i);
+	const fetchDestinationGuard = config.split('\n')
+		.find((line) => line.includes('$http_sec_fetch_dest')) ?? '';
+	assert.doesNotMatch(fetchDestinationGuard, /object|embed|frame|iframe|fencedframe/i);
+	assert.ok(config.indexOf('try_files $uri') < config.indexOf('if ($http_sec_fetch_dest ~*'));
+	assert.ok(config.indexOf('if ($http_sec_fetch_dest ~*') < config.indexOf('proxy_pass https://'));
 	assert.doesNotMatch(config, /limit_except/);
 	assert.equal((config.match(/\$request_method/g) ?? []).length, 1);
 	assert.match(config, /proxy_pass https:\/\/192\.0\.2\.10:443;/);
@@ -113,6 +119,7 @@ test('builds a local-first, read-only, privacy-preserving HTTPS proxy', () => {
 	assert.match(config, /proxy_pass_request_body off;/);
 	assert.match(config, /proxy_set_header Range \$http_range;/);
 	assert.match(config, /proxy_set_header If-Range \$http_if_range;/);
+	assert.match(config, /proxy_set_header Sec-Fetch-Dest "";/);
 	assert.match(config, /proxy_set_header Content-Length "";/);
 	assert.match(config, /proxy_set_header Cookie "";/);
 	assert.match(config, /proxy_set_header Authorization "";/);
@@ -143,6 +150,7 @@ test('builds a local-first, read-only, privacy-preserving HTTPS proxy', () => {
 		'Service-Worker-Allowed',
 		'Content-Security-Policy',
 		'Content-Security-Policy-Report-Only',
+		'Location',
 		'X-Content-Type-Options',
 		'X-Local-Media-Proxy',
 		'Report-To',

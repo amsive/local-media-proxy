@@ -18,6 +18,7 @@ export const PROXIED_RESPONSE_HEADERS_TO_STRIP = [
 	'Content-Security-Policy',
 	'Content-Security-Policy-Report-Only',
 	'Critical-CH',
+	'Location',
 	'NEL',
 	'Origin-Trial',
 	'Proxy-Authenticate',

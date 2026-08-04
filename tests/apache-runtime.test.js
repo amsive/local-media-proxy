@@ -25,6 +25,7 @@ const runtimeHttpd = process.env.LOCAL_MEDIA_PROXY_APACHE_HTTPD;
 const strippedResponseHeaders = [
 	'clear-site-data',
 	'content-security-policy-report-only',
+	'location',
 	'nel',
 	'report-to',
 	'reporting-endpoints',
@@ -130,6 +131,7 @@ test('official Apache +11 runtime preserves local files and safely proxies only 
 		mp3: 'audio/mpeg',
 		mp4: 'video/mp4',
 		pdf: 'application/pdf',
+		svg: 'image/svg+xml',
 		webm: 'video/webm',
 	};
 	const backend = http.createServer((incoming, response) => {
@@ -142,10 +144,14 @@ test('official Apache +11 runtime preserves local files and safely proxies only 
 		const extension = pathname.slice(pathname.lastIndexOf('.') + 1).toLowerCase();
 		const isRangeFixture = Object.hasOwn(contentTypes, extension);
 		response.statusCode = incoming.url.includes('not-found') ? 404 : 200;
+		if (pathname.endsWith('/redirect.futuremedia')) {
+			response.statusCode = 302;
+			response.setHeader('Location', 'https://outside.example.com/active.js');
+		}
 		response.setHeader(
 			'Content-Type',
 			incoming.url.includes('/active.futuremedia')
-				? 'text/html'
+				? 'application/javascript'
 				: isRangeFixture ? contentTypes[extension] : 'text/plain',
 		);
 		response.setHeader('Content-Disposition', `inline; filename="asset.${extension}"`);
@@ -306,6 +312,7 @@ test('official Apache +11 runtime preserves local files and safely proxies only 
 				'CF-Access-Client-Secret': 'private',
 				'X-WP-Nonce': 'private',
 				'Sec-CH-UA': 'private-client-hint',
+				'Sec-Fetch-Dest': 'image',
 				'Sec-Fetch-Site': 'same-origin',
 				'Sentry-Trace': 'private-trace',
 				Traceparent: '00-private',
@@ -349,6 +356,7 @@ test('official Apache +11 runtime preserves local files and safely proxies only 
 			'cf-access-client-secret',
 			'x-wp-nonce',
 			'sec-ch-ua',
+			'sec-fetch-dest',
 			'sec-fetch-site',
 			'sentry-trace',
 			'traceparent',
@@ -366,13 +374,51 @@ test('official Apache +11 runtime preserves local files and safely proxies only 
 
 		const activeResponse = await request(frontendPort, '/wp-content/uploads/active.futuremedia');
 		assert.equal(activeResponse.statusCode, 200);
-		assert.equal(activeResponse.headers['content-type'], 'text/html');
+		assert.equal(activeResponse.headers['content-type'], 'application/javascript');
 		assert.equal(
 			activeResponse.headers['content-security-policy'],
 			"sandbox; default-src 'none'; base-uri 'none'; form-action 'none'",
 		);
 		assert.equal(activeResponse.headers['x-content-type-options'], 'nosniff');
 		assert.equal(activeResponse.headers['x-local-media-proxy'], 'origin');
+
+		const beforeActiveDestinations = backendRequests.length;
+		for (const destination of [
+			'audioworklet',
+			'paintworklet',
+			'SCRIPT',
+			'serviceworker',
+			'sharedworker',
+			'worker',
+			'xslt',
+		]) {
+			const blocked = await request(
+				frontendPort,
+				`/wp-content/uploads/active-${destination.toLowerCase()}.futuremedia`,
+				{ headers: { 'Sec-Fetch-Dest': destination } },
+			);
+			assert.equal(blocked.statusCode, 404, destination);
+			assert.equal(backendRequests.length, beforeActiveDestinations, destination);
+		}
+		for (const [assetPath, destination, contentType] of [
+			['/wp-content/uploads/object.pdf', 'object', 'application/pdf'],
+			['/wp-content/uploads/embed.svg', 'embed', 'image/svg+xml'],
+			['/wp-content/uploads/frame.pdf', 'iframe', 'application/pdf'],
+		]) {
+			const allowed = await request(frontendPort, assetPath, {
+				headers: { 'Sec-Fetch-Dest': destination },
+			});
+			assert.equal(allowed.statusCode, 200, destination);
+			assert.equal(allowed.headers['content-type'], contentType, destination);
+			assert.equal(allowed.headers['x-local-media-proxy'], 'origin', destination);
+			assert.equal(backendRequests.at(-1).headers['sec-fetch-dest'], undefined, destination);
+		}
+
+		const redirect = await request(frontendPort, '/wp-content/uploads/redirect.futuremedia');
+		assert.equal(redirect.statusCode, 302);
+		assert.equal(redirect.headers.location, undefined);
+		assert.equal(redirect.headers['x-local-media-proxy'], 'origin');
+		assert.equal(backendRequests.length, beforeActiveDestinations + 4);
 
 		const beforeRawNormalization = backendRequests.length;
 		for (const unsafePath of [

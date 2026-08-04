@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export const UPLOAD_ASSET_ROUTE_REVISION = 'upload-assets-v2';
+export const UPLOAD_ASSET_ROUTE_REVISION = 'upload-assets-v3';
 export const UPLOAD_ASSET_PATH_PREFIX = '/wp-content/uploads/';
 
 const PATH_CHARACTER_CLASS = "A-Za-z0-9._~!$&'()*+,;=@-";
@@ -102,6 +102,25 @@ const BROWSER_ACTIVE_TOKEN_PATTERN = [
 	'wasm',
 	'swf',
 ].join('|');
+
+const BROWSER_ACTIVE_FETCH_DESTINATION_TOKEN_PATTERN = [
+	'audioworklet',
+	'paintworklet',
+	'script',
+	'serviceworker',
+	'sharedworker',
+	'worker',
+	'xslt',
+].join('|');
+
+/**
+ * Fetch Metadata identifies browser-controlled request destinations before the
+ * origin response supplies a MIME type. Reject active destinations for missing
+ * upload assets so an unknown extension cannot become same-origin executable
+ * content. Comma boundaries cover duplicate fields combined by a web server.
+ */
+export const BLOCKED_BROWSER_FETCH_DESTINATION_PATTERN =
+	`(?:^|[\\t ,])(?:${BROWSER_ACTIVE_FETCH_DESTINATION_TOKEN_PATTERN})(?:[\\t ,]|$)`;
 
 const BLOCKED_FINAL_EXTENSION_PATTERN = [
 	// Browser-executable documents. SVG/SVGZ are intentionally not blocked.
@@ -239,6 +258,22 @@ const UNSAFE_RAW_PERCENT_ENCODING = new RegExp(
 	UNSAFE_RAW_PERCENT_ENCODING_PATTERN,
 	'i',
 );
+const BLOCKED_BROWSER_FETCH_DESTINATION = new RegExp(
+	BLOCKED_BROWSER_FETCH_DESTINATION_PATTERN,
+	'i',
+);
+
+/**
+ * Missing or empty Fetch Metadata remains eligible for non-browser clients.
+ * Passive/core destinations such as image, video, audio, style, font, track,
+ * document, and an ordinary empty fetch also remain eligible.
+ */
+export function uploadAssetFetchDestinationIsProxyEligible(
+	secFetchDestination: string | null | undefined,
+): boolean {
+	return !secFetchDestination ||
+		!BLOCKED_BROWSER_FETCH_DESTINATION.test(secFetchDestination);
+}
 
 function pathSegmentIsBlocked(segment: string): boolean {
 	const normalized = segment.toLowerCase();

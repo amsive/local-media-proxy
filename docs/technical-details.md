@@ -51,6 +51,7 @@ Fallback rules are deliberately narrow while remaining format-tolerant:
 - A request must be a missing local `GET` or `HEAD` below `/wp-content/uploads/`, with no request body.
 - The path must end in a visible, non-hidden filename with an extension. The extension is not checked against an allowlist, so new asset formats work without a code change.
 - Executable and interpreter suffixes, browser-active documents, hidden paths, and obvious secret, configuration, database, and backup material are blocked. SVG and SVGZ remain supported exceptions to the browser-document block.
+- Browser-controlled script, worker, worklet, and XSLT destinations are rejected for missing assets using Fetch Metadata before an upstream MIME type can make an unknown extension executable. Document and embed destinations remain available for PDFs, SVG, and other media and are constrained by the managed response sandbox.
 - Interpreter tokens are rejected at any non-alphanumeric boundary in every decoded path segment, including double-suffix and path-info forms such as `shell.php.jpg` and `shell.php/image.jpg`.
 - Traversal, empty or dot segments, encoded or literal backslashes, colons, malformed or repeated encoding, encoded slashes, NUL and control characters, and ambiguous decoded paths are rejected.
 - Query strings are validated separately from the path and retained for cache busting.
@@ -61,7 +62,7 @@ Fallback rules are deliberately narrow while remaining format-tolerant:
 
 Nginx suppresses incoming request headers before reconstructing only `Host`, the fixed add-on `User-Agent`, `Range`, and `If-Range`. Apache admits a bounded set of standard browser and Local-router header names, removes browser identity, content-negotiation, tracing, credential, cookie, authorization, nonce, CSRF, and proxy-identity values, then preserves the same fixed identity and range behavior. A missing-asset request carrying an unrecognized data-bearing header fails closed before reaching the origin; an empty-valued unknown name carries no visitor data, and the gate does not affect an existing local file. Runtime tests verify both the resulting upstream header set and unknown-header rejection.
 
-Apache upload filenames containing decoded spaces or characters outside its path-character allowlist remain local-only rather than broadening the proxy matcher. The upstream status, content type, disposition, length, and range headers are preserved. Origin-controlled cookies, browser-storage controls, service-worker scope, reporting endpoints, authentication prompts, proxy controls, and conflicting security headers are removed. Remote responses receive a managed sandboxing Content Security Policy, `X-Content-Type-Options: nosniff`, and `X-Local-Media-Proxy: origin`.
+Apache upload filenames containing decoded spaces or characters outside its path-character allowlist remain local-only rather than broadening the proxy matcher. The upstream status, content type, disposition, length, and range headers are preserved. Origin-controlled redirect targets, cookies, browser-storage controls, service-worker scope, reporting endpoints, authentication prompts, proxy controls, and conflicting security headers are removed. Remote responses receive a managed sandboxing Content Security Policy, `X-Content-Type-Options: nosniff`, and `X-Local-Media-Proxy: origin`.
 
 ## TLS trust model
 

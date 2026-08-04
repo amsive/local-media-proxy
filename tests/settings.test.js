@@ -21,6 +21,7 @@ const {
 	setStoredSettingsLastServer,
 	storedSettingsEnvelopeNeedsMigration,
 	storedSettingsForServer,
+	storedSettingsRequireBackgroundReconciliation,
 } = require('../lib/settings');
 const { validateAndNormalizeOrigin } = require('../lib/validation');
 
@@ -335,7 +336,39 @@ test('stamps a v0.3.1 blank current profile before switch-away and switch-back',
 	);
 });
 
-test('preserves only an existing blank profile recorded as current', () => {
+test('preserves only an existing blank Apache profile recorded as current', () => {
+	const stored = {
+		enabled: false,
+		lastServerKind: 'apache',
+		profiles: {
+			apache: {},
+			nginx: {},
+		},
+		schemaVersion: 2,
+	};
+	const envelope = normalizeStoredSettingsEnvelope(stored);
+
+	assert.notStrictEqual(preserveStoredBlankCurrentProfile(envelope, stored, 'apache'), envelope);
+	assert.strictEqual(preserveStoredBlankCurrentProfile(envelope, stored, 'nginx'), envelope);
+	assert.strictEqual(preserveStoredBlankCurrentProfile(envelope, undefined, 'apache'), envelope);
+	const configuredEnvelope = normalizeStoredSettingsEnvelope({
+		...stored,
+		profiles: {
+			...stored.profiles,
+			apache: { siteUrl: 'https://configured.example.com' },
+		},
+	});
+	assert.strictEqual(
+		preserveStoredBlankCurrentProfile(
+			configuredEnvelope,
+			stored,
+			'apache',
+		),
+		configuredEnvelope,
+	);
+});
+
+test('does not stamp or serialize a touched marker for a pristine Nginx profile', () => {
 	const stored = {
 		enabled: false,
 		lastServerKind: 'nginx',
@@ -346,25 +379,62 @@ test('preserves only an existing blank profile recorded as current', () => {
 		schemaVersion: 2,
 	};
 	const envelope = normalizeStoredSettingsEnvelope(stored);
+	const preserved = preserveStoredBlankCurrentProfile(envelope, stored, 'nginx');
 
-	assert.notStrictEqual(preserveStoredBlankCurrentProfile(envelope, stored, 'nginx'), envelope);
-	assert.strictEqual(preserveStoredBlankCurrentProfile(envelope, stored, 'apache'), envelope);
-	assert.strictEqual(preserveStoredBlankCurrentProfile(envelope, undefined, 'nginx'), envelope);
-	const configuredEnvelope = normalizeStoredSettingsEnvelope({
-		...stored,
+	assert.strictEqual(preserved, envelope);
+	assert.equal(preserved.profiles.nginx.originSource, undefined);
+	assert.equal(serializeStoredSettingsEnvelope(preserved).originSource, undefined);
+});
+
+test('schedules background reconciliation only for meaningful or unsafe saved state', () => {
+	const pristine = {
+		enabled: false,
+		lastServerKind: 'nginx',
+		originIp: '',
+		productionUrl: '',
 		profiles: {
-			...stored.profiles,
-			nginx: { siteUrl: 'https://configured.example.com' },
+			apache: { originIp: '', productionUrl: '', siteUrl: '' },
+			nginx: { originIp: '', productionUrl: '', siteUrl: '' },
 		},
-	});
-	assert.strictEqual(
-		preserveStoredBlankCurrentProfile(
-			configuredEnvelope,
-			stored,
-			'nginx',
-		),
-		configuredEnvelope,
-	);
+		schemaVersion: 2,
+		siteUrl: '',
+	};
+
+	assert.equal(storedSettingsRequireBackgroundReconciliation(undefined), false);
+	assert.equal(storedSettingsRequireBackgroundReconciliation(pristine), false);
+	assert.equal(storedSettingsRequireBackgroundReconciliation({
+		...pristine,
+		lastServerKind: 'apache',
+	}), true);
+	assert.equal(storedSettingsRequireBackgroundReconciliation({ enabled: false }), false);
+	assert.equal(storedSettingsRequireBackgroundReconciliation({ unrelated: true }), false);
+	assert.equal(storedSettingsRequireBackgroundReconciliation({
+		...pristine,
+		enabled: true,
+	}), true);
+	assert.equal(storedSettingsRequireBackgroundReconciliation({
+		...pristine,
+		profiles: {
+			...pristine.profiles,
+			nginx: { originIp: '', originSource: 'manual', siteUrl: '' },
+		},
+	}), true);
+	assert.equal(storedSettingsRequireBackgroundReconciliation({
+		enabled: false,
+		originIp: '192.0.2.44',
+		productionUrl: 'https://legacy.example.com',
+	}), true);
+	assert.equal(storedSettingsRequireBackgroundReconciliation({
+		enabled: false,
+		profiles: null,
+		schemaVersion: 2,
+	}), true);
+	assert.equal(storedSettingsRequireBackgroundReconciliation({
+		enabled: false,
+		profiles: {},
+		schemaVersion: 3,
+	}), true);
+	assert.equal(storedSettingsRequireBackgroundReconciliation('unknown stored value'), true);
 });
 
 test('does not overwrite an intentionally cleared or otherwise non-pristine profile', () => {

@@ -211,7 +211,7 @@ test('builds a fixed-host local-first Apache proxy with guarded methods, bodies,
 	assert.equal((config.match(/ProxyAddHeaders Off/g) ?? []).length, 1);
 	assert.equal((config.match(/ProxyErrorOverride Off/g) ?? []).length, 1);
 	assert.equal((config.match(/ProxyPreserveHost Off/g) ?? []).length, 1);
-	assert.match(config, /Managed route revision: upload-assets-v2/);
+	assert.match(config, /Managed route revision: upload-assets-v3/);
 	assert.match(config, /SSLProxyEngine On/);
 	assert.match(config, /SSLProxyVerify require/);
 	assert.match(config, /SSLProxyVerifyDepth 5/);
@@ -229,6 +229,14 @@ test('builds a fixed-host local-first Apache proxy with guarded methods, bodies,
 	assert.match(config, /RewriteCond %\{THE_REQUEST\} "!\\s\/wp-content\/uploads\/" \[NC\]/);
 	assert.match(config, /RewriteCond %\{THE_REQUEST\} .*x5c/);
 	assert.match(config, /RewriteCond "%\{DOCUMENT_ROOT\}\/\$1" !-f/);
+	assert.match(config, /RewriteCond %\{HTTP:Sec-Fetch-Dest\} .*script.* \[NC\]/i);
+	const fetchDestinationGuard = config.split('\n')
+		.find((line) => line.includes('HTTP:Sec-Fetch-Dest')) ?? '';
+	assert.doesNotMatch(fetchDestinationGuard, /object|embed|frame|iframe|fencedframe/i);
+	assert.ok(
+		config.indexOf('RewriteCond %{HTTP:Sec-Fetch-Dest}') <
+		config.indexOf('[P,L,NE,QSA'),
+	);
 	assert.ok(config.indexOf('RewriteCond $1') < config.indexOf('RewriteCond "%{DOCUMENT_ROOT}/$1" !-f'));
 	assert.ok(
 		config.indexOf('RewriteCond "%{DOCUMENT_ROOT}/$1" !-f') <
@@ -246,6 +254,7 @@ test('builds a fixed-host local-first Apache proxy with guarded methods, bodies,
 		'Service-Worker-Allowed',
 		'Content-Security-Policy',
 		'Content-Security-Policy-Report-Only',
+		'Location',
 		'X-Content-Type-Options',
 		'X-Local-Media-Proxy',
 		'Report-To',
@@ -276,6 +285,7 @@ test('builds a fixed-host local-first Apache proxy with guarded methods, bodies,
 		'Accept-Language',
 		'Baggage',
 		'Sec-CH-UA',
+		'Sec-Fetch-Dest',
 		'Sec-Fetch-Site',
 		'Sentry-Trace',
 		'Traceparent',

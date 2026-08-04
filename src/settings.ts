@@ -362,17 +362,46 @@ function connectionProfileIsPristine(profile: StoredConnectionProfile): boolean 
 	);
 }
 
+export function storedSettingsRequireBackgroundReconciliation(value: unknown): boolean {
+	if (value === undefined) {
+		return false;
+	}
+
+	const raw = rawObject(value);
+	if (!raw) {
+		return true;
+	}
+
+	try {
+		const envelope = normalizeStoredSettingsEnvelope(value);
+		const rawProfiles = rawObject(raw.profiles);
+		const hasBlankCurrentApacheProfile = raw.schemaVersion === 2 &&
+			envelope.lastServerKind === 'apache' &&
+			Boolean(rawProfiles && Object.prototype.hasOwnProperty.call(rawProfiles, 'apache')) &&
+			connectionProfileIsPristine(envelope.profiles.apache);
+		return envelope.enabled ||
+			hasBlankCurrentApacheProfile ||
+			!connectionProfileIsPristine(envelope.profiles.apache) ||
+			!connectionProfileIsPristine(envelope.profiles.nginx);
+	} catch {
+		// Unknown schemas and malformed envelopes still need fail-closed cleanup.
+		return true;
+	}
+}
+
 export function preserveStoredBlankCurrentProfile(
 	envelope: StoredSettingsEnvelope,
 	storedValue: unknown,
 	currentServerKind: SupportedServerKind,
 ): StoredSettingsEnvelope {
-	// v0.3.x could persist an intentionally cleared current profile without a
-	// touched marker. Stamp only that exact stored/current case before v0.4.0
-	// can later mistake it for an untouched server-switch destination.
+	// v0.3.x Apache saves could persist an intentionally cleared current profile
+	// without a touched marker. Nginx saves retained their manual-origin marker,
+	// so stamping pristine Nginx profiles would turn untouched profiles into
+	// false server-switch destinations and cause passive startup writes.
 	const raw = rawObject(storedValue);
 	const rawProfiles = rawObject(raw?.profiles);
 	if (
+		currentServerKind !== 'apache' ||
 		raw?.schemaVersion !== 2 ||
 		envelope.lastServerKind !== currentServerKind ||
 		!rawProfiles ||

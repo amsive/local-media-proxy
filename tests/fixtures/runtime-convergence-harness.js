@@ -31,9 +31,15 @@ const supportedScenarios = new Set([
 	'same-value-halted-repair',
 	'service-input-change',
 	'global-enable-matching',
+	'global-enable-pristine-disabled-nginx',
 	'site-start-matching',
+	'site-added-pristine-disabled-nginx',
+	'site-start-pristine-disabled-nginx',
+	'startup-configured-disabled-nginx',
 	'startup-compiled-drift',
 	'startup-noop',
+	'startup-pristine-disabled-apache',
+	'startup-pristine-disabled-nginx',
 	'supported-service-unavailable-disabled',
 	'target-service-missing',
 ]);
@@ -50,9 +56,18 @@ ipcMain.handle = (channel, handler) => ipcMain.handlers.set(channel, handler);
 ipcMain.removeHandler = (channel) => ipcMain.handlers.delete(channel);
 
 const isImmediateApacheSwitch = scenario === 'immediate-apache-switch-enable';
+const isApacheRuntime = isImmediateApacheSwitch || scenario === 'startup-pristine-disabled-apache';
+const pristineDisabledScenarios = new Set([
+	'global-enable-pristine-disabled-nginx',
+	'site-added-pristine-disabled-nginx',
+	'site-start-pristine-disabled-nginx',
+	'startup-pristine-disabled-nginx',
+]);
 
-const initiallyEnabled = !new Set([
+const initiallyEnabled = !pristineDisabledScenarios.has(scenario) && !new Set([
 	'rollback-snapshot-enabled',
+	'startup-configured-disabled-nginx',
+	'startup-pristine-disabled-apache',
 	'supported-service-unavailable-disabled',
 ]).has(scenario);
 const siteStatus = scenario === 'same-value-halted-repair'
@@ -79,10 +94,10 @@ const site = {
 	longPath: '/example/site',
 	name: 'runtime-site',
 	paths: { confTemplates: '/example/site/conf' },
-	services: isImmediateApacheSwitch
+	services: isApacheRuntime
 		? { 'apache-2.4.43+11': { name: 'apache-2.4.43+11', role: 'http' } }
 		: { 'nginx-1.26.1+3': { name: 'nginx-1.26.1+3', role: 'http' } },
-	webServer: isImmediateApacheSwitch ? 'apache' : 'nginx',
+	webServer: isApacheRuntime ? 'apache' : 'nginx',
 };
 if (new Set([
 	'corrupt-cleanup-retry',
@@ -112,6 +127,29 @@ if (new Set([
 		},
 		schemaVersion: 2,
 	};
+} else if (pristineDisabledScenarios.has(scenario)) {
+	site.localMediaProxy = {
+		enabled: false,
+		lastServerKind: 'nginx',
+		originIp: '',
+		productionUrl: '',
+		profiles: {
+			apache: { originIp: '', productionUrl: '', siteUrl: '' },
+			nginx: { originIp: '', productionUrl: '', siteUrl: '' },
+		},
+		schemaVersion: 2,
+		siteUrl: '',
+	};
+} else if (scenario === 'startup-pristine-disabled-apache') {
+	site.localMediaProxy = {
+		enabled: false,
+		lastServerKind: 'apache',
+		profiles: {
+			apache: {},
+			nginx: {},
+		},
+		schemaVersion: 2,
+	};
 } else if (isImmediateApacheSwitch) {
 	site.localMediaProxy = {
 		enabled: false,
@@ -129,14 +167,14 @@ if (new Set([
 }
 const storedSettingsBeforeReconciliation = structuredClone(site.localMediaProxy);
 const service = {
-	bin: isImmediateApacheSwitch
+	bin: isApacheRuntime
 		? { httpd: '/example/services/httpd' }
 		: { nginx: '/example/services/nginx' },
-	configPath: `/example/runtime/conf/${isImmediateApacheSwitch ? 'apache' : 'nginx'}`,
+	configPath: `/example/runtime/conf/${isApacheRuntime ? 'apache' : 'nginx'}`,
 	configVariables: {},
 	env: {},
-	runPath: `/example/runtime/run/${isImmediateApacheSwitch ? 'apache' : 'nginx'}`,
-	siteConfigTemplatePath: `/example/site/conf/${isImmediateApacheSwitch ? 'apache' : 'nginx'}`,
+	runPath: `/example/runtime/run/${isApacheRuntime ? 'apache' : 'nginx'}`,
+	siteConfigTemplatePath: `/example/site/conf/${isApacheRuntime ? 'apache' : 'nginx'}`,
 };
 
 let compiledMatches = new Set([
@@ -144,12 +182,16 @@ let compiledMatches = new Set([
 	'passive-switch-projection',
 	'site-start-matching',
 	'startup-noop',
+	'startup-pristine-disabled-apache',
 ]).has(scenario);
 let sourceMatches = true;
 let restartCalls = 0;
 let cleanCompileFailuresRemaining = scenario === 'corrupt-cleanup-retry' ? 1 : 0;
 let serviceLookupCalls = 0;
 let siteStatusCalls = 0;
+let compiledMatchChecks = 0;
+let filesystemReadyChecks = 0;
+let managedArtifactChecks = 0;
 let reconciliationInterruptionsRemaining = scenario === 'reconciliation-interruption-retry' ? 1 : 0;
 const rollbackSourceMatches = scenario === 'rollback-valid-managed';
 const rollbackScenarios = new Set([
@@ -229,7 +271,10 @@ const localMainStub = {
 
 const siteConfig = require(path.join(libRoot, 'site-config.js'));
 Object.assign(siteConfig, {
-	allManagedArtifactsExist: async () => false,
+	allManagedArtifactsExist: async () => {
+		managedArtifactChecks += 1;
+		return false;
+	},
 	applyServerManagedFiles: async () => {
 		calls.push('applyServerManagedFiles');
 		sourceMatches = true;
@@ -251,7 +296,10 @@ Object.assign(siteConfig, {
 		sourceMatches = rollbackSourceMatches;
 	},
 	serverManagedFilesMatch: async () => sourceMatches,
-	serverManagedFilesystemReady: () => true,
+	serverManagedFilesystemReady: () => {
+		filesystemReadyChecks += 1;
+		return true;
+	},
 });
 
 const nginx = require(path.join(libRoot, 'nginx.js'));
@@ -271,12 +319,18 @@ Object.assign(nginx, {
 			service.configVariables.revision = 2;
 		}
 	},
-	nginxCompiledConfigMatches: async () => compiledMatches,
+	nginxCompiledConfigMatches: async () => {
+		compiledMatchChecks += 1;
+		return compiledMatches;
+	},
 });
 
 const apache = require(path.join(libRoot, 'apache.js'));
 Object.assign(apache, {
-	apacheCompiledConfigMatches: async () => compiledMatches,
+	apacheCompiledConfigMatches: async () => {
+		compiledMatchChecks += 1;
+		return compiledMatches;
+	},
 	inspectApacheRuntimeCapabilities: async () => ({
 		https: true,
 		http: true,
@@ -302,7 +356,7 @@ Object.assign(origin, {
 });
 
 const server = require(path.join(libRoot, 'server.js'));
-server.detectSiteServer = () => isImmediateApacheSwitch
+server.detectSiteServer = () => isApacheRuntime
 	? {
 		kind: 'apache',
 		requiresOriginIp: false,
@@ -382,13 +436,32 @@ async function flushAsyncWork() {
 			preflightCallsAfterOneRecoverySample = calls.length;
 			await runNextTimer();
 			await flushAsyncWork();
+		} else if (pristineDisabledScenarios.has(scenario)) {
+			if (scenario === 'global-enable-pristine-disabled-nginx') {
+				ipcMain.emit(
+					'addonInstallerService:enable',
+					{},
+					{ npmPackageName: 'local-media-proxy' },
+				);
+			} else if (scenario === 'site-added-pristine-disabled-nginx') {
+				const [siteAdded] = hooks.get('siteAdded') || [];
+				assert.equal(typeof siteAdded, 'function');
+				siteAdded(site.id);
+			} else if (scenario === 'site-start-pristine-disabled-nginx') {
+				const [siteStarted] = hooks.get('siteStarted') || [];
+				assert.equal(typeof siteStarted, 'function');
+				siteStarted(site.id);
+			}
+			await flushAsyncWork();
 		} else if (
 			scenario === 'startup-noop' ||
-				scenario === 'startup-compiled-drift' ||
-				scenario === 'reconciliation-interruption-retry' ||
-				scenario === 'corrupt-service-unavailable' ||
-				scenario === 'corrupt-cleanup-retry' ||
-				scenario === 'corrupt-schema-version' ||
+			scenario === 'startup-configured-disabled-nginx' ||
+			scenario === 'startup-pristine-disabled-apache' ||
+			scenario === 'startup-compiled-drift' ||
+			scenario === 'reconciliation-interruption-retry' ||
+			scenario === 'corrupt-service-unavailable' ||
+			scenario === 'corrupt-cleanup-retry' ||
+			scenario === 'corrupt-schema-version' ||
 			scenario === 'corrupt-profile-envelope'
 		) {
 			await runNextTimer();
@@ -458,10 +531,13 @@ async function flushAsyncWork() {
 
 		process.stdout.write(`${JSON.stringify({
 			calls,
+			compiledMatchChecks,
 			compiledMatches,
+			filesystemReadyChecks,
 			finalEnabled: site.localMediaProxy.enabled,
 			finalStoredSettings: site.localMediaProxy,
 			operationError,
+			managedArtifactChecks,
 			pendingTimers: timers.size,
 			preflightCallsAfterOneRecoverySample,
 			preflightTimersAfterFailure,
@@ -474,6 +550,8 @@ async function flushAsyncWork() {
 			stateEnabledIntent: state?.settings.enabled,
 			stateLifecycleReady: state?.lifecycleReady,
 			stateSettingsReadOnly: state?.settingsReadOnly,
+			serviceLookupCalls,
+			siteStatusCalls,
 			state: state && {
 				applied: state.applied,
 				needsAttention: state.needsAttention,
