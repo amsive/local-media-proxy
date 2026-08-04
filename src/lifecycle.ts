@@ -62,6 +62,43 @@ export async function runServerTransactionMutation<T>(
 	return result;
 }
 
+export interface ProcessOwnerRecord {
+	parentPid: number;
+	pid: number;
+}
+
+export function processOwnersBelongToCapturedTree(
+	owners: readonly ProcessOwnerRecord[],
+	capturedPid: number,
+): boolean {
+	if (!Number.isSafeInteger(capturedPid) || capturedPid <= 1 || owners.length === 0) {
+		return false;
+	}
+	const ownersByPid = new Map(owners.map((owner) => [owner.pid, owner]));
+	if (ownersByPid.size !== owners.length) {
+		return false;
+	}
+
+	return owners.every((owner) => {
+		let current = owner;
+		const visited = new Set<number>();
+		while (true) {
+			if (current.pid === capturedPid || current.parentPid === capturedPid) {
+				return true;
+			}
+			if (visited.has(current.pid)) {
+				return false;
+			}
+			visited.add(current.pid);
+			const parent = ownersByPid.get(current.parentPid);
+			if (!parent) {
+				return false;
+			}
+			current = parent;
+		}
+	});
+}
+
 export interface UnresolvedServiceCleanupOperations {
 	compileAllConfigs: () => Promise<void>;
 	hasManagedArtifacts: () => Promise<boolean>;

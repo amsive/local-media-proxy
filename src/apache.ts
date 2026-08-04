@@ -208,6 +208,7 @@ export interface ApacheServiceRefreshOptions {
 	expectedManagedModules?: string;
 	intervalMs?: number;
 	masterProcessExists?: (pid: number) => boolean;
+	restartService?: () => Promise<void>;
 	wait?: (milliseconds: number) => Promise<void>;
 }
 
@@ -1074,8 +1075,49 @@ export async function refreshApacheService(
 
 	const masterProcessExists = refreshOptions.masterProcessExists ?? apacheMasterProcessExists;
 	assertCurrent();
-	const masterIsRunning = masterProcessExists(masterPid);
+	let masterIsRunning = masterProcessExists(masterPid);
 	assertCurrent();
+	if (!masterIsRunning && refreshOptions.restartService) {
+		const stillRunning = isSiteRunning();
+		assertCurrent();
+		if (!stillRunning) {
+			throw new Error(
+				'Apache reported a stale master PID, but the Local site stopped before recovery. Start the site, then retry.',
+			);
+		}
+		try {
+			await refreshOptions.restartService();
+			assertCurrent();
+		} catch (cause) {
+			assertCurrent();
+			throw new Error(
+				"Apache reported a stale master PID and Local could not restart this site's Apache service. Stop and start the site in Local, then retry.",
+				{ cause },
+			);
+		}
+		const restartedSiteRunning = isSiteRunning();
+		assertCurrent();
+		const restartedServiceRunning = isServiceRunning();
+		assertCurrent();
+		if (!restartedSiteRunning || !restartedServiceRunning) {
+			throw new Error(
+				'After Local attempted to restart Apache, the selected service could not be verified. Start the site, then retry.',
+			);
+		}
+		assertCurrent();
+		try {
+			masterPid = await readApacheMasterPid(service, assertCurrent);
+			assertCurrent();
+		} catch (cause) {
+			assertCurrent();
+			throw new Error(
+				"Local's Apache master PID is unavailable after restarting the selected service. Stop and start the site in Local, then retry.",
+				{ cause },
+			);
+		}
+		masterIsRunning = masterProcessExists(masterPid);
+		assertCurrent();
+	}
 	if (!masterIsRunning) {
 		throw new Error(
 			"Local's Apache master PID is stale for this site. Stop and start the site in Local, then retry.",

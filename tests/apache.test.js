@@ -902,6 +902,28 @@ test('Apache refresh is bounded, site-scoped, and never hard-restarts Local-mana
 		assert.deepEqual(commandCalls.map((args) => args[0]), ['-t']);
 
 		commandCalls = [];
+		let staleMasterRestarts = 0;
+		assert.equal(await refreshApacheService(
+			{ id: 'site-a' },
+			service,
+			compiler,
+			async (_command, args) => { commandCalls.push(args); return ''; },
+			true,
+			() => true,
+			() => true,
+			{
+				...alwaysRunningOptions,
+				masterProcessExists: (pid) => pid === 5252,
+				restartService: async () => {
+					staleMasterRestarts += 1;
+					await fs.writeFile(path.join(service.runPath, 'logs', 'httpd.pid'), '5252\n');
+				},
+			},
+		), true);
+		assert.equal(staleMasterRestarts, 1);
+		assert.deepEqual(commandCalls.map((args) => args[0]), ['-t', '-k']);
+
+		commandCalls = [];
 		let commandOptions;
 		await assert.rejects(refreshApacheService(
 			{ id: 'site-a' },

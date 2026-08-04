@@ -1064,6 +1064,10 @@ test('Nginx stale-master recovery matches only the native reload error', () => {
 
 test('main compiles, validates, and reloads Nginx using only the targeted site status', () => {
 	const mainSource = fs.readFileSync(path.resolve(__dirname, '../src/main.ts'), 'utf8');
+	const staleServiceRecovery = mainSource.slice(
+		mainSource.indexOf('const recoverStaleSiteService = async'),
+		mainSource.indexOf('const routerProcessHasLiveChild'),
+	);
 	const compileAndReload = mainSource.slice(
 		mainSource.indexOf('const compileAndReload = async'),
 		mainSource.indexOf('const runtimeCleanupUnavailableReason'),
@@ -1082,12 +1086,38 @@ test('main compiles, validates, and reloads Nginx using only the targeted site s
 		1,
 	);
 	assert.match(nginxPath, /expectedManagedInclude,[\s\S]{0,80}targetSiteRunning,[\s\S]{0,200}restartService/);
-	assert.match(compileAndReload, /recoverStaleNginxMaster = false/);
-	assert.match(nginxPath, /restartService: recoverStaleNginxMaster \? async \(\) =>/);
+	assert.match(compileAndReload, /recoverStaleServerMaster = false/);
+	assert.match(nginxPath, /restartService: recoverStaleServerMaster \? async \(\) =>/);
 	assert.match(nginxPath, /const processName = 'nginx'/);
-	assert.match(nginxPath, /restartSiteService\(site, processName\)/);
+	assert.match(
+		nginxPath,
+		/recoverStaleSiteService\(\s*site,\s*server,\s*processName,\s*'Nginx',\s*selectedNginxExecutable,/,
+	);
+	assert.match(staleServiceRecovery, /waitForSiteProcessDisposition\(/);
+	assert.match(
+		staleServiceRecovery,
+		/recoverExactLocalResource\([\s\S]{0,180}knownSiteWebServerExecutables\(site, server\)/,
+	);
+	assert.match(staleServiceRecovery, /await restartCapturedLocalProcess\(/);
+	assert.match(
+		staleServiceRecovery,
+		/exactRestartableSiteProcess\(site, processName, executablePath\) !== restartableProcess/,
+	);
+	assert.equal(
+		(staleServiceRecovery.match(/waitForSiteProcessDisposition\(/g) ?? []).length,
+		2,
+	);
 	assert.doesNotMatch(nginxPath, /hasRunningProcess\(site, processName\)/);
-	assert.equal((nginxPath.match(/restartSiteService\(/g) ?? []).length, 1);
+	assert.doesNotMatch(nginxPath, /restartSiteService\(/);
+	assert.ok(
+		staleServiceRecovery.indexOf('const restartableProcess = exactRestartableSiteProcess(') <
+			staleServiceRecovery.indexOf('await waitForSiteProcessDisposition(') &&
+			staleServiceRecovery.indexOf('await waitForSiteProcessDisposition(') <
+				staleServiceRecovery.indexOf('const recovery = await recoverExactLocalResource(') &&
+			staleServiceRecovery.indexOf('const recovery = await recoverExactLocalResource(') <
+				staleServiceRecovery.indexOf('await restartCapturedLocalProcess('),
+		'stale-master recovery must settle the exact process before lsof and process-only restart',
+	);
 	assert.doesNotMatch(compileAndReload, /reloadNginxWithFallback|reloadNginxInPlace|compileServiceConfigs/);
 });
 

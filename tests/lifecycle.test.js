@@ -12,6 +12,7 @@ const {
 	completeUnresolvedServiceCleanup,
 	isServerTransactionChangedError,
 	lifecycleUnavailableReason,
+	processOwnersBelongToCapturedTree,
 	runServerTransactionMutation,
 	ServerTransactionChangedError,
 	serverTransactionFingerprintsMatch,
@@ -36,6 +37,31 @@ function serverTransaction(overrides = {}) {
 		...overrides,
 	};
 }
+
+test('captured process trees accept the master and descendants but reject unrelated owners', () => {
+	const master = { parentPid: 4000, pid: 5000 };
+	const worker = { parentPid: master.pid, pid: 5001 };
+	const nestedWorker = { parentPid: worker.pid, pid: 5002 };
+
+	assert.equal(
+		processOwnersBelongToCapturedTree([master, worker, nestedWorker], master.pid),
+		true,
+	);
+	assert.equal(
+		processOwnersBelongToCapturedTree([worker], master.pid),
+		true,
+		'a direct worker remains provable when the captured master does not own the listener',
+	);
+	assert.equal(
+		processOwnersBelongToCapturedTree([
+			master,
+			worker,
+			{ parentPid: 7000, pid: 7001 },
+		], master.pid),
+		false,
+		'an unrelated same-binary owner must not be accepted as part of the captured router',
+	);
+});
 
 test('server transactions close when server identity, paths, or lifecycle status changes', () => {
 	const original = serverTransaction();

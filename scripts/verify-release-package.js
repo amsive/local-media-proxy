@@ -39,6 +39,7 @@ const EXPECTED_SOURCE_FILES = Object.freeze([
 	'lib/main.js',
 	'lib/marketplace.js',
 	'lib/nginx.js',
+	'lib/orphan-recovery.js',
 	'lib/origin.js',
 	'lib/renderer.js',
 	'lib/settings.js',

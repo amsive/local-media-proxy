@@ -45,6 +45,7 @@ test('declares the installed add-on card metadata expected by Local', () => {
 		'lib/main.js',
 		'lib/marketplace.js',
 		'lib/nginx.js',
+		'lib/orphan-recovery.js',
 		'lib/origin.js',
 		'lib/renderer.js',
 		'lib/settings.js',
@@ -63,9 +64,9 @@ test('declares the installed add-on card metadata expected by Local', () => {
 		'resources/mark-davoli-avatar.svg',
 		'style.css',
 	]);
-	// npm adds package.json to these 27 explicit files, producing the
-	// release verifier's exact 28-entry archive.
-	assert.equal(packageJson.files.length, 27);
+	// npm adds package.json to these 28 explicit files, producing the
+	// release verifier's exact 29-entry archive.
+	assert.equal(packageJson.files.length, 28);
 	for (const asset of [
 		'amsive-avatar.svg',
 		'boris-hegedis-avatar.svg',

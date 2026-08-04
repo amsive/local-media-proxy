@@ -7,6 +7,7 @@
 
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
+const fs = require('node:fs');
 const Module = require('node:module');
 const path = require('node:path');
 
@@ -29,6 +30,8 @@ const supportedScenarios = new Set([
 	'rollback-snapshot-enabled',
 	'rollback-malformed-snapshot',
 	'rollback-valid-managed',
+	'router-listener-unrelated-owner-rejected',
+	'router-recovery-blocked-by-transitional-site',
 	'changed-save-apply-reprobes',
 	'explicit-test-reprobes',
 	'same-value-halted-repair',
@@ -58,8 +61,12 @@ const supportedScenarios = new Set([
 	'target-service-missing-disable',
 	'target-service-missing-save-disable',
 	'target-service-missing-clean-disable',
+	'target-service-missing-restart-timeout',
+	'versioned-apache-stale-master-orphan-recovery',
+	'versioned-nginx-stale-master-orphan-recovery',
 	'versioned-nginx-stale-master-recovery',
 	'versioned-nginx-stale-master-recovery-failure',
+	'versioned-nginx-stale-master-restart-timeout',
 ]);
 assert.ok(supportedScenarios.has(scenario), `unsupported scenario: ${scenario}`);
 
@@ -74,9 +81,13 @@ ipcMain.handle = (channel, handler) => ipcMain.handlers.set(channel, handler);
 ipcMain.removeHandler = (channel) => ipcMain.handlers.delete(channel);
 
 const isImmediateApacheSwitch = scenario === 'immediate-apache-switch-enable';
+const isRouterIdentityScenario = scenario === 'router-listener-unrelated-owner-rejected';
+const isRouterLifecycleGuardScenario = scenario === 'router-recovery-blocked-by-transitional-site';
+const isRouterScenario = isRouterIdentityScenario || isRouterLifecycleGuardScenario;
 const isApacheRuntime = isImmediateApacheSwitch || new Set([
 	'startup-pristine-disabled-apache',
 	'target-apache-service-missing',
+	'versioned-apache-stale-master-orphan-recovery',
 ]).has(scenario);
 const pristineDisabledScenarios = new Set([
 	'global-enable-pristine-disabled-nginx',
@@ -123,6 +134,7 @@ const initialSettings = {
 	schemaVersion: 2,
 };
 const site = {
+	frontendPort: 10080,
 	id: 'runtime-site',
 	localMediaProxy: structuredClone(initialSettings),
 	longPath: '/example/site',
@@ -286,6 +298,76 @@ const rollbackScenarios = new Set([
 	'rollback-snapshot-enabled',
 	'rollback-valid-managed',
 ]);
+const missingTargetProcessScenarios = new Set([
+	'target-apache-service-missing',
+	'target-service-missing',
+	'target-service-missing-disable',
+	'target-service-missing-save-disable',
+	'target-service-missing-clean-disable',
+	'target-service-missing-restart-timeout',
+]);
+const staleNginxScenarios = new Set([
+	'versioned-nginx-stale-master-orphan-recovery',
+	'versioned-nginx-stale-master-recovery',
+	'versioned-nginx-stale-master-recovery-failure',
+	'versioned-nginx-stale-master-restart-timeout',
+]);
+const staleServerScenarios = new Set([
+	...staleNginxScenarios,
+	'versioned-apache-stale-master-orphan-recovery',
+]);
+const churningStaleService = new Set([
+	'versioned-apache-stale-master-orphan-recovery',
+	'versioned-nginx-stale-master-orphan-recovery',
+]).has(scenario);
+const trackedProcessName = isApacheRuntime ? 'httpd' : 'nginx';
+const trackedSiteProcess = {
+	binPath: service.bin[trackedProcessName],
+	childProcess: missingTargetProcessScenarios.has(scenario) || churningStaleService ? undefined : {
+		exitCode: null,
+		killed: false,
+		pid: 4242,
+		signalCode: null,
+	},
+	errored: missingTargetProcessScenarios.has(scenario),
+	name: trackedProcessName,
+	restart: async () => {
+		calls.push(`restart:${trackedProcessName}`);
+		restartCalls += 1;
+		if (new Set([
+			'target-service-missing-restart-timeout',
+			'versioned-nginx-stale-master-restart-timeout',
+		]).has(scenario)) {
+			return new Promise(() => undefined);
+		}
+		if (missingTargetProcessScenarios.has(scenario)) {
+			throw new Error('simulated targeted service restart failure');
+		}
+		trackedSiteProcess.errored = false;
+		trackedSiteProcess.childProcess = {
+			exitCode: null,
+			killed: false,
+			pid: 5252,
+			signalCode: null,
+		};
+		if (staleNginxScenarios.has(scenario)) {
+			nginxRuntimeRunning = true;
+		}
+	},
+};
+const routerMasterPid = process.pid + 100_000;
+const trackedRouterProcess = {
+	binPath: process.execPath,
+	childProcess: {
+		exitCode: null,
+		killed: false,
+		pid: routerMasterPid,
+		signalCode: null,
+	},
+	errored: false,
+	restarts: 1,
+	restart: async () => calls.push('restart:router'),
+};
 
 const cradle = {
 	appState: {
@@ -297,6 +379,9 @@ const cradle = {
 		compileServiceConfigs: async () => calls.push('compileServiceConfigs'),
 	},
 	lightningServices: {
+		getLatestVersion: (serviceName) => serviceName === 'apache'
+			? { bin: { httpd: '/example/services/httpd' } }
+			: { bin: { nginx: '/example/services/nginx' } },
 		getSiteService: () => {
 			serviceLookupCalls += 1;
 			if (scenario === 'preflight-service-retry' && serviceLookupCalls === 2) {
@@ -313,6 +398,11 @@ const cradle = {
 			log: (level, message) => logs.push([level, message]),
 		}),
 	},
+	router: isRouterScenario ? {
+		_process: trackedRouterProcess,
+		clearRouterBanner: () => calls.push('clearRouterBanner'),
+		useLaunchd: false,
+	} : undefined,
 	siteData: {
 		getSite: (siteId) => siteId === site.id ? site : undefined,
 		getSites: () => ({ [site.id]: site }),
@@ -323,6 +413,9 @@ const cradle = {
 		},
 	},
 	siteProcessManager: {
+		_processGroups: {
+			[site.id]: { processes: [trackedSiteProcess] },
+		},
 		getSiteStatus: () => {
 			siteStatusCalls += 1;
 			if (scenario === 'preflight-status-retry' && siteStatusCalls === 2) {
@@ -330,36 +423,24 @@ const cradle = {
 			}
 			return siteStatus;
 		},
+		getSiteStatuses: () => {
+			calls.push('getSiteStatuses');
+			return isRouterLifecycleGuardScenario
+				? { [site.id]: 'running', 'sibling-site': 'pulling' }
+				: { [site.id]: siteStatus };
+		},
 		hasRunningProcess: (_site, processName) => {
 			runningProcessChecks.push(processName);
 			return siteStatus === 'running' &&
-				!new Set([
-					'target-apache-service-missing',
-					'target-service-missing',
-					'target-service-missing-disable',
-					'target-service-missing-save-disable',
-					'target-service-missing-clean-disable',
-				]).has(scenario) &&
+				!missingTargetProcessScenarios.has(scenario) &&
 				(
-					!new Set([
-						'versioned-nginx-stale-master-recovery',
-						'versioned-nginx-stale-master-recovery-failure',
-					]).has(scenario) ||
+					!staleNginxScenarios.has(scenario) ||
 					(processName === 'nginx' && nginxRuntimeRunning)
 				);
 		},
 		restartSiteService: async (_site, serviceName) => {
-			calls.push(`restart:${serviceName}`);
-			restartCalls += 1;
-			if (new Set([
-				'versioned-nginx-stale-master-recovery',
-				'versioned-nginx-stale-master-recovery-failure',
-			]).has(scenario)) {
-				if (serviceName === 'nginx') {
-					nginxRuntimeRunning = true;
-				}
-				return;
-			}
+			assert.equal(serviceName, trackedProcessName);
+			await trackedSiteProcess.restart();
 			if (rollbackScenarios.has(scenario) && restartCalls === 1) {
 				throw new Error('targeted restart failed');
 			}
@@ -375,7 +456,16 @@ const localMainStub = {
 			hooks.set(name, callbacks);
 		},
 	},
-	execFilePromise: async () => '',
+	execFilePromise: async (command) => {
+		if (
+			isRouterScenario &&
+			typeof command === 'string' &&
+			path.basename(command) === 'lsof'
+		) {
+			calls.push('lsof');
+		}
+		return '';
+	},
 	getServiceContainer: () => ({ cradle }),
 };
 
@@ -477,10 +567,7 @@ Object.assign(nginx, {
 		}
 		calls.push('reloadNginx');
 		refreshCalls += 1;
-		if (new Set([
-			'versioned-nginx-stale-master-recovery',
-			'versioned-nginx-stale-master-recovery-failure',
-		]).has(scenario) && refreshCalls === 1) {
+		if (staleNginxScenarios.has(scenario) && refreshCalls === 1) {
 			await options?.restartService?.();
 			calls.push('reloadNginx');
 			if (scenario === 'versioned-nginx-stale-master-recovery-failure') {
@@ -505,9 +592,22 @@ Object.assign(apache, {
 		https: true,
 		http: true,
 	}),
-	refreshApacheService: async (_site, _service, _compiler, _exec, expectManaged) => {
+	refreshApacheService: async (
+		_site,
+		_service,
+		_compiler,
+		_exec,
+		expectManaged,
+		_isSiteRunning,
+		_isServiceRunning,
+		options,
+	) => {
 		calls.push(`compileApache:${expectManaged ? 'managed' : 'clean'}`);
 		compiledMatches = true;
+		if (scenario === 'versioned-apache-stale-master-orphan-recovery') {
+			await options?.restartService?.();
+			return true;
+		}
 		restartCalls += 1;
 		return true;
 	},
@@ -538,12 +638,83 @@ server.detectSiteServer = () => isApacheRuntime
 		serviceName: 'nginx-1.26.1+3',
 	};
 
+const orphanRecovery = require(path.join(libRoot, 'orphan-recovery.js'));
+const inspectExactResourceOwners = orphanRecovery.inspectExactResourceOwners;
+const recoverExactResourceOrphans = orphanRecovery.recoverExactResourceOrphans;
+orphanRecovery.inspectExactResourceOwners = async (...args) => {
+	if (isRouterIdentityScenario) {
+		calls.push(`inspectRouterListener:${args[0].port}`);
+		const executablePath = fs.realpathSync(process.execPath);
+		const uid = process.getuid();
+		return [
+			{ executablePath, parentPid: process.pid, pid: routerMasterPid, uid },
+			{ executablePath, parentPid: routerMasterPid, pid: routerMasterPid + 1, uid },
+			{ executablePath, parentPid: routerMasterPid + 20, pid: routerMasterPid + 21, uid },
+		];
+	}
+	return inspectExactResourceOwners(...args);
+};
+orphanRecovery.recoverExactResourceOrphans = async (...args) => {
+	if (isRouterLifecycleGuardScenario) {
+		calls.push('recoverRouterResource');
+		return { pids: [], status: 'missing' };
+	}
+	if (scenario === 'versioned-nginx-stale-master-recovery') {
+		calls.push('unexpectedActiveListenerRecovery');
+		return { pids: [], status: 'active' };
+	}
+	if (new Set([
+		'versioned-apache-stale-master-orphan-recovery',
+		'versioned-nginx-stale-master-orphan-recovery',
+	]).has(scenario)) {
+		assert.deepEqual([...args[1]].sort(), [
+			'/example/services/httpd',
+			'/example/services/nginx',
+		]);
+		calls.push('recoverPortOrphan');
+		return { pids: [4242], status: 'recovered' };
+	}
+	return recoverExactResourceOrphans(...args);
+};
+
 let nextTimerId = 1;
 const timers = new Map();
+let boundedProcessRestartTimerId;
 const originalSetTimeout = global.setTimeout;
 const originalClearTimeout = global.clearTimeout;
-global.setTimeout = (callback, _delay, ...args) => {
+const hadLocalhostRouting = Object.hasOwn(global, 'localhostRouting');
+const originalLocalhostRouting = global.localhostRouting;
+const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+if (isRouterScenario) {
+	global.localhostRouting = false;
+}
+if (
+	isRouterLifecycleGuardScenario ||
+	staleServerScenarios.has(scenario) ||
+	scenario === 'target-service-missing-restart-timeout'
+) {
+	Object.defineProperty(process, 'platform', {
+		...originalPlatformDescriptor,
+		value: 'darwin',
+	});
+}
+global.setTimeout = (callback, delay, ...args) => {
 	const timerId = nextTimerId++;
+	if (new Set([
+		'target-service-missing-restart-timeout',
+		'versioned-nginx-stale-master-restart-timeout',
+	]).has(scenario) && delay === 5_000) {
+		boundedProcessRestartTimerId = timerId;
+	}
+	if ((staleServerScenarios.has(scenario) || isRouterScenario) && delay === 100) {
+		setImmediate(() => {
+			if (churningStaleService && !trackedSiteProcess.childProcess) {
+				trackedSiteProcess.errored = true;
+			}
+			callback(...args);
+		});
+		return timerId;
+	}
 	timers.set(timerId, () => callback(...args));
 	return timerId;
 };
@@ -608,6 +779,10 @@ async function flushAsyncWork() {
 			preflightCallsAfterOneRecoverySample = calls.length;
 			await runNextTimer();
 			await flushAsyncWork();
+			if (timers.size > 0) {
+				await runNextTimer();
+				await flushAsyncWork();
+			}
 		} else if (pristineDisabledScenarios.has(scenario)) {
 			if (scenario === 'global-enable-pristine-disabled-nginx') {
 				ipcMain.emit(
@@ -644,6 +819,9 @@ async function flushAsyncWork() {
 			if (timers.size > 0) {
 				await runNextTimer();
 			}
+			if (timers.size > 0) {
+				await runNextTimer();
+			}
 			await flushAsyncWork();
 			if (scenario === 'corrupt-cleanup-failure-cancels') {
 				retryTimersAfterFailure = timers.size;
@@ -659,6 +837,10 @@ async function flushAsyncWork() {
 				retryCallsAfterOneRecoverySample = calls.length;
 				await runNextTimer();
 				await flushAsyncWork();
+				if (timers.size > 0) {
+					await runNextTimer();
+					await flushAsyncWork();
+				}
 			}
 		} else if (
 			scenario === 'site-start-matching' ||
@@ -667,6 +849,7 @@ async function flushAsyncWork() {
 			const [siteStarted] = hooks.get('siteStarted') || [];
 			assert.equal(typeof siteStarted, 'function');
 			siteStarted(site.id);
+			await runNextTimer();
 			await runNextTimer();
 			await runNextTimer();
 			await flushAsyncWork();
@@ -681,6 +864,9 @@ async function flushAsyncWork() {
 				{ npmPackageName: 'local-media-proxy' },
 			);
 			await runNextTimer();
+			if (timers.size > 0) {
+				await runNextTimer();
+			}
 			if (timers.size > 0) {
 				await runNextTimer();
 			}
@@ -768,6 +954,34 @@ async function flushAsyncWork() {
 			} catch (error) {
 				operationError = error.message;
 			}
+		} else if (new Set([
+			'target-service-missing-restart-timeout',
+			'versioned-nginx-stale-master-restart-timeout',
+		]).has(scenario)) {
+			const pendingOperation = ipcMain.handlers.get(IPC_CHANNELS.applySettings)(
+				{},
+				site.id,
+				{
+					enabled: true,
+					originIp: '192.0.2.10',
+					originSource: 'manual',
+					siteUrl: 'http://media.example.com',
+				},
+				'nginx',
+			).catch((error) => {
+				operationError = error.message;
+			});
+			await flushAsyncWork();
+			assert.notEqual(
+				boundedProcessRestartTimerId,
+				undefined,
+				'expected a bounded process-restart timer',
+			);
+			const restartTimeout = timers.get(boundedProcessRestartTimerId);
+			assert.equal(typeof restartTimeout, 'function');
+			timers.delete(boundedProcessRestartTimerId);
+			restartTimeout();
+			await pendingOperation;
 		} else if (isImmediateApacheSwitch) {
 			const projected = await ipcMain.handlers.get(IPC_CHANNELS.getSiteState)({}, site.id);
 			projectedSiteUrl = projected.settings.siteUrl;
@@ -837,6 +1051,14 @@ async function flushAsyncWork() {
 		Module._load = originalModuleLoad;
 		global.setTimeout = originalSetTimeout;
 		global.clearTimeout = originalClearTimeout;
+		if (hadLocalhostRouting) {
+			global.localhostRouting = originalLocalhostRouting;
+		} else {
+			delete global.localhostRouting;
+		}
+		if (originalPlatformDescriptor) {
+			Object.defineProperty(process, 'platform', originalPlatformDescriptor);
+		}
 	}
 })().catch((error) => {
 	process.stderr.write(`${error.stack || error}\n`);

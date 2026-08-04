@@ -5,6 +5,7 @@
 
 import type * as Local from '@getflywheel/local';
 import * as LocalMain from '@getflywheel/local/main';
+import { promises as fs } from 'node:fs';
 import {
 	apacheCompiledConfigMatches,
 	inspectApacheRuntimeCapabilities,
@@ -38,6 +39,7 @@ import {
 	completeUnresolvedServiceCleanup,
 	isServerTransactionChangedError,
 	lifecycleUnavailableReason,
+	processOwnersBelongToCapturedTree,
 	runServerTransactionMutation,
 	ServerTransactionChangedError,
 	serverTransactionFingerprintsMatch,
@@ -52,6 +54,12 @@ import {
 	probeOrigin,
 	trustedCertificateAuthoritiesPem,
 } from './origin';
+import {
+	classifyResourceOwners,
+	inspectExactResourceOwners,
+	recoverExactResourceOrphans,
+	type ExactLocalResource,
+} from './orphan-recovery';
 import {
 	allManagedArtifactsExist,
 	applyServerManagedFiles,
@@ -129,10 +137,15 @@ const siteOperationQueues = new Map<string, Promise<void>>();
 const LIFECYCLE_LISTENERS_KEY = Symbol.for('amsive.local-media-proxy.lifecycle-listeners');
 const DEFERRED_RECONCILIATION_INTERVAL_MS = 1_000;
 const DEFERRED_RECONCILIATION_MAX_ATTEMPTS = 900;
-const DEFERRED_RECONCILIATION_STABLE_SAMPLES = 2;
+const DEFERRED_RECONCILIATION_STABLE_SAMPLES = 3;
 const DEFERRED_GLOBAL_CLEANUP_INTERVAL_MS = 1_000;
 const DEFERRED_GLOBAL_CLEANUP_MAX_ATTEMPTS = 900;
 const DEFERRED_GLOBAL_CLEANUP_STABLE_SAMPLES = 2;
+const LOCAL_PROCESS_RECOVERY_CONFIRMATION_INTERVAL_MS = 100;
+const LOCAL_PROCESS_RESTART_TIMEOUT_MS = 5_000;
+const LOCAL_SITE_PROCESS_SETTLE_ATTEMPTS = 20;
+const LOCAL_ROUTER_LISTENER_CHECK_ATTEMPTS = 2;
+const LOCAL_ROUTER_SETTLEMENT_ATTEMPTS = 20;
 
 class ApacheCapabilityUnavailableError extends Error {}
 
@@ -217,6 +230,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		configTemplates,
 		lightningServices,
 		localLogger,
+		router,
 		siteData,
 		siteProcessManager,
 	} = LocalMain.getServiceContainer().cradle;
@@ -227,10 +241,45 @@ export default function main(context: LocalMain.AddonMainContext): void {
 	const deferredGlobalCleanups = new Map<string, DeferredGlobalCleanup>();
 	let globalLifecycleState: 'disabled' | 'uninstalling' | null = null;
 	let globalLifecycleGeneration = 0;
+	let routerRecoveryPromise: Promise<void> | null = null;
 
 	type RuntimeServer = SiteServerAdapter & {
 		service: ApacheRuntimeService | null;
 	};
+	type RestartableSiteProcess = {
+		binPath?: unknown;
+		childProcess?: {
+			exitCode?: number | null;
+			killed?: boolean;
+			pid?: number;
+			signalCode?: NodeJS.Signals | null;
+		};
+		errored?: boolean;
+		name?: unknown;
+		restart: () => Promise<void>;
+	};
+	type RuntimeSiteProcessManager = typeof siteProcessManager & {
+		_processGroups?: Record<string, {
+			processes?: unknown;
+		}>;
+	};
+	type RuntimeRouterProcess = {
+		binPath?: string;
+		childProcess?: {
+			exitCode?: number | null;
+			killed?: boolean;
+			pid?: number;
+			signalCode?: NodeJS.Signals | null;
+		};
+		errored?: boolean;
+		restarts?: number;
+		restart?: () => Promise<void>;
+	};
+	type RuntimeRouter = typeof router & {
+		_process?: RuntimeRouterProcess;
+	};
+	let verifiedRouterProcess: RuntimeRouterProcess | null = null;
+	let verifiedRouterChildProcess: RuntimeRouterProcess['childProcess'];
 
 	const resolveServer = (site: Local.Site): RuntimeServer => {
 		const adapter = detectSiteServer(site);
@@ -370,22 +419,619 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		return transaction;
 	};
 
-	const assertInteractiveServerRuntimeReady = (
+	const waitForRecoveryInterval = async (): Promise<void> => {
+		await new Promise<void>((resolve) => {
+			setTimeout(resolve, LOCAL_PROCESS_RECOVERY_CONFIRMATION_INTERVAL_MS);
+		});
+	};
+
+	const restartCapturedLocalProcess = async (
+		restart: () => Promise<void>,
+		description: string,
+	): Promise<void> => {
+		let timeout: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await Promise.race([
+				Promise.resolve().then(restart),
+				new Promise<void>((_resolve, reject) => {
+					timeout = setTimeout(() => {
+						reject(new Error(
+							`${description} restart did not finish within five seconds. Local may still be completing it.`,
+						));
+					}, LOCAL_PROCESS_RESTART_TIMEOUT_MS);
+				}),
+			]);
+		} finally {
+			if (timeout !== undefined) {
+				clearTimeout(timeout);
+			}
+		}
+	};
+
+	const exactRestartableSiteProcess = (
+		site: Local.Site,
+		processName: string,
+		expectedExecutablePath: string,
+	): RestartableSiteProcess | null => {
+		const processGroups = (siteProcessManager as RuntimeSiteProcessManager)._processGroups;
+		const processes = processGroups?.[site.id]?.processes;
+		if (!Array.isArray(processes)) {
+			return null;
+		}
+		const matching = processes.filter((candidate): candidate is RestartableSiteProcess => (
+			typeof candidate === 'object' &&
+			candidate !== null &&
+			(candidate as { name?: unknown }).name === processName
+		));
+		return matching.length === 1 &&
+			matching[0].binPath === expectedExecutablePath &&
+			typeof matching[0].restart === 'function'
+			? matching[0]
+			: null;
+	};
+
+	const siteProcessHasLiveChild = (siteProcess: RestartableSiteProcess): boolean => {
+		const childProcess = siteProcess.childProcess;
+		const pid = childProcess?.pid;
+		return childProcess?.exitCode == null &&
+			childProcess?.signalCode == null &&
+			childProcess?.killed !== true &&
+			typeof pid === 'number' &&
+			Number.isSafeInteger(pid) &&
+			pid > 1;
+	};
+
+	const waitForSiteProcessDisposition = async (
+		site: Local.Site,
+		processName: string,
+		serverName: string,
+		expectedExecutablePath: string,
+		siteProcess: RestartableSiteProcess,
+		assertCurrent: () => void,
+	): Promise<'healthy' | 'settled'> => {
+		let lastLivePid: number | undefined;
+		let stableLiveSamples = 0;
+		for (let attempt = 0; attempt < LOCAL_SITE_PROCESS_SETTLE_ATTEMPTS; attempt += 1) {
+			assertCurrent();
+			if (
+				exactRestartableSiteProcess(site, processName, expectedExecutablePath) !== siteProcess
+			) {
+				throw new Error(
+					`Local replaced this site's ${serverName} process while Media Proxy was waiting. Retry after Local finishes updating the site.`,
+				);
+			}
+			const live = siteProcessHasLiveChild(siteProcess);
+			if (live && siteProcessManager.hasRunningProcess(site, processName)) {
+				const livePid = siteProcess.childProcess?.pid;
+				stableLiveSamples = livePid === lastLivePid ? stableLiveSamples + 1 : 1;
+				lastLivePid = livePid;
+				if (stableLiveSamples >= 2) {
+					return 'healthy';
+				}
+			} else {
+				lastLivePid = undefined;
+				stableLiveSamples = 0;
+			}
+			if (!live && siteProcess.errored === true) {
+				return 'settled';
+			}
+			if (attempt === LOCAL_SITE_PROCESS_SETTLE_ATTEMPTS - 1) {
+				break;
+			}
+			await waitForRecoveryInterval();
+		}
+		throw new Error(
+			`Local's ${serverName} process is still restarting. Wait for Local to finish, then retry.`,
+		);
+	};
+
+	const recoverExactLocalResource = async (
+		resource: ExactLocalResource,
+		allowedExecutablePaths: readonly string[],
+		beforeSignal?: () => void,
+	): Promise<Awaited<ReturnType<typeof recoverExactResourceOrphans>> | null> => {
+		if (process.platform !== 'darwin') {
+			return null;
+		}
+		return recoverExactResourceOrphans(resource, allowedExecutablePaths, {
+			execFilePromise: LocalMain.execFilePromise,
+			realpath: (filePath) => fs.realpath(filePath),
+			signalProcess: (targetPid, signal) => {
+				beforeSignal?.();
+				process.kill(targetPid, signal);
+			},
+			wait: waitForRecoveryInterval,
+		});
+	};
+
+	const knownSiteWebServerExecutables = (
+		site: Local.Site,
+		server: RuntimeServer,
+	): string[] => {
+		const executablePaths = new Set<string>();
+		const addExecutable = (service: ApacheRuntimeService | null, binaryName: string): void => {
+			const executablePath = service?.bin?.[binaryName];
+			if (typeof executablePath === 'string' && executablePath) {
+				executablePaths.add(executablePath);
+			}
+		};
+
+		addExecutable(server.service, server.kind === 'apache' ? 'httpd' : 'nginx');
+		for (const [serviceName, binaryName] of [
+			['nginx', 'nginx'],
+			['apache', 'httpd'],
+		] as const) {
+			try {
+				addExecutable(
+					lightningServices.getLatestVersion(serviceName, site) as ApacheRuntimeService | null,
+					binaryName,
+				);
+			} catch {
+				// The selected service path above remains sufficient when a sibling is unavailable.
+			}
+		}
+		return [...executablePaths];
+	};
+
+	const recoverStaleSiteService = async (
+		site: Local.Site,
+		server: RuntimeServer,
+		processName: string,
+		serverName: string,
+		executablePath: string,
+		assertCurrent: () => void,
+	): Promise<void> => {
+		assertCurrent();
+		const restartableProcess = exactRestartableSiteProcess(
+			site,
+			processName,
+			executablePath,
+		);
+		if (!restartableProcess) {
+			throw new Error(
+				`Local has not initialized an exact restartable ${serverName} process for this site. Media Proxy did not stop any process.`,
+			);
+		}
+		const disposition = await waitForSiteProcessDisposition(
+			site,
+			processName,
+			serverName,
+			executablePath,
+			restartableProcess,
+			assertCurrent,
+		);
+
+		const frontendPort = site.frontendPort;
+		if (
+			disposition === 'settled' &&
+			process.platform === 'darwin' &&
+			typeof frontendPort === 'number'
+		) {
+			assertCurrent();
+			const recovery = await recoverExactLocalResource(
+				{ kind: 'tcp-listener', port: frontendPort },
+				knownSiteWebServerExecutables(site, server),
+			);
+			assertCurrent();
+			if (recovery?.status === 'occupied' || recovery?.status === 'active') {
+				throw new Error(
+					`This site's internal ${serverName} port is owned by a process that Media Proxy did not stop.`,
+				);
+			}
+			if (recovery?.status === 'recovered') {
+				logger.log(
+					'warn',
+					`Stopped ${recovery.pids.length} verified orphaned Local web-server process${recovery.pids.length === 1 ? '' : 'es'} for site ${site.id} after ${serverName} reported a stale master PID.`,
+				);
+			}
+		}
+
+		assertCurrent();
+		if (
+			exactRestartableSiteProcess(site, processName, executablePath) !== restartableProcess
+		) {
+			throw new Error(
+				`Local replaced this site's ${serverName} process before Media Proxy could restart it. Retry after Local finishes updating the site.`,
+			);
+		}
+		try {
+			await restartCapturedLocalProcess(
+				() => restartableProcess.restart(),
+				`This site's ${serverName} service`,
+			);
+		} catch (cause) {
+			throw new Error(
+				`Local could not restart this site's ${serverName} service after its stale master PID was detected.`,
+				{ cause },
+			);
+		}
+		assertCurrent();
+		const restartedDisposition = await waitForSiteProcessDisposition(
+			site,
+			processName,
+			serverName,
+			executablePath,
+			restartableProcess,
+			assertCurrent,
+		);
+		if (restartedDisposition !== 'healthy') {
+			throw new Error(
+				`Local could not verify the restarted ${serverName} service for this site.`,
+			);
+		}
+	};
+
+	const routerProcessHasLiveChild = (
+		routerProcess: RuntimeRouterProcess | undefined,
+	): boolean => {
+		const childProcess = routerProcess?.childProcess;
+		const pid = childProcess?.pid;
+		return childProcess?.exitCode == null &&
+			childProcess?.signalCode == null &&
+			childProcess?.killed !== true &&
+			typeof pid === 'number' &&
+			Number.isSafeInteger(pid) &&
+			pid > 1;
+	};
+
+	const routerProcessHasRunningChild = (
+		routerProcess: RuntimeRouterProcess | undefined,
+	): boolean => routerProcess?.errored !== true && routerProcessHasLiveChild(routerProcess);
+
+	const routerProcessWasVerified = (
+		routerProcess: RuntimeRouterProcess | undefined,
+	): boolean => Boolean(
+		routerProcess &&
+		routerProcess === verifiedRouterProcess &&
+		routerProcess.childProcess === verifiedRouterChildProcess,
+	);
+
+	const rememberVerifiedRouterProcess = (routerProcess: RuntimeRouterProcess): void => {
+		verifiedRouterProcess = routerProcess;
+		verifiedRouterChildProcess = routerProcess.childProcess;
+	};
+
+	const assertAllLocalSitesSettledForRouterRecovery = (): void => {
+		const siteStatuses = siteProcessManager.getSiteStatuses();
+		if (
+			Object.values(siteStatuses).some((status) => siteLifecycleAccess(status) !== 'ready')
+		) {
+			throw new Error(
+				'Local is changing one or more sites. Media Proxy left the domain router untouched. Wait until every site is running or stopped, then retry.',
+			);
+		}
+	};
+
+	const routerHasExpectedListeners = async (
+		expectedExecutablePath: string,
+		capturedRouterPid: number,
+		assertRecoveryAllowed: () => void,
+	): Promise<boolean> => {
+		const currentUid = process.getuid?.();
+		if (currentUid === undefined) {
+			throw new Error("Local's domain router user could not be verified.");
+		}
+		const expectedRealpath = await fs.realpath(expectedExecutablePath);
+		for (const port of [80, 443]) {
+			assertRecoveryAllowed();
+			const owners = await inspectExactResourceOwners(
+				{ kind: 'tcp-listener', port },
+				{
+					execFilePromise: LocalMain.execFilePromise,
+					realpath: (filePath) => fs.realpath(filePath),
+				},
+			);
+			const ownership = classifyResourceOwners(
+				owners,
+				[expectedRealpath],
+				currentUid,
+				process.pid,
+			);
+			if (
+				ownership.state !== 'active' ||
+				!processOwnersBelongToCapturedTree(owners, capturedRouterPid)
+			) {
+				return false;
+			}
+		}
+		return true;
+	};
+
+	const waitForRouterProcessSettlement = async (
+		routerProcess: RuntimeRouterProcess,
+		expectedExecutablePath: string,
+		assertCurrent: () => void,
+		assertRecoveryAllowed: () => void,
+	): Promise<'healthy' | 'restartable'> => {
+		let lastPid: number | undefined;
+		let listenerChecks = 0;
+		let stableSamples = 0;
+		for (
+			let attempt = 0;
+			attempt < LOCAL_ROUTER_SETTLEMENT_ATTEMPTS;
+			attempt += 1
+		) {
+			assertCurrent();
+			if ((router as RuntimeRouter | undefined)?._process !== routerProcess) {
+				throw new Error(
+					"Local replaced its domain router process while Media Proxy was checking it.",
+				);
+			}
+			if (
+				routerProcess.errored === true &&
+				!routerProcessHasLiveChild(routerProcess)
+			) {
+				return 'restartable';
+			}
+
+			if (routerProcessHasRunningChild(routerProcess)) {
+				const pid = routerProcess.childProcess?.pid;
+				stableSamples = pid === lastPid ? stableSamples + 1 : 1;
+				lastPid = pid;
+				if (
+					stableSamples >= 2 &&
+					listenerChecks < LOCAL_ROUTER_LISTENER_CHECK_ATTEMPTS
+				) {
+					listenerChecks += 1;
+					const listenersMatch = await routerHasExpectedListeners(
+						expectedExecutablePath,
+						pid as number,
+						assertRecoveryAllowed,
+					);
+					assertCurrent();
+					if ((router as RuntimeRouter | undefined)?._process !== routerProcess) {
+						throw new Error(
+							"Local replaced its domain router process while Media Proxy was checking it.",
+						);
+					}
+					if (
+						routerProcessHasRunningChild(routerProcess) &&
+						routerProcess.childProcess?.pid === pid &&
+						listenersMatch
+					) {
+						return 'healthy';
+					}
+					lastPid = undefined;
+					stableSamples = 0;
+				}
+			} else {
+				lastPid = undefined;
+				stableSamples = 0;
+			}
+			await waitForRecoveryInterval();
+		}
+		throw new Error(
+			"Local's domain router process did not settle before the bounded recovery deadline.",
+		);
+	};
+
+	const ensureRouterRuntimeReady = async (assertCurrent: () => void): Promise<void> => {
+		const localRoutingState = global as typeof globalThis & { localhostRouting?: boolean };
+		if (
+			process.platform !== 'darwin' ||
+			localRoutingState.localhostRouting !== false ||
+			!router ||
+			router['useLaunchd']
+		) {
+			return;
+		}
+		const currentRouterProcess = (router as RuntimeRouter)._process;
+		if (
+			routerProcessHasRunningChild(currentRouterProcess) &&
+			(
+				currentRouterProcess?.restarts === 0 ||
+				routerProcessWasVerified(currentRouterProcess)
+			)
+		) {
+			return;
+		}
+
+		assertCurrent();
+		if (!routerRecoveryPromise) {
+			const pending = (async (): Promise<void> => {
+				const routerProcess = (router as RuntimeRouter)._process;
+				if (
+					!routerProcess ||
+					typeof routerProcess.binPath !== 'string' ||
+					!routerProcess.binPath ||
+					typeof routerProcess.restart !== 'function'
+				) {
+					throw new Error(
+						"Local has not initialized a restartable domain router process. Media Proxy did not stop any process or rebuild Local's router configuration.",
+					);
+				}
+				const expectedExecutablePath = routerProcess.binPath;
+				assertAllLocalSitesSettledForRouterRecovery();
+				const settled = await waitForRouterProcessSettlement(
+					routerProcess,
+					expectedExecutablePath,
+					assertCurrent,
+					assertAllLocalSitesSettledForRouterRecovery,
+				);
+				if (settled === 'healthy') {
+					rememberVerifiedRouterProcess(routerProcess);
+					return;
+				}
+
+				let recoveredOrphan = false;
+				for (const port of [80, 443]) {
+					assertCurrent();
+					assertAllLocalSitesSettledForRouterRecovery();
+					if ((router as RuntimeRouter)._process !== routerProcess) {
+						throw new Error(
+							"Local replaced its domain router process before Media Proxy could recover it.",
+						);
+					}
+					const result = await recoverExactLocalResource(
+						{ kind: 'tcp-listener', port },
+						[expectedExecutablePath],
+						assertAllLocalSitesSettledForRouterRecovery,
+					);
+					if (!result) {
+						return;
+					}
+					if (result.status === 'occupied' || result.status === 'active') {
+						throw new Error(
+							`Local's domain router port ${port} is owned by a process that Media Proxy did not stop.`,
+						);
+					}
+					recoveredOrphan = recoveredOrphan || result.status === 'recovered';
+				}
+
+				assertCurrent();
+				assertAllLocalSitesSettledForRouterRecovery();
+				if ((router as RuntimeRouter)._process !== routerProcess) {
+					throw new Error(
+						"Local replaced its domain router process before Media Proxy could restart it.",
+					);
+				}
+				await restartCapturedLocalProcess(
+					() => routerProcess.restart!(),
+					"Local's domain router process",
+				);
+				if (
+					await waitForRouterProcessSettlement(
+						routerProcess,
+						expectedExecutablePath,
+						assertCurrent,
+						assertAllLocalSitesSettledForRouterRecovery,
+					) !== 'healthy'
+				) {
+					throw new Error(
+						"Local's domain router did not remain running after a process-only restart.",
+					);
+				}
+				rememberVerifiedRouterProcess(routerProcess);
+				router.clearRouterBanner();
+				logger.log(
+					'warn',
+					recoveredOrphan
+						? 'Recovered an orphaned Local domain router and verified its replacement.'
+						: 'Restarted Local\'s missing domain router and verified its replacement.',
+				);
+			})();
+			routerRecoveryPromise = pending;
+			const clearPending = (): void => {
+				if (routerRecoveryPromise === pending) {
+					routerRecoveryPromise = null;
+				}
+			};
+			void pending.then(clearPending, clearPending);
+		}
+		await routerRecoveryPromise;
+		assertCurrent();
+	};
+
+	const ensureServerRuntimeReady = async (
 		site: Local.Site,
 		server: RuntimeServer,
 		transaction: ServerTransactionFingerprint,
-	): void => {
+	): Promise<void> => {
 		const processName = server.kind === 'apache' ? 'httpd' : 'nginx';
 		const serverName = server.kind === 'apache' ? 'Apache' : 'Nginx';
+		if (server.kind === 'unsupported' || !server.service) {
+			return;
+		}
+		const assertCurrent = (): void => assertServerTransactionCurrent(site.id, transaction);
+		const executableName = server.kind === 'apache' ? 'httpd' : 'nginx';
+		const executablePath = server.service.bin?.[executableName];
+		const frontendPort = site.frontendPort;
+		const serviceTracked = siteProcessManager.hasRunningProcess(site, processName);
+
 		if (
 			transaction.siteStatus === 'running' &&
-			server.kind !== 'unsupported' &&
-			server.service &&
+			!serviceTracked &&
+			process.platform === 'darwin' &&
+			typeof executablePath === 'string' &&
+			typeof frontendPort === 'number'
+		) {
+			assertCurrent();
+			const restartableProcess = exactRestartableSiteProcess(
+				site,
+				processName,
+				executablePath,
+			);
+			if (!restartableProcess) {
+				throw new Error(
+					`Local has not initialized an exact restartable ${serverName} process for this site. Media Proxy did not stop any process or change its settings.`,
+				);
+			}
+			const disposition = await waitForSiteProcessDisposition(
+				site,
+				processName,
+				serverName,
+				executablePath,
+				restartableProcess,
+				assertCurrent,
+			);
+			if (disposition === 'settled') {
+				assertCurrent();
+				const recovery = await recoverExactLocalResource(
+					{ kind: 'tcp-listener', port: frontendPort },
+					knownSiteWebServerExecutables(site, server),
+				);
+				assertCurrent();
+				if (recovery?.status === 'occupied' || recovery?.status === 'active') {
+					throw new Error(
+						`Local reports this site as ${transaction.siteStatus}, but its ${serverName} port is already owned by a process that Media Proxy did not stop. Media Proxy made no settings or configuration changes.`,
+					);
+				}
+				if (recovery?.status === 'recovered') {
+					logger.log(
+						'warn',
+						`Stopped ${recovery.pids.length} verified orphaned Local web-server process${recovery.pids.length === 1 ? '' : 'es'} for site ${site.id}.`,
+					);
+				}
+				assertCurrent();
+				if (
+					exactRestartableSiteProcess(site, processName, executablePath) !== restartableProcess
+				) {
+					throw new Error(
+						`Local replaced this site's ${serverName} process before Media Proxy could restart it. Media Proxy made no settings or configuration changes.`,
+					);
+				}
+				try {
+					await restartCapturedLocalProcess(
+						() => restartableProcess.restart(),
+						`This site's ${serverName} service`,
+					);
+				} catch (error) {
+					throw new Error(
+						`Local could not restart this site's ${serverName} service after its port was cleared. Media Proxy made no settings or configuration changes.`,
+						{ cause: error },
+					);
+				}
+				assertCurrent();
+				const restartedDisposition = await waitForSiteProcessDisposition(
+					site,
+					processName,
+					serverName,
+					executablePath,
+					restartableProcess,
+					assertCurrent,
+				);
+				if (restartedDisposition !== 'healthy') {
+					throw new Error(
+						`Local could not restart this site's ${serverName} service after its port was cleared. Media Proxy made no settings or configuration changes.`,
+					);
+				}
+				logger.log(
+					'warn',
+					`Verified Local's replacement ${serverName} service for site ${site.id}.`,
+				);
+			}
+		}
+
+		if (
+			transaction.siteStatus === 'running' &&
 			!siteProcessManager.hasRunningProcess(site, processName)
 		) {
 			throw new Error(
-				`Local reports this site as running, but its ${serverName} service did not start. Media Proxy made no changes and did not try to start another ${serverName} process. Another process may still own this site's internal web-server port. If Local also shows "There is a port conflict with this site's domain," resolve that separate Local router error first. Fully quit and reopen Local, start the site, and retry. If it still fails, share Local's main log and the site's ${serverName} error log from that attempt.`,
+				`Local reports this site as running, but its ${serverName} service did not start and no exact orphaned Local process could be recovered. Media Proxy made no settings or configuration changes. Stop and start the site in Local, then retry.`,
 			);
+		}
+		if (transaction.siteStatus === 'running') {
+			await ensureRouterRuntimeReady(assertCurrent);
 		}
 	};
 
@@ -616,7 +1262,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		server: RuntimeServer,
 		expectManaged: boolean,
 		assertCurrent: () => void = (): void => undefined,
-		recoverStaleNginxMaster = false,
+		recoverStaleServerMaster = false,
 	): Promise<boolean> => {
 		assertCurrent();
 		if (!server.serviceName || server.kind === 'unsupported' || !server.service) {
@@ -639,6 +1285,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		}
 		if (server.kind === 'apache') {
 			const processName = 'httpd';
+			const selectedApacheExecutable = server.service.bin?.httpd;
 			const targetServiceRunning = (): boolean => {
 				assertCurrent();
 				return siteProcessManager.hasRunningProcess(site, processName);
@@ -654,6 +1301,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				}
 				return shouldRefreshRuntime(siteStatus, targetWasRunning);
 			};
+			let restartedStaleApacheMaster = false;
 			const refreshed = await refreshApacheService(
 				site,
 				server.service,
@@ -666,9 +1314,31 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					assertCurrent,
 					expectedManagedInclude: expectedManagedInclude ?? undefined,
 					expectedManagedModules: expectedManagedModules ?? undefined,
+					restartService: recoverStaleServerMaster ? async () => {
+						if (typeof selectedApacheExecutable !== 'string' || !selectedApacheExecutable) {
+							throw new Error(
+								'Local did not provide the selected Apache executable for exact port recovery.',
+							);
+						}
+						await recoverStaleSiteService(
+							site,
+							server,
+							processName,
+							'Apache',
+							selectedApacheExecutable,
+							assertCurrent,
+						);
+						restartedStaleApacheMaster = true;
+					} : undefined,
 				},
 			);
 			assertCurrent();
+			if (restartedStaleApacheMaster) {
+				logger.log(
+					'warn',
+					`Verified the selected Apache service for site ${site.id} after requesting a targeted restart for a stale master PID.`,
+				);
+			}
 			return refreshed;
 		}
 
@@ -687,10 +1357,21 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			targetSiteRunning,
 			{
 				assertCurrent,
-				restartService: recoverStaleNginxMaster ? async () => {
-					assertCurrent();
-					await siteProcessManager.restartSiteService(site, processName);
-					assertCurrent();
+				restartService: recoverStaleServerMaster ? async () => {
+					const selectedNginxExecutable = server.service?.bin?.nginx;
+					if (typeof selectedNginxExecutable !== 'string' || !selectedNginxExecutable) {
+						throw new Error(
+							"Local did not provide the selected Nginx executable for exact port recovery.",
+						);
+					}
+					await recoverStaleSiteService(
+						site,
+						server,
+						processName,
+						'Nginx',
+						selectedNginxExecutable,
+						assertCurrent,
+					);
 					restartedStaleNginxMaster = true;
 				} : undefined,
 			},
@@ -1230,7 +1911,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			if (server.kind === 'unsupported' || !server.service) {
 				throw new Error(server.reason || 'Local could not load the web-server service for this site.');
 			}
-			assertInteractiveServerRuntimeReady(site, server, transaction);
+			await ensureServerRuntimeReady(site, server, transaction);
 
 			const origin = validateAndNormalizeOrigin(normalizedInput, {
 				requiresOriginIp: server.requiresOriginIp,
@@ -1423,7 +2104,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				server.kind === 'unsupported' ? undefined : managedFileOptions(server),
 			);
 			if (managedArtifactsPresent || !compiledConfigIsClean) {
-				assertInteractiveServerRuntimeReady(site, server, transaction);
+				await ensureServerRuntimeReady(site, server, transaction);
 			}
 
 			let snapshots: Awaited<ReturnType<typeof captureAllManagedFiles>> | undefined;
@@ -1534,7 +2215,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			managedFileOptions(server),
 		);
 		if (managedArtifactsPresent || !compiledConfigIsClean) {
-			assertInteractiveServerRuntimeReady(site, server, transaction);
+			await ensureServerRuntimeReady(site, server, transaction);
 		}
 		let snapshots: Awaited<ReturnType<typeof captureAllManagedFiles>> | undefined;
 		try {
@@ -1960,6 +2641,9 @@ export default function main(context: LocalMain.AddonMainContext): void {
 							`Removed unverified media proxy configuration for site ${site.id} while retaining global enabled intent for the current ${server.kind} profile: ${reason}`,
 						);
 						return true;
+					}
+					if (transaction.siteStatus === 'running') {
+						await ensureServerRuntimeReady(site, server, transaction);
 					}
 
 					const trustBundle = normalizedOrigin.protocol === 'https:'

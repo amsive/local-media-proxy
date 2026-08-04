@@ -68,7 +68,11 @@ test('Apache apply snapshots both servers and rollback restores runtime before c
 	);
 });
 
-test('Apache refresh observes httpd while Nginx reload avoids Local process-manager gating', () => {
+test('Apache and Nginx stale-master recovery restarts only the exact captured service process', () => {
+	const recovery = sourceSection(
+		'const recoverStaleSiteService = async',
+		'const routerProcessHasLiveChild',
+	);
 	const compileAndReload = sourceSection(
 		'const compileAndReload = async',
 		'const runtimeCleanupUnavailableReason',
@@ -80,14 +84,54 @@ test('Apache refresh observes httpd while Nginx reload avoids Local process-mana
 	assert.match(refreshBranch, /const processName = 'httpd'/);
 	assert.match(refreshBranch, /hasRunningProcess\(site, processName\)/);
 	assert.match(refreshBranch, /shouldRefreshRuntime\(/);
+	assert.match(refreshBranch, /restartService: recoverStaleServerMaster \? async \(\) =>/);
+	assert.match(refreshBranch, /recoverStaleSiteService\(/);
 	assert.doesNotMatch(refreshBranch, /restartSiteService/);
 	const nginxBranch = compileAndReload.slice(
 		compileAndReload.indexOf('const targetSiteRunning'),
 	);
 	assert.match(nginxBranch, /refreshNginxService\(/);
 	assert.match(nginxBranch, /const processName = 'nginx'/);
-	assert.match(nginxBranch, /restartSiteService\(site, processName\)/);
+	assert.match(nginxBranch, /recoverStaleSiteService\(/);
+	assert.doesNotMatch(nginxBranch, /restartSiteService\(site, processName\)/);
 	assert.doesNotMatch(nginxBranch, /hasRunningProcess\(site, processName\)/);
+	assert.match(recovery, /knownSiteWebServerExecutables\(site, server\)/);
+	assert.match(
+		recovery,
+		/const disposition = await waitForSiteProcessDisposition\([\s\S]{0,320}disposition === 'settled'[\s\S]{0,180}recoverExactLocalResource\(/,
+	);
+	assert.equal(
+		(recovery.match(/exactRestartableSiteProcess\(site, processName, executablePath\)/g) ?? []).length,
+		1,
+		'the captured process must be revalidated immediately before restart',
+	);
+	assert.equal(
+		(recovery.match(/waitForSiteProcessDisposition\(/g) ?? []).length,
+		2,
+		'the same captured process must be observed before and after restart',
+	);
+	assert.match(recovery, /await restartCapturedLocalProcess\(/);
+	assert.doesNotMatch(recovery, /restartSiteService|waitForTrackedSiteService/);
+});
+
+test('captured Local process restarts share one five-second timeout without retry claims', () => {
+	const helper = sourceSection(
+		'const restartCapturedLocalProcess = async',
+		'const exactRestartableSiteProcess',
+	);
+	assert.match(helper, /await Promise\.race\(/);
+	assert.match(helper, /LOCAL_PROCESS_RESTART_TIMEOUT_MS/);
+	assert.match(helper, /clearTimeout\(timeout\)/);
+	assert.match(helper, /Local may still be completing it/);
+	assert.equal(
+		(mainSource.match(/await restartCapturedLocalProcess\(/g) ?? []).length,
+		3,
+		'stale site, initially missing site, and router restarts must all be bounded',
+	);
+	assert.doesNotMatch(
+		mainSource,
+		/await (?:restartableProcess|routerProcess)\.restart!?\(\)/,
+	);
 });
 
 test('global disable and uninstall clean runtime without changing per-site enabled intent', () => {
@@ -204,7 +248,11 @@ test('startup and Local lifecycle reconciliation wait for stable ready sites wit
 	assert.match(mainSource, /HooksMain\.addAction\('siteAdded'/);
 	assert.match(mainSource, /HooksMain\.addAction\('siteDeleted'[\s\S]{0,300}cancelDeferredReconciliation\(siteId\)[\s\S]{0,120}cancelOriginProbesForSite\(siteId\)/);
 	assert.match(mainSource, /DEFERRED_RECONCILIATION_MAX_ATTEMPTS = 900/);
-	assert.match(mainSource, /DEFERRED_RECONCILIATION_STABLE_SAMPLES = 2/);
+	assert.match(mainSource, /DEFERRED_RECONCILIATION_STABLE_SAMPLES = 3/);
+	assert.match(
+		reconcile,
+		/catch \(validationError\)[\s\S]{0,3600}await ensureServerRuntimeReady\(site, server, transaction\)[\s\S]{0,180}const trustBundle/,
+	);
 	const scheduler = sourceSection(
 		'const scheduleDeferredReconciliation',
 		'const cancelDeferredGlobalCleanup',
@@ -460,6 +508,82 @@ test('server transactions use primitive runtime identity without traversing Loca
 	assert.doesNotMatch(mainSource, /fingerprintRuntimeInputs|runtimeInputsFingerprint|serviceInputsDigest|stableRuntimeInput|createHash|inspect\(/);
 });
 
+test('router orphan recovery restarts only Local\'s settled tracked process', () => {
+	const recoverySignal = sourceSection(
+		'const recoverExactLocalResource',
+		'const knownSiteWebServerExecutables',
+	);
+	const routerRecovery = sourceSection(
+		'const routerProcessHasRunningChild',
+		'const ensureServerRuntimeReady',
+	);
+
+	assert.match(
+		routerRecovery,
+		/routerProcessHasRunningChild\(currentRouterProcess\)[\s\S]{0,120}currentRouterProcess\?\.restarts === 0[\s\S]{0,100}routerProcessWasVerified\(currentRouterProcess\)[\s\S]{0,60}return/,
+		'normal healthy router checks must avoid lsof',
+	);
+	assert.match(
+		routerRecovery,
+		/rememberVerifiedRouterProcess\(routerProcess\)[\s\S]{0,80}router\.clearRouterBanner\(\)/,
+		'a recovered child must regain the immediate healthy fast path',
+	);
+	assert.ok(
+		routerRecovery.indexOf('assertAllLocalSitesSettledForRouterRecovery()') >
+		routerRecovery.indexOf('routerProcessWasVerified(currentRouterProcess)'),
+		'healthy router checks must return before reading global site statuses',
+	);
+	assert.match(
+		routerRecovery,
+		/assertRecoveryAllowed\(\)[\s\S]{0,120}inspectExactResourceOwners\(/,
+		'each abnormal router listener inspection must recheck global site lifecycles',
+	);
+	assert.match(
+		routerRecovery,
+		/ownership\.state !== 'active'[\s\S]{0,100}processOwnersBelongToCapturedTree\(owners, capturedRouterPid\)/,
+		'active listeners must belong to the exact captured router child PID tree',
+	);
+	assert.match(
+		routerRecovery,
+		/const listenersMatch = await routerHasExpectedListeners\([\s\S]{0,220}assertCurrent\(\)[\s\S]{0,180}_process !== routerProcess[\s\S]{0,260}routerProcess\.childProcess\?\.pid === pid[\s\S]{0,80}listenersMatch[\s\S]{0,80}return 'healthy'/,
+		'listener verification must recheck the captured object and child PID after async inspection',
+	);
+	assert.match(
+		recoverySignal,
+		/signalProcess:[\s\S]{0,100}beforeSignal\?\.\(\)[\s\S]{0,80}process\.kill\(/,
+		'router recovery must recheck global site lifecycles immediately before signaling',
+	);
+	assert.match(routerRecovery, /for \(const port of \[80, 443\]\)/);
+	assert.match(
+		routerRecovery,
+		/listenerChecks < LOCAL_ROUTER_LISTENER_CHECK_ATTEMPTS[\s\S]{0,80}listenerChecks \+= 1[\s\S]{0,140}routerHasExpectedListeners\(/,
+		'listener verification must have a small fixed retry bound',
+	);
+	assertInOrder(
+		routerRecovery,
+		[
+			"typeof routerProcess.binPath !== 'string'",
+			"typeof routerProcess.restart !== 'function'",
+			'assertAllLocalSitesSettledForRouterRecovery()',
+			'await waitForRouterProcessSettlement(',
+			'for (const port of [80, 443])',
+			'assertAllLocalSitesSettledForRouterRecovery()',
+			'await recoverExactLocalResource(',
+			'assertAllLocalSitesSettledForRouterRecovery,',
+			'assertAllLocalSitesSettledForRouterRecovery()',
+			'await restartCapturedLocalProcess(',
+			'await waitForRouterProcessSettlement(',
+			'router.clearRouterBanner()',
+		],
+		'router recovery must settle, recover exact listeners, and restart only the captured process',
+	);
+	assert.doesNotMatch(
+		routerRecovery,
+		/router\.restart\(|router\.refresh\(|compileConfigTemplates|generateSiteCert|hostsFile/,
+		'router recovery must not rebuild global routes or certificates',
+	);
+});
+
 test('interactive apply, save-disable, and toggle commit settings only after files and runtime are current', () => {
 	const preflight = sourceSection(
 		'const beginInteractiveServerTransaction',
@@ -476,10 +600,41 @@ test('interactive apply, save-disable, and toggle commit settings only after fil
 
 	assert.match(
 		preflight,
-		/const processName = server\.kind === 'apache' \? 'httpd' : 'nginx';[\s\S]{0,360}hasRunningProcess\(site, processName\)/,
+		/const serviceTracked = siteProcessManager\.hasRunningProcess\(site, processName\)/,
 	);
-	assert.match(preflight, /Media Proxy made no changes and did not try to start another \$\{serverName\} process/);
+	assert.match(
+		preflight,
+		/exactRestartableSiteProcess\(\s*site,\s*processName,\s*executablePath,\s*\)/,
+	);
+	assert.match(preflight, /matching\[0\]\.binPath === expectedExecutablePath/);
+	assert.match(preflight, /stableLiveSamples >= 2/);
+	assert.match(preflight, /waitForSiteProcessDisposition\(/);
+	assert.match(preflight, /recoverExactLocalResource/);
+	assert.match(preflight, /restartCapturedLocalProcess\(/);
+	assert.doesNotMatch(preflight, /restartSiteService\(site, processName\)/);
+	assertInOrder(
+		preflight,
+		[
+			'const restartableProcess = exactRestartableSiteProcess(',
+			'const disposition = await waitForSiteProcessDisposition(',
+			'const recovery = await recoverExactLocalResource(',
+			'await restartCapturedLocalProcess(',
+		],
+		'exact site process settlement must precede listener recovery and process-only restart',
+	);
+	assert.match(preflight, /routerProcessHasRunningChild/);
+	assert.match(preflight, /Media Proxy made no settings or configuration changes/);
+	assert.doesNotMatch(preflight, /siteProcessManager\.restart\(site/);
 	assert.match(apply, /const transaction = beginInteractiveServerTransaction\(site, server\)/);
+	assertInOrder(
+		apply,
+		[
+			'const transaction = beginInteractiveServerTransaction(site, server)',
+			'await ensureServerRuntimeReady(site, server, transaction)',
+			'captureAllManagedFiles(',
+		],
+		'runtime recovery must finish before apply captures or changes managed files',
+	);
 	assert.match(
 		apply,
 		/captureAllManagedFiles\([\s\S]{0,80}site,[\s\S]{0,120}assertServerTransactionCurrent\(siteId, transaction\)/,
@@ -515,6 +670,11 @@ test('interactive apply, save-disable, and toggle commit settings only after fil
 	);
 
 	assert.match(toggle, /const transaction = beginInteractiveServerTransaction\(site, server\)/);
+	assert.ok(
+		toggle.indexOf('await ensureServerRuntimeReady(site, server, transaction)') <
+			toggle.indexOf('snapshots = await captureAllManagedFiles('),
+		'runtime recovery must finish before toggle captures or changes managed files',
+	);
 	assertInOrder(
 		toggle,
 		[
@@ -1029,6 +1189,57 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 	assert.equal(staleMasterRecovery.restartCalls, 1);
 	assert.equal(staleMasterRecovery.updates.length, 1);
 
+	const trackedStaleOrphanRecovery = runScenario(
+		'versioned-nginx-stale-master-orphan-recovery',
+	);
+	assert.deepEqual(trackedStaleOrphanRecovery.calls, [
+		'probeOrigin',
+		'captureAllManagedFiles',
+		'applyServerManagedFiles',
+		'compileNginx:managed',
+		'reloadNginx',
+		'recoverPortOrphan',
+		'restart:nginx',
+		'reloadNginx',
+		'updateSite',
+	]);
+	assert.equal(trackedStaleOrphanRecovery.operationError, undefined);
+	assert.equal(trackedStaleOrphanRecovery.restartCalls, 1);
+	assert.equal(trackedStaleOrphanRecovery.updates.length, 1);
+
+	const trackedStaleApacheOrphanRecovery = runScenario(
+		'versioned-apache-stale-master-orphan-recovery',
+	);
+	assert.deepEqual(trackedStaleApacheOrphanRecovery.calls, [
+		'probeOrigin',
+		'captureAllManagedFiles',
+		'applyServerManagedFiles',
+		'compileApache:managed',
+		'recoverPortOrphan',
+		'restart:httpd',
+		'updateSite',
+	]);
+	assert.equal(trackedStaleApacheOrphanRecovery.operationError, undefined);
+	assert.equal(trackedStaleApacheOrphanRecovery.restartCalls, 1);
+	assert.equal(trackedStaleApacheOrphanRecovery.updates.length, 1);
+
+	const guardedRouterRecovery = runScenario('router-recovery-blocked-by-transitional-site');
+	assert.match(guardedRouterRecovery.operationError, /changing one or more sites/);
+	assert.deepEqual(guardedRouterRecovery.calls, ['getSiteStatuses']);
+	assert.deepEqual(guardedRouterRecovery.updates, []);
+
+	const unrelatedRouterOwner = runScenario('router-listener-unrelated-owner-rejected');
+	assert.match(unrelatedRouterOwner.operationError, /bounded recovery deadline/);
+	assert.deepEqual(unrelatedRouterOwner.calls, [
+		'getSiteStatuses',
+		'getSiteStatuses',
+		'inspectRouterListener:80',
+		'getSiteStatuses',
+		'inspectRouterListener:80',
+	]);
+	assert.equal(unrelatedRouterOwner.restartCalls, 0);
+	assert.deepEqual(unrelatedRouterOwner.updates, []);
+
 	const failedStaleMasterRecovery = runScenario('versioned-nginx-stale-master-recovery-failure');
 	assert.equal(failedStaleMasterRecovery.operationError, 'replacement did not accept a reload');
 	assert.deepEqual(failedStaleMasterRecovery.calls, [
@@ -1054,6 +1265,29 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 		failedStaleMasterRecovery.finalStoredSettings.profiles.nginx.siteUrl,
 		failedStaleMasterRecovery.storedSettingsBeforeReconciliation.profiles.nginx.siteUrl,
 	);
+
+	const timedOutStaleMasterRecovery = runScenario(
+		'versioned-nginx-stale-master-restart-timeout',
+	);
+	assert.match(
+		timedOutStaleMasterRecovery.operationError,
+		/could not restart this site's Nginx service/,
+	);
+	assert.deepEqual(timedOutStaleMasterRecovery.calls, [
+		'probeOrigin',
+		'captureAllManagedFiles',
+		'applyServerManagedFiles',
+		'compileNginx:managed',
+		'reloadNginx',
+		'restart:nginx',
+		'restoreManagedFiles',
+		'removeAllManagedFiles',
+		'compileNginx:clean',
+		'reloadNginx',
+		'updateSite',
+	]);
+	assert.equal(timedOutStaleMasterRecovery.restartCalls, 1);
+	assert.equal(timedOutStaleMasterRecovery.updates.length, 1);
 
 	for (const [scenario, restoredCompile, restoredEnabled, failClosedCleanup] of [
 		['rollback-valid-managed', 'compileNginx:managed', true, false],
@@ -1082,12 +1316,25 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 		assert.equal(rollback.updates[0].enabled, restoredEnabled);
 	}
 
+	const timedOutMissingTarget = runScenario('target-service-missing-restart-timeout');
+	assert.match(
+		timedOutMissingTarget.operationError,
+		/could not restart this site's Nginx service after its port was cleared/,
+	);
+	assert.deepEqual(timedOutMissingTarget.calls, ['restart:nginx']);
+	assert.equal(timedOutMissingTarget.restartCalls, 1);
+	assert.deepEqual(timedOutMissingTarget.updates, []);
+	assert.deepEqual(
+		timedOutMissingTarget.finalStoredSettings,
+		timedOutMissingTarget.storedSettingsBeforeReconciliation,
+	);
+
 	const missingTarget = runScenario('target-service-missing');
-	assert.match(missingTarget.operationError, /Nginx service did not start/);
-	assert.match(missingTarget.operationError, /made no changes/);
-	assert.deepEqual(missingTarget.calls, []);
+	assert.match(missingTarget.operationError, /could not restart this site's Nginx service/);
+	assert.match(missingTarget.operationError, /made no settings or configuration changes/);
+	assert.deepEqual(missingTarget.calls, ['restart:nginx']);
 	assert.equal(missingTarget.refreshCalls, 0);
-	assert.equal(missingTarget.restartCalls, 0);
+	assert.equal(missingTarget.restartCalls, 1);
 	assert.deepEqual(missingTarget.runningProcessChecks, ['nginx']);
 	assert.equal(missingTarget.updates.length, 0);
 	assert.deepEqual(
@@ -1096,11 +1343,11 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 	);
 
 	const missingApacheTarget = runScenario('target-apache-service-missing');
-	assert.match(missingApacheTarget.operationError, /Apache service did not start/);
-	assert.match(missingApacheTarget.operationError, /made no changes/);
-	assert.deepEqual(missingApacheTarget.calls, []);
+	assert.match(missingApacheTarget.operationError, /could not restart this site's Apache service/);
+	assert.match(missingApacheTarget.operationError, /made no settings or configuration changes/);
+	assert.deepEqual(missingApacheTarget.calls, ['restart:httpd']);
 	assert.equal(missingApacheTarget.refreshCalls, 0);
-	assert.equal(missingApacheTarget.restartCalls, 0);
+	assert.equal(missingApacheTarget.restartCalls, 1);
 	assert.deepEqual(missingApacheTarget.runningProcessChecks, ['httpd']);
 	assert.equal(missingApacheTarget.updates.length, 0);
 	assert.deepEqual(
@@ -1109,11 +1356,11 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 	);
 
 	const missingDisableTarget = runScenario('target-service-missing-disable');
-	assert.match(missingDisableTarget.operationError, /Nginx service did not start/);
-	assert.match(missingDisableTarget.operationError, /made no changes/);
-	assert.deepEqual(missingDisableTarget.calls, []);
+	assert.match(missingDisableTarget.operationError, /could not restart this site's Nginx service/);
+	assert.match(missingDisableTarget.operationError, /made no settings or configuration changes/);
+	assert.deepEqual(missingDisableTarget.calls, ['restart:nginx']);
 	assert.equal(missingDisableTarget.refreshCalls, 0);
-	assert.equal(missingDisableTarget.restartCalls, 0);
+	assert.equal(missingDisableTarget.restartCalls, 1);
 	assert.deepEqual(missingDisableTarget.runningProcessChecks, ['nginx']);
 	assert.equal(missingDisableTarget.updates.length, 0);
 	assert.deepEqual(
@@ -1122,10 +1369,10 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 	);
 
 	const missingSaveDisableTarget = runScenario('target-service-missing-save-disable');
-	assert.match(missingSaveDisableTarget.operationError, /Nginx service did not start/);
-	assert.deepEqual(missingSaveDisableTarget.calls, []);
+	assert.match(missingSaveDisableTarget.operationError, /could not restart this site's Nginx service/);
+	assert.deepEqual(missingSaveDisableTarget.calls, ['restart:nginx']);
 	assert.equal(missingSaveDisableTarget.refreshCalls, 0);
-	assert.equal(missingSaveDisableTarget.restartCalls, 0);
+	assert.equal(missingSaveDisableTarget.restartCalls, 1);
 	assert.deepEqual(missingSaveDisableTarget.runningProcessChecks, ['nginx']);
 	assert.equal(missingSaveDisableTarget.updates.length, 0);
 	assert.deepEqual(
