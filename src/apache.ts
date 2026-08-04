@@ -170,16 +170,6 @@ const APACHE_REQUEST_HEADERS_TO_STRIP = [
 	'X-User-ID',
 	'X-WP-Nonce',
 ] as const;
-const APACHE_REQUEST_HEADERS_TO_ACCEPT = [
-	...APACHE_REQUEST_HEADERS_TO_STRIP,
-	'Connection',
-	'Host',
-	'If-Range',
-	'Keep-Alive',
-	'Range',
-	'User-Agent',
-] as const;
-
 export interface ApacheRuntimeService {
 	bin: { [binaryName: string]: string } | undefined;
 	configPath: string;
@@ -452,7 +442,6 @@ export function upsertApacheModules(
 	const modules = [
 		...module('proxy_http_module', 'mod_proxy_http.so'),
 		...module('headers_module', 'mod_headers.so'),
-		...module('setenvif_module', 'mod_setenvif.so'),
 		...(secure ? module('ssl_module', 'mod_ssl.so') : []),
 	];
 
@@ -476,7 +465,6 @@ export async function inspectApacheRuntimeCapabilities(
 	for (const filename of [
 		'mod_proxy_http.so',
 		'mod_headers.so',
-		'mod_setenvif.so',
 		'mod_ssl.so',
 	]) {
 		const modulePath = apacheModulePath(httpdBinary, filename);
@@ -487,7 +475,7 @@ export async function inspectApacheRuntimeCapabilities(
 			availability.set(filename, false);
 		}
 	}
-	const missingRequired = ['mod_proxy_http.so', 'mod_headers.so', 'mod_setenvif.so']
+	const missingRequired = ['mod_proxy_http.so', 'mod_headers.so']
 		.filter((filename) => !availability.get(filename));
 	const platform = apacheBundlePlatform(httpdBinary);
 	if (missingRequired.length > 0) {
@@ -535,8 +523,6 @@ export function buildManagedApacheConfig(
 	const backend = `${origin.protocol}//${authority}`;
 	const route = APACHE_UPLOAD_ASSET_ROUTE_PATTERN;
 	const uploadsGuardRoute = '^/wp-content/uploads/';
-	const unknownHeaderPattern =
-		`^(?!(?:${APACHE_REQUEST_HEADERS_TO_ACCEPT.map(escapeRegularExpression).join('|')})$).+`;
 	const tls = origin.protocol === 'https:'
 		? [
 			'SSLProxyEngine On',
@@ -554,8 +540,6 @@ export function buildManagedApacheConfig(
 		`# Managed route revision: ${UPLOAD_ASSET_ROUTE_REVISION}`,
 		'ProxyRequests Off',
 		...tls,
-		'',
-		`SetEnvIfNoCase ${quoteApachePattern(unknownHeaderPattern, 'Apache accepted request headers')} ".+" LOCAL_MEDIA_PROXY_UNKNOWN_HEADER=1`,
 		'',
 		`<LocationMatch "(?i)${UPLOAD_ASSET_URI_PATTERN}">`,
 		'\tProxyAddHeaders Off',
@@ -588,9 +572,6 @@ export function buildManagedApacheConfig(
 		'RewriteCond "%{DOCUMENT_ROOT}/$1" !-f',
 		`RewriteCond %{HTTP:Sec-Fetch-Dest} ${quoteApachePattern(BLOCKED_BROWSER_FETCH_DESTINATION_PATTERN, 'Apache blocked Fetch Metadata destination')} [NC]`,
 		`RewriteRule ${quoteApachePattern(route, 'Apache asset route')} - [R=404,L,NC]`,
-		'RewriteCond "%{DOCUMENT_ROOT}/$1" !-f',
-		'RewriteCond %{ENV:LOCAL_MEDIA_PROXY_UNKNOWN_HEADER} =1',
-		`RewriteRule ${quoteApachePattern(route, 'Apache asset route')} - [R=400,L,NC]`,
 		'RewriteCond "%{DOCUMENT_ROOT}/$1" !-f',
 		`RewriteCond $1 ${quoteApachePattern(BLOCKED_UPLOAD_ASSET_PATH_PATTERN, 'Apache blocked asset path')} [NC]`,
 		`RewriteRule ${quoteApachePattern(route, 'Apache asset route')} - [R=404,L,NC]`,

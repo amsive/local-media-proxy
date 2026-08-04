@@ -232,7 +232,7 @@ export interface SiteStatusPresentation {
 
 export function proxyPrivacySummary(serverKind: ServerKind): string {
 	return serverKind === 'apache'
-		? 'Only GET and HEAD are allowed; request bodies and standard browser, credential, nonce, CSRF, tracing, and client-IP headers are stripped. Missing-asset requests with unknown data-bearing headers fail closed before reaching the origin. Controlled Host and fixed add-on User-Agent headers are used for compatibility.'
+		? 'Only GET and HEAD are allowed; request bodies and known browser, credential, nonce, CSRF, tracing, and client-IP headers are stripped. Controlled Host and fixed add-on User-Agent headers are used for compatibility.'
 		: 'Only GET and HEAD are allowed; incoming visitor headers and request bodies are not forwarded, and a fixed add-on User-Agent is used for compatibility.';
 }
 

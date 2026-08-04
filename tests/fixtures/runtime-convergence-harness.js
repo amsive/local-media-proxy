@@ -29,7 +29,12 @@ const supportedScenarios = new Set([
 	'rollback-snapshot-enabled',
 	'rollback-malformed-snapshot',
 	'rollback-valid-managed',
+	'changed-save-apply-reprobes',
+	'explicit-test-reprobes',
 	'same-value-halted-repair',
+	'same-value-save-apply-fast-path',
+	'same-value-wpengine-fast-path',
+	'same-value-wpengine-provenance-mismatch',
 	'service-path-change',
 	'global-enable-matching',
 	'global-enable-configured-disabled-halted',
@@ -49,6 +54,10 @@ const supportedScenarios = new Set([
 	'startup-pristine-disabled-nginx',
 	'supported-service-unavailable-disabled',
 	'target-service-missing',
+	'target-apache-service-missing',
+	'target-service-missing-disable',
+	'target-service-missing-save-disable',
+	'target-service-missing-clean-disable',
 	'versioned-nginx-stale-master-recovery',
 	'versioned-nginx-stale-master-recovery-failure',
 ]);
@@ -65,7 +74,10 @@ ipcMain.handle = (channel, handler) => ipcMain.handlers.set(channel, handler);
 ipcMain.removeHandler = (channel) => ipcMain.handlers.delete(channel);
 
 const isImmediateApacheSwitch = scenario === 'immediate-apache-switch-enable';
-const isApacheRuntime = isImmediateApacheSwitch || scenario === 'startup-pristine-disabled-apache';
+const isApacheRuntime = isImmediateApacheSwitch || new Set([
+	'startup-pristine-disabled-apache',
+	'target-apache-service-missing',
+]).has(scenario);
 const pristineDisabledScenarios = new Set([
 	'global-enable-pristine-disabled-nginx',
 	'site-added-pristine-disabled-nginx',
@@ -83,6 +95,7 @@ const initiallyEnabled = !pristineDisabledScenarios.has(scenario) && !new Set([
 	'startup-configured-disabled-nginx',
 	'startup-pristine-disabled-apache',
 	'supported-service-unavailable-disabled',
+	'target-service-missing-clean-disable',
 	'versioned-nginx-stale-master-recovery-failure',
 ]).has(scenario);
 const siteStatus = new Set([
@@ -187,6 +200,46 @@ if (new Set([
 		schemaVersion: 2,
 	};
 }
+if (new Set([
+	'changed-save-apply-reprobes',
+	'explicit-test-reprobes',
+	'same-value-halted-repair',
+	'same-value-save-apply-fast-path',
+]).has(scenario)) {
+	Object.assign(site.localMediaProxy.profiles.nginx, {
+		lastOriginStatus: 200,
+		lastVerifiedAt: '2026-08-04T12:00:00.000Z',
+	});
+}
+if (new Set([
+	'same-value-wpengine-fast-path',
+	'same-value-wpengine-provenance-mismatch',
+]).has(scenario)) {
+	site.hostConnections = [{
+		hostId: 'wpe',
+		remoteSiteId: scenario === 'same-value-wpengine-provenance-mismatch'
+			? 'different-site'
+			: 'wp-site',
+	}];
+	site.localMediaProxy.profiles.nginx = {
+		certificate: {
+			fingerprint256: 'AA:BB',
+			issuer: 'Example CA',
+			subject: 'example-production.wpengine.com',
+			validTo: 'Aug 04 12:00:00 2027 GMT',
+		},
+		lastOriginStatus: 200,
+		lastVerifiedAt: '2026-08-04T12:00:00.000Z',
+		originEnvironment: 'production',
+		originIp: '192.0.2.10',
+		originSource: 'wpengine',
+		originTlsHostname: 'example-production.wpengine.com',
+		originWpEngineInstallId: 'wp-install',
+		originWpEngineSiteId: 'wp-site',
+		resolvedAt: '2026-08-04T11:00:00.000Z',
+		siteUrl: 'https://www.example.com',
+	};
+}
 const storedSettingsBeforeReconciliation = structuredClone(site.localMediaProxy);
 const service = {
 	bin: isApacheRuntime
@@ -206,6 +259,7 @@ let compiledMatches = new Set([
 	'startup-configured-disabled-clean-nginx',
 	'startup-noop',
 	'startup-pristine-disabled-apache',
+	'target-service-missing-clean-disable',
 ]).has(scenario);
 let sourceMatches = true;
 let refreshCalls = 0;
@@ -220,10 +274,8 @@ let compiledMatchChecks = 0;
 let filesystemReadyChecks = 0;
 let managedArtifactChecks = 0;
 let publishedSiteStartedEvents = 0;
-let nginxRuntimeRunning = !new Set([
-	'versioned-nginx-stale-master-recovery',
-	'versioned-nginx-stale-master-recovery-failure',
-]).has(scenario);
+const runningProcessChecks = [];
+let nginxRuntimeRunning = true;
 let reconciliationInterruptionsRemaining = scenario === 'reconciliation-service-path-change-recovery' ? 1 : 0;
 const rollbackSourceMatches = new Set([
 	'rollback-valid-managed',
@@ -278,17 +330,24 @@ const cradle = {
 			}
 			return siteStatus;
 		},
-		hasRunningProcess: (_site, processName) => (
-			siteStatus === 'running' &&
-			scenario !== 'target-service-missing' &&
-			(
+		hasRunningProcess: (_site, processName) => {
+			runningProcessChecks.push(processName);
+			return siteStatus === 'running' &&
 				!new Set([
-					'versioned-nginx-stale-master-recovery',
-					'versioned-nginx-stale-master-recovery-failure',
-				]).has(scenario) ||
-				(processName === 'nginx' && nginxRuntimeRunning)
-			)
-		),
+					'target-apache-service-missing',
+					'target-service-missing',
+					'target-service-missing-disable',
+					'target-service-missing-save-disable',
+					'target-service-missing-clean-disable',
+				]).has(scenario) &&
+				(
+					!new Set([
+						'versioned-nginx-stale-master-recovery',
+						'versioned-nginx-stale-master-recovery-failure',
+					]).has(scenario) ||
+					(processName === 'nginx' && nginxRuntimeRunning)
+				);
+		},
 		restartSiteService: async (_site, serviceName) => {
 			calls.push(`restart:${serviceName}`);
 			restartCalls += 1;
@@ -626,6 +685,36 @@ async function flushAsyncWork() {
 				await runNextTimer();
 			}
 			await flushAsyncWork();
+		} else if (scenario === 'target-service-missing-disable') {
+			try {
+				await ipcMain.handlers.get(IPC_CHANNELS.setEnabled)(
+					{},
+					site.id,
+					isApacheRuntime ? 'apache' : 'nginx',
+					false,
+				);
+			} catch (error) {
+				operationError = error.message;
+			}
+		} else if (new Set([
+			'target-service-missing-save-disable',
+			'target-service-missing-clean-disable',
+		]).has(scenario)) {
+			try {
+				state = await ipcMain.handlers.get(IPC_CHANNELS.applySettings)(
+					{},
+					site.id,
+					{
+						enabled: false,
+						originIp: '192.0.2.10',
+						originSource: 'manual',
+						siteUrl: 'http://media.example.com',
+					},
+					'nginx',
+				);
+			} catch (error) {
+				operationError = error.message;
+			}
 		} else if (scenario === 'same-value-halted-repair') {
 			state = await ipcMain.handlers.get(IPC_CHANNELS.setEnabled)(
 				{},
@@ -633,6 +722,52 @@ async function flushAsyncWork() {
 				'nginx',
 				true,
 			);
+		} else if (scenario === 'explicit-test-reprobes') {
+			await ipcMain.handlers.get(IPC_CHANNELS.testOrigin)(
+				{ sender: { id: 1 } },
+				site.id,
+				{
+					enabled: true,
+					originIp: '192.0.2.10',
+					originSource: 'manual',
+					siteUrl: 'http://media.example.com',
+				},
+				'explicit-test',
+			);
+		} else if (new Set([
+			'changed-save-apply-reprobes',
+			'same-value-save-apply-fast-path',
+			'same-value-wpengine-fast-path',
+			'same-value-wpengine-provenance-mismatch',
+		]).has(scenario)) {
+			const wpEngine = scenario.startsWith('same-value-wpengine-');
+			try {
+				state = await ipcMain.handlers.get(IPC_CHANNELS.applySettings)(
+					{},
+					site.id,
+					wpEngine
+						? {
+							enabled: true,
+							originEnvironment: 'production',
+							originIp: '192.0.2.10',
+							originSource: 'wpengine',
+							originTlsHostname: 'example-production.wpengine.com',
+							resolvedAt: '2026-08-04T11:00:00.000Z',
+							siteUrl: 'https://www.example.com',
+						}
+						: {
+							enabled: true,
+							originIp: scenario === 'changed-save-apply-reprobes'
+								? '192.0.2.11'
+								: '192.0.2.10',
+							originSource: 'manual',
+							siteUrl: 'http://media.example.com',
+						},
+					'nginx',
+				);
+			} catch (error) {
+				operationError = error.message;
+			}
 		} else if (isImmediateApacheSwitch) {
 			const projected = await ipcMain.handlers.get(IPC_CHANNELS.getSiteState)({}, site.id);
 			projectedSiteUrl = projected.settings.siteUrl;
@@ -653,7 +788,7 @@ async function flushAsyncWork() {
 						originSource: 'manual',
 						siteUrl: 'http://media.example.com',
 					},
-					'nginx',
+					isApacheRuntime ? 'apache' : 'nginx',
 				);
 			} catch (error) {
 				operationError = error.message;
@@ -677,6 +812,7 @@ async function flushAsyncWork() {
 			publishedSiteStartedEvents,
 			refreshCalls,
 			restartCalls,
+			runningProcessChecks,
 			retryCallsAfterOneRecoverySample,
 			retryTimersAfterFailure,
 			retryTimersAfterOneRecoverySample,

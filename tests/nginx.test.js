@@ -886,7 +886,7 @@ test('Nginx refresh uses one native reload and bounded stale-master recovery wit
 					restartService: async () => { restartCalls += 1; },
 				},
 			}),
-			/selected service did not accept a reload.*Another process may still be using this site's port/,
+			/selected service did not accept a reload.*Another process may still be using this site's internal Nginx port/,
 		);
 		assert.equal(failedReplacementReloadAttempts, 2);
 		assert.equal(restartCalls, 2);

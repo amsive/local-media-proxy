@@ -377,7 +377,7 @@ export async function refreshNginxService(
 				assertCurrent();
 			}
 			throw new Error(
-				"After Local attempted to restart Nginx, the selected service did not accept a reload. Another process may still be using this site's port. Fully quit and reopen Local, start the site, then retry. If it still fails, share Local's main log and the site's Nginx error log from that attempt.",
+				"After Local attempted to restart Nginx, the selected service did not accept a reload. Another process may still be using this site's internal Nginx port. If Local also shows \"There is a port conflict with this site's domain,\" resolve that separate Local router error first. Fully quit and reopen Local, start the site, then retry. If it still fails, share Local's main log and the site's Nginx error log from that attempt.",
 				{ cause: verificationCause },
 			);
 		}

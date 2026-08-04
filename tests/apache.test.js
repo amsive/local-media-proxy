@@ -170,7 +170,7 @@ test('derives guarded module paths from the exact Local +11 platform archive lay
 	assert.equal(upsertApacheModules(applied, httpd, true), applied);
 	assert.match(applied, /<IfModule !proxy_http_module>\r\n\tLoadModule proxy_http_module "\/opt\/Local\/lightning-services\/apache-2\.4\.43\+11\/bin\/darwin-arm64\/modules\/mod_proxy_http\.so"/);
 	assert.match(applied, /mod_headers\.so/);
-	assert.match(applied, /mod_setenvif\.so/);
+	assert.doesNotMatch(applied, /mod_setenvif\.so/);
 	assert.match(applied, /mod_ssl\.so/);
 	const windowsApplied = upsertApacheModules(
 		'# human module\n',
@@ -193,7 +193,6 @@ test('reports HTTPS capability from the validated Local bundle platform instead 
 			fs.writeFile(binary, ''),
 			fs.writeFile(path.join(platformRoot, 'modules', 'mod_proxy_http.so'), ''),
 			fs.writeFile(path.join(platformRoot, 'modules', 'mod_headers.so'), ''),
-			fs.writeFile(path.join(platformRoot, 'modules', 'mod_setenvif.so'), ''),
 		]);
 		const capabilities = await inspectApacheRuntimeCapabilities(binary);
 		assert.equal(capabilities.http, true);
@@ -226,8 +225,7 @@ test('builds a fixed-host local-first Apache proxy with guarded methods, bodies,
 	assert.doesNotMatch(config, /RewriteCond %\{REQUEST_METHOD\}[^\n]*\[NC\]/);
 	assert.match(config, /RewriteCond %\{HTTP:Transfer-Encoding\} !\^\$/);
 	assert.match(config, /RewriteCond %\{HTTP:Content-Length\} !\^\(\?:\|0\)\$/);
-	assert.match(config, /SetEnvIfNoCase .*Host.*If-Range.*Range.*User-Agent.* "\.\+" LOCAL_MEDIA_PROXY_UNKNOWN_HEADER=1/);
-	assert.match(config, /RewriteCond %\{ENV:LOCAL_MEDIA_PROXY_UNKNOWN_HEADER\} =1/);
+	assert.doesNotMatch(config, /SetEnvIfNoCase|LOCAL_MEDIA_PROXY_UNKNOWN_HEADER/);
 	assert.match(config, /RewriteCond %\{THE_REQUEST\} "!\\s\/wp-content\/uploads\/" \[NC\]/);
 	assert.match(config, /RewriteCond %\{THE_REQUEST\} .*x5c/);
 	assert.match(config, /RewriteCond "%\{DOCUMENT_ROOT\}\/\$1" !-f/);
@@ -240,10 +238,6 @@ test('builds a fixed-host local-first Apache proxy with guarded methods, bodies,
 		config.indexOf('[P,L,NE,QSA'),
 	);
 	assert.ok(config.indexOf('RewriteCond $1') < config.indexOf('RewriteCond "%{DOCUMENT_ROOT}/$1" !-f'));
-	assert.ok(
-		config.indexOf('RewriteCond "%{DOCUMENT_ROOT}/$1" !-f') <
-		config.indexOf('RewriteCond %{ENV:LOCAL_MEDIA_PROXY_UNKNOWN_HEADER} =1'),
-	);
 	assert.match(config, /RewriteCond "%\{DOCUMENT_ROOT\}\/\$1" !-f\nRewriteCond \$1 .*php/);
 	assert.ok(config.indexOf('RewriteCond $1') < config.indexOf('[P,L,NE,QSA'));
 	assert.ok(config.includes('"https://media.example.com:8443/$1"'));

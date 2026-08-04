@@ -33,7 +33,7 @@ function assertInOrder(source, markers, message) {
 test('Apache apply snapshots both servers and rollback restores runtime before committing prior settings', () => {
 	const applyBranch = mainSource.slice(
 		mainSource.indexOf('if (normalizedInput.enabled)'),
-		mainSource.indexOf('} else {', mainSource.indexOf('if (normalizedInput.enabled)')),
+		mainSource.indexOf('let disabled = sanitizeDisabledSettings'),
 	);
 	assert.match(
 		applyBranch,
@@ -461,6 +461,10 @@ test('server transactions use primitive runtime identity without traversing Loca
 });
 
 test('interactive apply, save-disable, and toggle commit settings only after files and runtime are current', () => {
+	const preflight = sourceSection(
+		'const beginInteractiveServerTransaction',
+		'const managedFileOptions',
+	);
 	const apply = mainSource.slice(
 		mainSource.indexOf('const applySettingsLocked'),
 		mainSource.indexOf('const applySettings = async'),
@@ -470,6 +474,11 @@ test('interactive apply, save-disable, and toggle commit settings only after fil
 		mainSource.indexOf('const discoverOrigin = async'),
 	);
 
+	assert.match(
+		preflight,
+		/const processName = server\.kind === 'apache' \? 'httpd' : 'nginx';[\s\S]{0,360}hasRunningProcess\(site, processName\)/,
+	);
+	assert.match(preflight, /Media Proxy made no changes and did not try to start another \$\{serverName\} process/);
 	assert.match(apply, /const transaction = beginInteractiveServerTransaction\(site, server\)/);
 	assert.match(
 		apply,
@@ -477,10 +486,10 @@ test('interactive apply, save-disable, and toggle commit settings only after fil
 	);
 	const enableBranch = apply.slice(
 		apply.indexOf('if (normalizedInput.enabled)'),
-		apply.indexOf('} else {', apply.indexOf('if (normalizedInput.enabled)')),
+		apply.indexOf('let disabled = sanitizeDisabledSettings'),
 	);
 	const saveDisableBranch = apply.slice(
-		apply.indexOf('} else {', apply.indexOf('if (normalizedInput.enabled)')),
+		apply.indexOf('let disabled = sanitizeDisabledSettings'),
 	);
 	assertInOrder(
 		enableBranch,
@@ -938,7 +947,6 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 
 	const haltedRepair = runScenario('same-value-halted-repair');
 	assert.deepEqual(haltedRepair.calls, [
-		'probeOrigin',
 		'captureAllManagedFiles',
 		'applyServerManagedFiles',
 		'compileNginx:managed',
@@ -951,6 +959,60 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 		siteUrl: 'http://media.example.com',
 		siteStatus: 'halted',
 	});
+	assert.equal(
+		haltedRepair.finalStoredSettings.profiles.nginx.lastVerifiedAt,
+		'2026-08-04T12:00:00.000Z',
+	);
+
+	const sameValueSave = runScenario('same-value-save-apply-fast-path');
+	assert.deepEqual(sameValueSave.calls, [
+		'captureAllManagedFiles',
+		'applyServerManagedFiles',
+		'compileNginx:managed',
+		'reloadNginx',
+		'updateSite',
+	]);
+	assert.equal(sameValueSave.operationError, undefined);
+	assert.equal(sameValueSave.refreshCalls, 1);
+	assert.equal(
+		sameValueSave.finalStoredSettings.profiles.nginx.lastVerifiedAt,
+		'2026-08-04T12:00:00.000Z',
+	);
+
+	const sameValueWpEngine = runScenario('same-value-wpengine-fast-path');
+	assert.deepEqual(sameValueWpEngine.calls, [
+		'captureAllManagedFiles',
+		'applyServerManagedFiles',
+		'compileNginx:managed',
+		'reloadNginx',
+		'updateSite',
+	]);
+	assert.equal(sameValueWpEngine.operationError, undefined);
+	assert.equal(
+		sameValueWpEngine.finalStoredSettings.profiles.nginx.originWpEngineSiteId,
+		'wp-site',
+	);
+
+	const mismatchedWpEngine = runScenario('same-value-wpengine-provenance-mismatch');
+	assert.match(mismatchedWpEngine.operationError, /no longer matches this Local site connection/);
+	assert.deepEqual(mismatchedWpEngine.calls, []);
+	assert.deepEqual(mismatchedWpEngine.updates, []);
+
+	const changedSave = runScenario('changed-save-apply-reprobes');
+	assert.deepEqual(changedSave.calls, [
+		'probeOrigin',
+		'captureAllManagedFiles',
+		'applyServerManagedFiles',
+		'compileNginx:managed',
+		'reloadNginx',
+		'updateSite',
+	]);
+	assert.equal(changedSave.operationError, undefined);
+	assert.equal(changedSave.finalStoredSettings.profiles.nginx.originIp, '192.0.2.11');
+
+	const explicitTest = runScenario('explicit-test-reprobes');
+	assert.deepEqual(explicitTest.calls, ['probeOrigin']);
+	assert.deepEqual(explicitTest.updates, []);
 
 	const staleMasterRecovery = runScenario('versioned-nginx-stale-master-recovery');
 	assert.deepEqual(staleMasterRecovery.calls, [
@@ -1021,10 +1083,63 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 	}
 
 	const missingTarget = runScenario('target-service-missing');
-	assert.equal(missingTarget.operationError, undefined);
-	assert.equal(missingTarget.refreshCalls, 1);
+	assert.match(missingTarget.operationError, /Nginx service did not start/);
+	assert.match(missingTarget.operationError, /made no changes/);
+	assert.deepEqual(missingTarget.calls, []);
+	assert.equal(missingTarget.refreshCalls, 0);
 	assert.equal(missingTarget.restartCalls, 0);
-	assert.equal(missingTarget.updates.length, 1);
+	assert.deepEqual(missingTarget.runningProcessChecks, ['nginx']);
+	assert.equal(missingTarget.updates.length, 0);
+	assert.deepEqual(
+		missingTarget.finalStoredSettings,
+		missingTarget.storedSettingsBeforeReconciliation,
+	);
+
+	const missingApacheTarget = runScenario('target-apache-service-missing');
+	assert.match(missingApacheTarget.operationError, /Apache service did not start/);
+	assert.match(missingApacheTarget.operationError, /made no changes/);
+	assert.deepEqual(missingApacheTarget.calls, []);
+	assert.equal(missingApacheTarget.refreshCalls, 0);
+	assert.equal(missingApacheTarget.restartCalls, 0);
+	assert.deepEqual(missingApacheTarget.runningProcessChecks, ['httpd']);
+	assert.equal(missingApacheTarget.updates.length, 0);
+	assert.deepEqual(
+		missingApacheTarget.finalStoredSettings,
+		missingApacheTarget.storedSettingsBeforeReconciliation,
+	);
+
+	const missingDisableTarget = runScenario('target-service-missing-disable');
+	assert.match(missingDisableTarget.operationError, /Nginx service did not start/);
+	assert.match(missingDisableTarget.operationError, /made no changes/);
+	assert.deepEqual(missingDisableTarget.calls, []);
+	assert.equal(missingDisableTarget.refreshCalls, 0);
+	assert.equal(missingDisableTarget.restartCalls, 0);
+	assert.deepEqual(missingDisableTarget.runningProcessChecks, ['nginx']);
+	assert.equal(missingDisableTarget.updates.length, 0);
+	assert.deepEqual(
+		missingDisableTarget.finalStoredSettings,
+		missingDisableTarget.storedSettingsBeforeReconciliation,
+	);
+
+	const missingSaveDisableTarget = runScenario('target-service-missing-save-disable');
+	assert.match(missingSaveDisableTarget.operationError, /Nginx service did not start/);
+	assert.deepEqual(missingSaveDisableTarget.calls, []);
+	assert.equal(missingSaveDisableTarget.refreshCalls, 0);
+	assert.equal(missingSaveDisableTarget.restartCalls, 0);
+	assert.deepEqual(missingSaveDisableTarget.runningProcessChecks, ['nginx']);
+	assert.equal(missingSaveDisableTarget.updates.length, 0);
+	assert.deepEqual(
+		missingSaveDisableTarget.finalStoredSettings,
+		missingSaveDisableTarget.storedSettingsBeforeReconciliation,
+	);
+
+	const cleanMissingDisableTarget = runScenario('target-service-missing-clean-disable');
+	assert.equal(cleanMissingDisableTarget.operationError, undefined);
+	assert.deepEqual(cleanMissingDisableTarget.runningProcessChecks, []);
+	assert.equal(cleanMissingDisableTarget.refreshCalls, 0);
+	assert.equal(cleanMissingDisableTarget.restartCalls, 0);
+	assert.equal(cleanMissingDisableTarget.updates.length, 1);
+	assert.equal(cleanMissingDisableTarget.finalEnabled, false);
 
 	const changedPath = runScenario('service-path-change');
 	assert.match(changedPath.operationError, /web-server identity or lifecycle status/);
@@ -1374,8 +1489,8 @@ test('unsupported ambiguity and transient service lookup failure defer cleanup w
 	assert.match(unavailableBranch, /throw new Error\(runtimeCleanupUnavailableReason\(server\)\)/);
 	assert.doesNotMatch(unavailableBranch, /persistSettings|removeAllManagedFiles|compileAndReload|restartSiteService/);
 
-	const disableStart = mainSource.indexOf('} else {', mainSource.indexOf('if (normalizedInput.enabled)'));
-	const disableGuardEnd = mainSource.indexOf('let disabled = sanitizeDisabledSettings', disableStart);
+	const disableGuardEnd = mainSource.indexOf('let disabled = sanitizeDisabledSettings');
+	const disableStart = mainSource.lastIndexOf('\n\t\t\tif (', disableGuardEnd);
 	const disableGuard = mainSource.slice(disableStart, disableGuardEnd);
 	assert.match(disableGuard, /server\.kind === 'unsupported' \|\| !server\.service/);
 	assert.match(

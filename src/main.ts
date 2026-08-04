@@ -370,6 +370,25 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		return transaction;
 	};
 
+	const assertInteractiveServerRuntimeReady = (
+		site: Local.Site,
+		server: RuntimeServer,
+		transaction: ServerTransactionFingerprint,
+	): void => {
+		const processName = server.kind === 'apache' ? 'httpd' : 'nginx';
+		const serverName = server.kind === 'apache' ? 'Apache' : 'Nginx';
+		if (
+			transaction.siteStatus === 'running' &&
+			server.kind !== 'unsupported' &&
+			server.service &&
+			!siteProcessManager.hasRunningProcess(site, processName)
+		) {
+			throw new Error(
+				`Local reports this site as running, but its ${serverName} service did not start. Media Proxy made no changes and did not try to start another ${serverName} process. Another process may still own this site's internal web-server port. If Local also shows "There is a port conflict with this site's domain," resolve that separate Local router error first. Fully quit and reopen Local, start the site, and retry. If it still fails, share Local's main log and the site's ${serverName} error log from that attempt.`,
+			);
+		}
+	};
+
 	const managedFileOptions = (server: RuntimeServer): {
 		apacheHttpdBinary?: string;
 		configPath?: string;
@@ -479,6 +498,20 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		siteUrl: settings.siteUrl,
 		tlsHostname: settings.originTlsHostname,
 	});
+
+	const connectionProfileInputMatches = (
+		input: SettingsInput,
+		stored: StoredSettings,
+	): boolean => originPairMatches(input, stored) &&
+		(input.originSource ?? 'manual') === (stored.originSource ?? 'manual') &&
+		(input.resolvedAt ?? '') === (stored.resolvedAt ?? '');
+
+	const storedVerificationCanBeReused = (
+		settings: StoredSettings,
+		protocol: 'http:' | 'https:',
+	): boolean => Boolean(settings.lastVerifiedAt) &&
+		settings.lastOriginStatus !== undefined &&
+		(protocol === 'http:' || Boolean(settings.certificate));
 
 	const assertAuthoritativeWpEngineIdentity = async (
 		site: Local.Site,
@@ -1197,40 +1230,72 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			if (server.kind === 'unsupported' || !server.service) {
 				throw new Error(server.reason || 'Local could not load the web-server service for this site.');
 			}
+			assertInteractiveServerRuntimeReady(site, server, transaction);
 
 			const origin = validateAndNormalizeOrigin(normalizedInput, {
 				requiresOriginIp: server.requiresOriginIp,
 			});
 			await assertApacheOriginCapability(server, origin.protocol);
-			const authoritativeWpEngine = server.kind === 'nginx'
-				? await assertAuthoritativeWpEngineIdentity(site, normalizedInput)
-				: undefined;
-			const probe = await probeOrigin(origin, {
-				allowWpEngineTlsFallback: server.kind === 'nginx',
-			});
-			const verifiedOrigin = {
-				...origin,
-				tlsHostname: server.kind === 'nginx'
-					? probe.verifiedTlsHostname ?? origin.tlsHostname
-					: origin.hostname,
-			};
+			const profileInputMatches = connectionProfileInputMatches(
+				normalizedInput,
+				previousSettings,
+			);
+			if (
+				profileInputMatches &&
+				normalizedInput.originSource === 'wpengine' &&
+				!wpEngineStoredProvenanceMatches(
+					site,
+					previousSettings.originWpEngineInstallId,
+					previousSettings.originWpEngineSiteId,
+				)
+			) {
+				throw new Error('The saved WP Engine origin no longer matches this Local site connection. Run auto-population again.');
+			}
+			const reuseStoredVerification = profileInputMatches &&
+				storedVerificationCanBeReused(previousSettings, origin.protocol);
+			let verifiedOrigin = origin;
+			let trustBundle: string | undefined;
+			if (reuseStoredVerification) {
+				trustBundle = origin.protocol === 'https:'
+					? trustedCertificateAuthoritiesPem()
+					: undefined;
+				nextSettings = {
+					...previousSettings,
+					enabled: true,
+				};
+				logger.log('info', `Reused the previously verified unchanged origin for site ${siteId}.`);
+			} else {
+				const authoritativeWpEngine = server.kind === 'nginx'
+					? await assertAuthoritativeWpEngineIdentity(site, normalizedInput)
+					: undefined;
+				const probe = await probeOrigin(origin, {
+					allowWpEngineTlsFallback: server.kind === 'nginx',
+				});
+				verifiedOrigin = {
+					...origin,
+					tlsHostname: server.kind === 'nginx'
+						? probe.verifiedTlsHostname ?? origin.tlsHostname
+						: origin.hostname,
+				};
+				trustBundle = probe.trustedCertificateAuthoritiesPem;
+				nextSettings = {
+					certificate: probe.certificate,
+					enabled: true,
+					lastOriginStatus: probe.statusCode,
+					lastVerifiedAt: new Date().toISOString(),
+					originEnvironment: normalizedInput.originEnvironment,
+					originIp: server.requiresOriginIp ? verifiedOrigin.originIp : '',
+					originSource: normalizedInput.originSource ?? 'manual',
+					originTlsHostname: server.kind === 'apache' || verifiedOrigin.tlsHostname === verifiedOrigin.hostname
+						? undefined
+						: verifiedOrigin.tlsHostname,
+					originWpEngineInstallId: authoritativeWpEngine?.wpEngineInstallId,
+					originWpEngineSiteId: authoritativeWpEngine?.wpEngineSiteId,
+					resolvedAt: normalizedInput.resolvedAt,
+					siteUrl: verifiedOrigin.siteUrl,
+				};
+			}
 			assertServerTransactionCurrent(siteId, transaction);
-			nextSettings = {
-				certificate: probe.certificate,
-				enabled: true,
-				lastOriginStatus: probe.statusCode,
-				lastVerifiedAt: new Date().toISOString(),
-				originEnvironment: normalizedInput.originEnvironment,
-				originIp: server.requiresOriginIp ? verifiedOrigin.originIp : '',
-				originSource: normalizedInput.originSource ?? 'manual',
-				originTlsHostname: server.kind === 'apache' || verifiedOrigin.tlsHostname === verifiedOrigin.hostname
-					? undefined
-					: verifiedOrigin.tlsHostname,
-				originWpEngineInstallId: authoritativeWpEngine?.wpEngineInstallId,
-				originWpEngineSiteId: authoritativeWpEngine?.wpEngineSiteId,
-				resolvedAt: normalizedInput.resolvedAt,
-				siteUrl: verifiedOrigin.siteUrl,
-			};
 			nextEnvelope = replaceStoredSettingsForServer(
 				previousEnvelope,
 				expectedServerKind,
@@ -1250,7 +1315,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 						site,
 						verifiedOrigin,
 						managedFileOptions(server),
-						probe.trustedCertificateAuthoritiesPem,
+						trustBundle,
 						() => assertServerTransactionCurrent(siteId, transaction),
 					),
 				);
@@ -1344,6 +1409,22 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				expectedServerKind,
 				nextSettings,
 			);
+			const compiledConfigIsClean = server.kind !== 'unsupported' && server.service
+				? await serverCompiledConfigMatches(
+					site,
+					server,
+					false,
+					() => assertServerTransactionCurrent(siteId, transaction),
+				)
+				: true;
+			const managedArtifactsPresent = await allManagedArtifactsExist(
+				site,
+				() => assertServerTransactionCurrent(siteId, transaction),
+				server.kind === 'unsupported' ? undefined : managedFileOptions(server),
+			);
+			if (managedArtifactsPresent || !compiledConfigIsClean) {
+				assertInteractiveServerRuntimeReady(site, server, transaction);
+			}
 
 			let snapshots: Awaited<ReturnType<typeof captureAllManagedFiles>> | undefined;
 			try {
@@ -1352,14 +1433,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					() => assertServerTransactionCurrent(siteId, transaction),
 					managedFileOptions(server),
 				);
-				const compiledConfigIsClean = server.kind !== 'unsupported' && server.service
-					? await serverCompiledConfigMatches(
-						site,
-						server,
-						false,
-						() => assertServerTransactionCurrent(siteId, transaction),
-					)
-					: true;
 				const changed = await runServerTransactionMutation(
 					() => assertServerTransactionCurrent(siteId, transaction),
 					() => removeAllManagedFiles(
@@ -1449,18 +1522,26 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			throw new Error(runtimeCleanupUnavailableReason(server));
 		}
 		const disabledEnvelope = setStoredSettingsEnabled(envelope, false);
+		const compiledConfigIsClean = await serverCompiledConfigMatches(
+			site,
+			server,
+			false,
+			() => assertServerTransactionCurrent(siteId, transaction),
+		);
+		const managedArtifactsPresent = await allManagedArtifactsExist(
+			site,
+			() => assertServerTransactionCurrent(siteId, transaction),
+			managedFileOptions(server),
+		);
+		if (managedArtifactsPresent || !compiledConfigIsClean) {
+			assertInteractiveServerRuntimeReady(site, server, transaction);
+		}
 		let snapshots: Awaited<ReturnType<typeof captureAllManagedFiles>> | undefined;
 		try {
 			snapshots = await captureAllManagedFiles(
 				site,
 				() => assertServerTransactionCurrent(siteId, transaction),
 				managedFileOptions(server),
-			);
-			const compiledConfigIsClean = await serverCompiledConfigMatches(
-				site,
-				server,
-				false,
-				() => assertServerTransactionCurrent(siteId, transaction),
 			);
 			const changed = await runServerTransactionMutation(
 				() => assertServerTransactionCurrent(siteId, transaction),
