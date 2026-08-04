@@ -87,7 +87,7 @@ test('Apache refresh observes httpd while Nginx reload avoids Local process-mana
 	assert.match(nginxBranch, /refreshNginxService\(/);
 	assert.match(nginxBranch, /const processName = 'nginx'/);
 	assert.match(nginxBranch, /restartSiteService\(site, processName\)/);
-	assert.match(nginxBranch, /hasRunningProcess\(site, processName\)/);
+	assert.doesNotMatch(nginxBranch, /hasRunningProcess\(site, processName\)/);
 });
 
 test('global disable and uninstall clean runtime without changing per-site enabled intent', () => {
@@ -960,11 +960,38 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 		'compileNginx:managed',
 		'reloadNginx',
 		'restart:nginx',
+		'reloadNginx',
 		'updateSite',
 	]);
 	assert.equal(staleMasterRecovery.operationError, undefined);
 	assert.equal(staleMasterRecovery.restartCalls, 1);
 	assert.equal(staleMasterRecovery.updates.length, 1);
+
+	const failedStaleMasterRecovery = runScenario('versioned-nginx-stale-master-recovery-failure');
+	assert.equal(failedStaleMasterRecovery.operationError, 'replacement did not accept a reload');
+	assert.deepEqual(failedStaleMasterRecovery.calls, [
+		'probeOrigin',
+		'captureAllManagedFiles',
+		'applyServerManagedFiles',
+		'compileNginx:managed',
+		'reloadNginx',
+		'restart:nginx',
+		'reloadNginx',
+		'restoreManagedFiles',
+		'removeAllManagedFiles',
+		'compileNginx:clean',
+		'reloadNginx',
+		'updateSite',
+	]);
+	assert.equal(failedStaleMasterRecovery.restartCalls, 1);
+	assert.equal(failedStaleMasterRecovery.refreshCalls, 2);
+	assert.equal(failedStaleMasterRecovery.updates.length, 1);
+	assert.equal(failedStaleMasterRecovery.updates[0].enabled, false);
+	assert.equal(failedStaleMasterRecovery.finalEnabled, false);
+	assert.deepEqual(
+		failedStaleMasterRecovery.finalStoredSettings.profiles.nginx.siteUrl,
+		failedStaleMasterRecovery.storedSettingsBeforeReconciliation.profiles.nginx.siteUrl,
+	);
 
 	for (const [scenario, restoredCompile, restoredEnabled, failClosedCleanup] of [
 		['rollback-valid-managed', 'compileNginx:managed', true, false],

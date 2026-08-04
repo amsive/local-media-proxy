@@ -644,6 +644,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			return siteProcessManager.getSiteStatus(site) === 'running';
 		};
 		const processName = 'nginx';
+		let restartedStaleNginxMaster = false;
 		const refreshed = await refreshNginxService(
 			site,
 			server.service,
@@ -657,17 +658,17 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					assertCurrent();
 					await siteProcessManager.restartSiteService(site, processName);
 					assertCurrent();
-					if (!siteProcessManager.hasRunningProcess(site, processName)) {
-						throw new Error("Local did not report this site's restarted Nginx process as running.");
-					}
-					logger.log(
-						'warn',
-						`Restarted the selected Nginx service for site ${site.id} after native reload reported a stale master PID.`,
-					);
+					restartedStaleNginxMaster = true;
 				} : undefined,
 			},
 		);
 		assertCurrent();
+		if (restartedStaleNginxMaster) {
+			logger.log(
+				'warn',
+				`Verified the selected Nginx service for site ${site.id} after requesting a targeted restart for a stale master PID.`,
+			);
+		}
 		return refreshed;
 	};
 

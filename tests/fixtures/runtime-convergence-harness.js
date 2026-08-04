@@ -50,6 +50,7 @@ const supportedScenarios = new Set([
 	'supported-service-unavailable-disabled',
 	'target-service-missing',
 	'versioned-nginx-stale-master-recovery',
+	'versioned-nginx-stale-master-recovery-failure',
 ]);
 assert.ok(supportedScenarios.has(scenario), `unsupported scenario: ${scenario}`);
 
@@ -82,6 +83,7 @@ const initiallyEnabled = !pristineDisabledScenarios.has(scenario) && !new Set([
 	'startup-configured-disabled-nginx',
 	'startup-pristine-disabled-apache',
 	'supported-service-unavailable-disabled',
+	'versioned-nginx-stale-master-recovery-failure',
 ]).has(scenario);
 const siteStatus = new Set([
 	'global-enable-configured-disabled-halted',
@@ -218,9 +220,14 @@ let compiledMatchChecks = 0;
 let filesystemReadyChecks = 0;
 let managedArtifactChecks = 0;
 let publishedSiteStartedEvents = 0;
-let nginxRuntimeRunning = scenario !== 'versioned-nginx-stale-master-recovery';
+let nginxRuntimeRunning = !new Set([
+	'versioned-nginx-stale-master-recovery',
+	'versioned-nginx-stale-master-recovery-failure',
+]).has(scenario);
 let reconciliationInterruptionsRemaining = scenario === 'reconciliation-service-path-change-recovery' ? 1 : 0;
-const rollbackSourceMatches = scenario === 'rollback-valid-managed';
+const rollbackSourceMatches = new Set([
+	'rollback-valid-managed',
+]).has(scenario);
 const rollbackScenarios = new Set([
 	'rollback-malformed-snapshot',
 	'rollback-snapshot-disabled',
@@ -275,14 +282,20 @@ const cradle = {
 			siteStatus === 'running' &&
 			scenario !== 'target-service-missing' &&
 			(
-				scenario !== 'versioned-nginx-stale-master-recovery' ||
+				!new Set([
+					'versioned-nginx-stale-master-recovery',
+					'versioned-nginx-stale-master-recovery-failure',
+				]).has(scenario) ||
 				(processName === 'nginx' && nginxRuntimeRunning)
 			)
 		),
 		restartSiteService: async (_site, serviceName) => {
 			calls.push(`restart:${serviceName}`);
 			restartCalls += 1;
-			if (scenario === 'versioned-nginx-stale-master-recovery') {
+			if (new Set([
+				'versioned-nginx-stale-master-recovery',
+				'versioned-nginx-stale-master-recovery-failure',
+			]).has(scenario)) {
 				if (serviceName === 'nginx') {
 					nginxRuntimeRunning = true;
 				}
@@ -405,8 +418,15 @@ Object.assign(nginx, {
 		}
 		calls.push('reloadNginx');
 		refreshCalls += 1;
-		if (scenario === 'versioned-nginx-stale-master-recovery') {
+		if (new Set([
+			'versioned-nginx-stale-master-recovery',
+			'versioned-nginx-stale-master-recovery-failure',
+		]).has(scenario) && refreshCalls === 1) {
 			await options?.restartService?.();
+			calls.push('reloadNginx');
+			if (scenario === 'versioned-nginx-stale-master-recovery-failure') {
+				throw new Error('replacement did not accept a reload');
+			}
 			return true;
 		}
 		if (rollbackScenarios.has(scenario) && refreshCalls === 1) {

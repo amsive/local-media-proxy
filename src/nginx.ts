@@ -32,6 +32,8 @@ import {
 import type { NormalizedOrigin } from './types';
 
 const NGINX_COMMAND_TIMEOUT_MS = 10_000;
+const NGINX_RESTART_CONFIRMATION_ATTEMPTS = 5;
+const NGINX_RESTART_CONFIRMATION_INTERVAL_MS = 200;
 
 export interface NginxRuntimeService {
 	bin: { [binaryName: string]: string } | undefined;
@@ -277,6 +279,19 @@ export function isMissingNginxMasterProcess(error: unknown): boolean {
 	return /kill\(\d+,\s*1\) failed \(3:\s*No such process\)/i.test(errorOutput(error));
 }
 
+function isTransientNginxRestartSignalError(error: unknown): boolean {
+	const output = errorOutput(error);
+	return isMissingNginxMasterProcess(error) ||
+		/open\(\) "[^"]*nginx\.pid" failed \(2:\s*No such file or directory\)/i.test(output) ||
+		/invalid PID number .*nginx\.pid/i.test(output);
+}
+
+function wait(milliseconds: number): Promise<void> {
+	return new Promise((resolve) => {
+		setTimeout(resolve, milliseconds);
+	});
+}
+
 export async function refreshNginxService(
 	site: Local.Site,
 	service: NginxRuntimeService,
@@ -321,7 +336,6 @@ export async function refreshNginxService(
 			try {
 				await refreshOptions.restartService();
 				assertCurrent();
-				return true;
 			} catch (restartCause) {
 				assertCurrent();
 				throw new Error(
@@ -329,6 +343,43 @@ export async function refreshNginxService(
 					{ cause: restartCause },
 				);
 			}
+			const restartedSiteRunning = isSiteRunning();
+			assertCurrent();
+			if (!restartedSiteRunning) {
+				throw new Error(
+					'After Local attempted to restart Nginx, the site stopped before the selected service could be verified. Start the site, then retry.',
+				);
+			}
+			let verificationCause: unknown;
+			for (let attempt = 0; attempt < NGINX_RESTART_CONFIRMATION_ATTEMPTS; attempt += 1) {
+				try {
+					await signalNginxReload(context, execFilePromise);
+					assertCurrent();
+					return true;
+				} catch (confirmationError) {
+					assertCurrent();
+					verificationCause = confirmationError;
+					const siteStillRunning = isSiteRunning();
+					assertCurrent();
+					if (!siteStillRunning) {
+						throw new Error(
+							'Nginx restart verification stopped because the Local site stopped. Start the site, then retry.',
+						);
+					}
+					if (
+						!isTransientNginxRestartSignalError(confirmationError) ||
+						attempt === NGINX_RESTART_CONFIRMATION_ATTEMPTS - 1
+					) {
+						break;
+					}
+				}
+				await wait(NGINX_RESTART_CONFIRMATION_INTERVAL_MS);
+				assertCurrent();
+			}
+			throw new Error(
+				"After Local attempted to restart Nginx, the selected service did not accept a reload. Another process may still be using this site's port. Fully quit and reopen Local, start the site, then retry. If it still fails, share Local's main log and the site's Nginx error log from that attempt.",
+				{ cause: verificationCause },
+			);
 		}
 		throw new Error(
 			"Nginx could not gracefully reload this site's validated configuration. Stop and start the site in Local, then retry.",

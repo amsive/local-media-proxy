@@ -758,7 +758,7 @@ test('Nginx validation fences compilation and syntax and rejects inexact compile
 	}
 });
 
-test('Nginx refresh uses one native reload and one exact stale-master recovery without polling', async () => {
+test('Nginx refresh uses one native reload and bounded stale-master recovery without process polling', async () => {
 	const root = await fsPromises.realpath(await fsPromises.mkdtemp(path.join(os.tmpdir(), 'local-media-proxy-nginx-refresh-')));
 	try {
 		const runtimeService = {
@@ -856,15 +856,120 @@ test('Nginx refresh uses one native reload and one exact stale-master recovery w
 		assert.equal(validationRestartCalls, 0);
 
 		let restartCalls = 0;
+		let recoveryReloadAttempts = 0;
 		const recovered = await run({
-			onReload: async () => { throw staleMasterError; },
+			onReload: async () => {
+				recoveryReloadAttempts += 1;
+				if (recoveryReloadAttempts === 1) {
+					throw staleMasterError;
+				}
+			},
 			options: {
 				restartService: async () => { restartCalls += 1; },
 			},
 		});
 		assert.equal(recovered.result, true);
-		assert.deepEqual(recovered.calls.map((args) => args[0]), ['-t', '-s']);
+		assert.deepEqual(recovered.calls.map((args) => args[0]), ['-t', '-s', '-s']);
 		assert.equal(restartCalls, 1);
+
+		let failedReplacementReloadAttempts = 0;
+		await assert.rejects(
+			run({
+				onReload: async () => {
+					failedReplacementReloadAttempts += 1;
+					if (failedReplacementReloadAttempts === 1) {
+						throw staleMasterError;
+					}
+					throw new Error('nginx: [emerg] bind() failed (48: Address already in use)');
+				},
+				options: {
+					restartService: async () => { restartCalls += 1; },
+				},
+			}),
+			/selected service did not accept a reload.*Another process may still be using this site's port/,
+		);
+		assert.equal(failedReplacementReloadAttempts, 2);
+		assert.equal(restartCalls, 2);
+
+		let transientReloadAttempts = 0;
+		let transientRestartCalls = 0;
+		const transientRecovery = await run({
+			onReload: async () => {
+				transientReloadAttempts += 1;
+				if (transientReloadAttempts === 1) {
+					throw staleMasterError;
+				}
+				if (transientReloadAttempts === 2) {
+					throw Object.assign(new Error('reload target is not ready'), {
+						stderr: 'nginx: [error] open() "/runtime/logs/nginx.pid" failed (2: No such file or directory)',
+					});
+				}
+			},
+			options: {
+				restartService: async () => { transientRestartCalls += 1; },
+			},
+		});
+		assert.equal(transientRecovery.result, true);
+		assert.deepEqual(transientRecovery.calls.map((args) => args[0]), ['-t', '-s', '-s', '-s']);
+		assert.equal(transientRestartCalls, 1);
+
+		let postRestartRunningChecks = 0;
+		let stoppedAfterRestartCalls = 0;
+		await assert.rejects(
+			run({
+				isSiteRunning: () => {
+					postRestartRunningChecks += 1;
+					return postRestartRunningChecks < 3;
+				},
+				onReload: async () => { throw staleMasterError; },
+				options: {
+					restartService: async () => { stoppedAfterRestartCalls += 1; },
+				},
+			}),
+			/site stopped before the selected service could be verified/,
+		);
+		assert.equal(stoppedAfterRestartCalls, 1);
+
+		for (const transientStderr of [
+			'nginx: [error] kill(4242, 1) failed (3: No such process)',
+			'nginx: [error] invalid PID number "" in "/runtime/logs/nginx.pid"',
+		]) {
+			let boundedReloadAttempts = 0;
+			let boundedRestartCalls = 0;
+			const boundedRecovery = await run({
+				onReload: async () => {
+					boundedReloadAttempts += 1;
+					if (boundedReloadAttempts <= 2) {
+						throw Object.assign(new Error('reload target is not ready'), {
+							stderr: boundedReloadAttempts === 1 ? staleMasterError.stderr : transientStderr,
+						});
+					}
+				},
+				options: {
+					restartService: async () => { boundedRestartCalls += 1; },
+				},
+			});
+			assert.equal(boundedRecovery.result, true);
+			assert.equal(boundedReloadAttempts, 3);
+			assert.equal(boundedRestartCalls, 1);
+		}
+
+		let exhaustedReloadAttempts = 0;
+		let exhaustedRestartCalls = 0;
+		await assert.rejects(
+			run({
+				onReload: async () => {
+					exhaustedReloadAttempts += 1;
+					throw staleMasterError;
+				},
+				options: {
+					restartService: async () => { exhaustedRestartCalls += 1; },
+				},
+			}),
+			/selected service did not accept a reload/,
+		);
+		assert.equal(exhaustedReloadAttempts, 6);
+		assert.equal(exhaustedRestartCalls, 1);
 
 		let nonStaleRestartCalls = 0;
 		await assert.rejects(
@@ -892,7 +997,7 @@ test('Nginx refresh uses one native reload and one exact stale-master recovery w
 			}),
 			/site stopped before recovery/,
 		);
-		assert.equal(restartCalls, 1);
+		assert.equal(restartCalls, 2);
 
 		await assert.rejects(
 			run({
@@ -906,7 +1011,7 @@ test('Nginx refresh uses one native reload and one exact stale-master recovery w
 			}),
 			/share Local's main log and the site's Nginx error log/,
 		);
-		assert.equal(restartCalls, 2);
+		assert.equal(restartCalls, 3);
 
 		const changedPidAfterReload = await run({
 			onReload: async () => fsPromises.writeFile(
@@ -981,7 +1086,7 @@ test('main compiles, validates, and reloads Nginx using only the targeted site s
 	assert.match(nginxPath, /restartService: recoverStaleNginxMaster \? async \(\) =>/);
 	assert.match(nginxPath, /const processName = 'nginx'/);
 	assert.match(nginxPath, /restartSiteService\(site, processName\)/);
-	assert.match(nginxPath, /hasRunningProcess\(site, processName\)/);
+	assert.doesNotMatch(nginxPath, /hasRunningProcess\(site, processName\)/);
 	assert.equal((nginxPath.match(/restartSiteService\(/g) ?? []).length, 1);
 	assert.doesNotMatch(compileAndReload, /reloadNginxWithFallback|reloadNginxInPlace|compileServiceConfigs/);
 });
