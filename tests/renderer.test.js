@@ -19,6 +19,7 @@ const {
 	PASSIVE_STATE_REFRESH_MAX_ATTEMPTS,
 	connectionTestControlState,
 	draftOriginKey,
+	enabledIntentToggleState,
 	handoffFocusAfterRemovedControl,
 	isIpcDeadlineError,
 	originCandidateLabel,
@@ -67,6 +68,39 @@ test('requests bounded passive refreshes for enabled repair and disabled cleanup
 		lifecycleReady: false,
 		needsAttention: true,
 	})), false);
+});
+
+test('keeps toggle direction aligned with enabled intent and cleanup drift', () => {
+	assert.deepEqual(enabledIntentToggleState(createSiteState({
+		applied: true,
+		canEnable: false,
+		cleanupSupported: true,
+		enabled: false,
+	})), {
+		allowed: true,
+		nextEnabled: false,
+		repairingCleanup: true,
+	});
+	assert.deepEqual(enabledIntentToggleState(createSiteState({
+		applied: true,
+		canEnable: false,
+		cleanupSupported: true,
+		enabled: true,
+	})), {
+		allowed: true,
+		nextEnabled: false,
+		repairingCleanup: false,
+	});
+	assert.deepEqual(enabledIntentToggleState(createSiteState({
+		applied: false,
+		canEnable: false,
+		cleanupSupported: true,
+		enabled: false,
+	})), {
+		allowed: false,
+		nextEnabled: true,
+		repairingCleanup: false,
+	});
 });
 
 test('recognizes when an Apache draft selects an HTTPS origin', () => {
@@ -1226,6 +1260,102 @@ test('auto-saves the Overview switch through the guarded enabled-intent IPC', as
 	assert.equal(toggle.props['aria-checked'], true);
 });
 
+test('repairs Overview cleanup drift without enabling and permits invalid enabled cleanup', async () => {
+	for (const scenario of [
+		{
+			id: 'site-disabled-drift',
+			state: createSiteState({
+				applied: true,
+				canEnable: false,
+				cleanupSupported: true,
+				enabled: false,
+				needsAttention: true,
+				reason: 'Managed proxy configuration remains.',
+			}),
+			guidance: /Off switch to retry cleanup.*enabled intent off/i,
+		},
+		{
+			id: 'site-invalid-enabled',
+			state: createSiteState({
+				applied: true,
+				canEnable: false,
+				cleanupSupported: true,
+				enabled: true,
+				enableUnavailableReason: 'The connection profile is incomplete.',
+				needsAttention: true,
+			}),
+			guidance: /Turn this off to remove the managed proxy configuration/i,
+		},
+	]) {
+		const calls = [];
+		const registration = createRendererRegistration(async (channel, ...args) => {
+			calls.push([channel, ...args]);
+			if (channel === IPC_CHANNELS.getSiteState) {
+				return scenario.state;
+			}
+			if (channel === IPC_CHANNELS.setEnabled) {
+				return createSiteState({
+					applied: false,
+					canEnable: false,
+					cleanupSupported: true,
+					enabled: false,
+					needsAttention: false,
+				});
+			}
+			throw new Error(`Unexpected channel: ${channel}`);
+		});
+		const element = registration.contentHooks.get('SiteInfoOverview_TableList')(
+			{ id: scenario.id },
+			'running',
+		);
+		const harness = createHookHarness(registration.React);
+
+		harness.render(element.type, element.props);
+		await flushPromises();
+		let tree = harness.render(element.type, element.props);
+		let toggle = findElement(tree, (node) => node.props?.role === 'switch');
+		assert.equal(toggle.props.disabled, false);
+		findElement(tree, (node) => (
+			node.props?.className === 'LocalMediaProxy__OverviewTooltipAnchor'
+		)).props.onFocus();
+		tree = harness.render(element.type, element.props);
+		assert.match(elementText(findElement(tree, (node) => node.props?.role === 'tooltip')), scenario.guidance);
+		toggle = findElement(tree, (node) => node.props?.role === 'switch');
+		toggle.props.onClick();
+		await flushPromises();
+		tree = harness.render(element.type, element.props);
+
+		assert.deepEqual(calls.filter(([channel]) => channel === IPC_CHANNELS.setEnabled), [
+			[IPC_CHANNELS.setEnabled, scenario.id, 'nginx', false],
+		]);
+		toggle = findElement(tree, (node) => node.props?.role === 'switch');
+		assert.equal(toggle.props['aria-checked'], false);
+		assert.equal(toggle.props.disabled, true);
+		assert.match(elementText(findElement(tree, (node) => node.props?.role === 'status')), /Inactive: Disabled and not applied/i);
+	}
+
+	const calls = [];
+	const registration = createRendererRegistration(async (channel, ...args) => {
+		calls.push([channel, ...args]);
+		return createSiteState({
+			applied: false,
+			canEnable: false,
+			cleanupSupported: true,
+			enabled: false,
+		});
+	});
+	const element = registration.contentHooks.get('SiteInfoOverview_TableList')(
+		{ id: 'site-clean-invalid' },
+		'running',
+	);
+	const harness = createHookHarness(registration.React);
+	harness.render(element.type, element.props);
+	await flushPromises();
+	const tree = harness.render(element.type, element.props);
+	assert.equal(findElement(tree, (node) => node.props?.role === 'switch').props.disabled, true);
+	assert.equal(calls.some(([channel]) => channel === IPC_CHANNELS.setEnabled), false);
+});
+
 test('fails closed immediately when an Overview mutation reaches its deadline', async () => {
 	const timers = installManualTimers();
 	const mutation = deferred();
@@ -1340,7 +1470,7 @@ test('clears Overview progress on backend rejection while bounded recovery resto
 	}
 });
 
-test('keeps invalid-profile Overview guidance available and gates both switch directions', async () => {
+test('keeps invalid-profile Overview guidance available while allowing cleanup', async () => {
 	const blockedState = createSiteState({
 		applied: false,
 		canEnable: false,
@@ -1383,7 +1513,7 @@ test('keeps invalid-profile Overview guidance available and gates both switch di
 	cleanupHarness.render(cleanupElement.type, cleanupElement.props);
 	await flushPromises();
 	tree = cleanupHarness.render(cleanupElement.type, cleanupElement.props);
-	assert.equal(findElement(tree, (node) => node.props?.role === 'switch').props.disabled, true);
+	assert.equal(findElement(tree, (node) => node.props?.role === 'switch').props.disabled, false);
 	findElement(tree, (node) => node.props?.className === 'LocalMediaProxy__OverviewTooltipAnchor').props.onFocus();
 	tree = cleanupHarness.render(cleanupElement.type, cleanupElement.props);
 	assert.match(
@@ -1701,7 +1831,7 @@ test('tracks mutation initiators and wires restored focus targets through refs',
 	);
 	assert.match(
 		rendererSource,
-		/onClick: \(event\?: \{ currentTarget\?: FocusTargetLike \}\) => void toggleEnabled\(\s*!enabled,\s*event\?\.currentTarget \?\? enableSwitchRef\.current,\s*\),\s*ref: enableSwitchRef/,
+		/onClick: \(event\?: \{ currentTarget\?: FocusTargetLike \}\) => void toggleEnabled\(\s*enabledToggleState\?\.nextEnabled \?\? !enabled,\s*event\?\.currentTarget \?\? enableSwitchRef\.current,\s*\),\s*ref: enableSwitchRef/,
 	);
 	assert.match(
 		rendererSource,
@@ -1986,6 +2116,105 @@ test('auto-saves the Tools switch without round-tripping connection profile fiel
 	assert.ok(toggleFeedback.props.ref && Object.hasOwn(toggleFeedback.props.ref, 'current'));
 });
 
+test('repairs Tools cleanup drift without enabling and permits invalid enabled cleanup', async () => {
+	const discovery = {
+		canAutoPopulate: false,
+		environments: [],
+		message: 'Manual setup',
+		provider: 'none',
+	};
+	for (const scenario of [
+		{
+			id: 'site-disabled-drift',
+			state: createSiteState({
+				applied: true,
+				canEnable: false,
+				cleanupSupported: true,
+				enabled: false,
+				needsAttention: true,
+				reason: 'Managed proxy configuration remains.',
+			}),
+			guidance: /Off switch to retry cleanup without enabling/i,
+		},
+		{
+			id: 'site-invalid-enabled',
+			state: createSiteState({
+				applied: true,
+				canEnable: false,
+				cleanupSupported: true,
+				enabled: true,
+				enableUnavailableReason: 'The connection profile is incomplete.',
+				needsAttention: true,
+			}),
+			guidance: /Turn this off to remove the managed proxy configuration/i,
+		},
+	]) {
+		const calls = [];
+		const registration = createRendererRegistration(async (channel, ...args) => {
+			calls.push([channel, ...args]);
+			if (channel === IPC_CHANNELS.getSiteState) {
+				return scenario.state;
+			}
+			if (channel === IPC_CHANNELS.getOriginDiscoveryOptions) {
+				return discovery;
+			}
+			if (channel === IPC_CHANNELS.setEnabled) {
+				return createSiteState({
+					applied: false,
+					canEnable: false,
+					cleanupSupported: true,
+					enabled: false,
+					needsAttention: false,
+				});
+			}
+			throw new Error(`Unexpected channel: ${channel}`);
+		});
+		const element = registration.filters.get('siteInfoToolsItem')([])[0]
+			.render({ site: { id: scenario.id, name: 'Example site' } });
+		const harness = createHookHarness(registration.React);
+
+		harness.render(element.type, element.props);
+		await flushPromises();
+		let tree = harness.render(element.type, element.props);
+		let toggle = findElement(tree, (node) => node.props?.role === 'switch');
+		assert.equal(toggle.props.disabled, false);
+		assert.match(elementText(tree), scenario.guidance);
+		toggle.props.onClick();
+		await flushPromises();
+		tree = harness.render(element.type, element.props);
+
+		assert.deepEqual(calls.filter(([channel]) => channel === IPC_CHANNELS.setEnabled), [
+			[IPC_CHANNELS.setEnabled, scenario.id, 'nginx', false],
+		]);
+		toggle = findElement(tree, (node) => node.props?.role === 'switch');
+		assert.equal(toggle.props['aria-checked'], false);
+		assert.equal(toggle.props.disabled, true);
+		assert.match(elementText(tree), /Media proxy disabled.*managed web-server configuration was removed/i);
+	}
+
+	const calls = [];
+	const registration = createRendererRegistration(async (channel, ...args) => {
+		calls.push([channel, ...args]);
+		if (channel === IPC_CHANNELS.getOriginDiscoveryOptions) {
+			return discovery;
+		}
+		return createSiteState({
+			applied: false,
+			canEnable: false,
+			cleanupSupported: true,
+			enabled: false,
+		});
+	});
+	const element = registration.filters.get('siteInfoToolsItem')([])[0]
+		.render({ site: { id: 'site-clean-invalid', name: 'Example site' } });
+	const harness = createHookHarness(registration.React);
+	harness.render(element.type, element.props);
+	await flushPromises();
+	const tree = harness.render(element.type, element.props);
+	assert.equal(findElement(tree, (node) => node.props?.role === 'switch').props.disabled, true);
+	assert.equal(calls.some(([channel]) => channel === IPC_CHANNELS.setEnabled), false);
+});
+
 test('fails closed immediately when a Tools toggle reaches its deadline', async () => {
 	const timers = installManualTimers();
 	const mutation = deferred();
@@ -2103,7 +2332,7 @@ test('clears Tools progress on backend rejection and stays unavailable when reco
 	}
 });
 
-test('blocks Tools toggles for dirty or invalid profiles and guards full profile saves by server kind', async () => {
+test('blocks Tools toggles for dirty or clean invalid profiles and guards full profile saves by server kind', async () => {
 	const calls = [];
 	const discovery = {
 		canAutoPopulate: false,
@@ -2208,7 +2437,7 @@ test('blocks Tools toggles for dirty or invalid profiles and guards full profile
 	assert.match(elementText(tree), /Save a valid profile first/);
 	tree = await renderInvalid(true);
 	toggle = findElement(tree, (node) => node.props?.role === 'switch');
-	assert.equal(toggle.props.disabled, true);
+	assert.equal(toggle.props.disabled, false);
 	assert.match(elementText(tree), /enabled intent is still on.*Save a valid profile first/i);
 
 	tree = await renderInvalid(false, true);
@@ -2763,12 +2992,12 @@ test('renders a handed-off Site URL in both server-switch directions without inv
 		} else {
 			assert.equal(originIpInput.props.value, '');
 			assert.match(elementText(tree), /Remote IP address must be a valid IPv4 or IPv6 address/);
-			assert.equal(findElement(tree, (node) => node.props?.role === 'switch').props.disabled, true);
+			assert.equal(findElement(tree, (node) => node.props?.role === 'switch').props.disabled, false);
 		}
 	}
 });
 
-test('gates Tools controls when the current Apache profile or service cannot enable', async () => {
+test('gates Apache enable and save while preserving available cleanup', async () => {
 	const discovery = {
 		canAutoPopulate: false,
 		environments: [],
@@ -2821,7 +3050,7 @@ test('gates Tools controls when the current Apache profile or service cannot ena
 	]) {
 		const rendered = await renderPanel(state);
 		const panelControls = controls(rendered.tree);
-		assert.equal(panelControls.switch.props.disabled, true);
+		assert.equal(panelControls.switch.props.disabled, false);
 		assert.equal(panelControls.save.props.disabled, true);
 		assert.match(elementText(rendered.tree), /enabled intent is still on/);
 	}

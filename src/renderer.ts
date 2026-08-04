@@ -266,6 +266,26 @@ export function siteStateNeedsPassiveRefresh(siteState: SiteState): boolean {
 		));
 }
 
+export interface EnabledIntentToggleState {
+	allowed: boolean;
+	nextEnabled: boolean;
+	repairingCleanup: boolean;
+}
+
+export function enabledIntentToggleState(siteState: SiteState): EnabledIntentToggleState {
+	const persistedEnabled = siteState.settings.enabled;
+	const repairingCleanup = !persistedEnabled && siteState.applied;
+	return {
+		allowed: persistedEnabled
+			? siteState.cleanupSupported
+			: repairingCleanup
+				? siteState.cleanupSupported
+				: siteState.canEnable,
+		nextEnabled: repairingCleanup ? false : !persistedEnabled,
+		repairingCleanup,
+	};
+}
+
 export function overviewProxyStatusPresentation(
 	siteState: SiteState | null,
 ): OverviewProxyStatusPresentation {
@@ -355,8 +375,15 @@ export function overviewProxyStatusGuidance(
 	}
 
 	const profileLabel = serverProfileLabel(siteState.serverKind);
+	const toggleState = enabledIntentToggleState(siteState);
+	if (toggleState.repairingCleanup && siteState.cleanupSupported) {
+		return `${presentation.detail} Activate the Off switch to retry cleanup while keeping the saved enabled intent off.`;
+	}
 	if (siteState.settings.enabled && !siteState.canEnable) {
-		return `${presentation.detail} The enabled intent is still on, but the ${profileLabel} connection profile is incomplete. ${siteState.enableUnavailableReason || `Configure and save a valid ${profileLabel} connection profile in Tools → Media Proxy before using this control.`}`;
+		const cleanupGuidance = siteState.cleanupSupported
+			? ' Turn this off to remove the managed proxy configuration while preserving the saved connection profile.'
+			: '';
+		return `${presentation.detail} The enabled intent is still on, but the ${profileLabel} connection profile is incomplete. ${siteState.enableUnavailableReason || `Configure and save a valid ${profileLabel} connection profile in Tools → Media Proxy before using this control.`}${cleanupGuidance}`;
 	}
 	if (siteState.needsAttention) {
 		return `${presentation.detail} Open Tools → Media Proxy to review the ${profileLabel} profile and retry.`;
@@ -662,9 +689,11 @@ export default function renderer(context: RendererContext): void {
 			}
 			: overviewProxyStatusPresentation(siteState);
 		const persistedEnabled = siteState?.settings.enabled === true;
-		const canToggle = siteState?.canEnable === true && (
-			!persistedEnabled || siteState.cleanupSupported
-		);
+		const enabledToggleState = siteState
+			? enabledIntentToggleState(siteState)
+			: null;
+		const canToggle = siteState?.settingsReadOnly !== true &&
+			enabledToggleState?.allowed === true;
 		const toggleDisabled = busyForCurrentIdentity || !canToggle;
 		const labelId = `${ADDON_ID}-overview-label-${site.id}`;
 		const tooltipId = `${ADDON_ID}-overview-tooltip-${site.id}`;
@@ -744,7 +773,7 @@ export default function renderer(context: RendererContext): void {
 						IPC_CHANNELS.setEnabled,
 						site.id,
 						siteState.serverKind,
-						!persistedEnabled,
+						enabledIntentToggleState(siteState).nextEnabled,
 					) as Promise<SiteState>,
 					IPC_MUTATION_DEADLINE_MS,
 					TOGGLE_TIMEOUT_MESSAGE,
@@ -1557,6 +1586,9 @@ export default function renderer(context: RendererContext): void {
 		const requiresOriginIp = siteState?.requiresOriginIp === true;
 		const isApplied = Boolean(siteState?.applied);
 		const persistedEnabled = Boolean(siteState?.settings.enabled);
+		const enabledToggleState = siteState
+			? enabledIntentToggleState(siteState)
+			: null;
 		const {
 			blocksSave: capabilityBlocksSave,
 			blocksTest: capabilityBlocksTest,
@@ -1600,14 +1632,16 @@ export default function renderer(context: RendererContext): void {
 		);
 		const canSave = !settingsReadOnly &&
 			(draftDirty || canRepairUnchangedProfile) && actionAvailability.canSave;
-		const canToggleEnabled = !settingsReadOnly && siteState?.canEnable === true && (
-			!persistedEnabled || cleanupSupported
-		);
+		const canToggleEnabled = !settingsReadOnly && enabledToggleState?.allowed === true;
 		const toggleBlockedByDraft = draftDirty;
 		const toggleHelp = toggleBlockedByDraft
 			? 'Save connection changes before changing proxy status.'
+			: enabledToggleState?.repairingCleanup && cleanupSupported
+				? 'The saved enabled intent is off, but managed proxy configuration remains. Activate this Off switch to retry cleanup without enabling the proxy.'
 			: siteState?.canEnable !== true
-				? persistedEnabled
+				? persistedEnabled && cleanupSupported
+					? `The enabled intent is still on, but this web server profile is incomplete. ${siteState?.enableUnavailableReason || 'Configure and save a valid connection profile before enabling again.'} Turn this off to remove the managed proxy configuration while preserving the saved connection profile.`
+					: persistedEnabled
 					? `The enabled intent is still on, but this web server profile is incomplete. ${siteState?.enableUnavailableReason || 'Configure and save a valid connection profile before using this switch.'}`
 					: siteState?.enableUnavailableReason || 'Configure and save a valid connection profile for the current web server before enabling.'
 				: 'This switch is saved and applied immediately. Connection profile changes still use Save & apply.';
@@ -1713,7 +1747,7 @@ export default function renderer(context: RendererContext): void {
 								className: `LocalMediaProxy__Switch${enabled ? ' LocalMediaProxy__Switch--Checked' : ''}`,
 								disabled: Boolean(busy) || toggleBlockedByDraft || !canToggleEnabled,
 								onClick: (event?: { currentTarget?: FocusTargetLike }) => void toggleEnabled(
-									!enabled,
+									enabledToggleState?.nextEnabled ?? !enabled,
 									event?.currentTarget ?? enableSwitchRef.current,
 								),
 								ref: enableSwitchRef,
