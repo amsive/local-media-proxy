@@ -31,12 +31,17 @@ const supportedScenarios = new Set([
 	'same-value-halted-repair',
 	'service-input-change',
 	'global-enable-matching',
+	'global-enable-configured-disabled-halted',
+	'global-enable-configured-disabled-running',
 	'global-enable-pristine-disabled-nginx',
 	'site-start-matching',
+	'site-start-configured-disabled-halted',
 	'site-added-pristine-disabled-nginx',
 	'site-start-pristine-disabled-nginx',
+	'startup-configured-disabled-halted',
 	'startup-configured-disabled-nginx',
 	'startup-compiled-drift',
+	'startup-enabled-halted-drift',
 	'startup-noop',
 	'startup-pristine-disabled-apache',
 	'startup-pristine-disabled-nginx',
@@ -65,12 +70,22 @@ const pristineDisabledScenarios = new Set([
 ]);
 
 const initiallyEnabled = !pristineDisabledScenarios.has(scenario) && !new Set([
+	'global-enable-configured-disabled-halted',
+	'global-enable-configured-disabled-running',
 	'rollback-snapshot-enabled',
+	'site-start-configured-disabled-halted',
+	'startup-configured-disabled-halted',
 	'startup-configured-disabled-nginx',
 	'startup-pristine-disabled-apache',
 	'supported-service-unavailable-disabled',
 ]).has(scenario);
-const siteStatus = scenario === 'same-value-halted-repair'
+const siteStatus = new Set([
+	'global-enable-configured-disabled-halted',
+	'same-value-halted-repair',
+	'site-start-configured-disabled-halted',
+	'startup-configured-disabled-halted',
+	'startup-enabled-halted-drift',
+]).has(scenario)
 	? 'halted'
 	: scenario === 'corrupt-passive-transitioning'
 		? 'starting'
@@ -455,9 +470,11 @@ async function flushAsyncWork() {
 			await flushAsyncWork();
 		} else if (
 			scenario === 'startup-noop' ||
+			scenario === 'startup-configured-disabled-halted' ||
 			scenario === 'startup-configured-disabled-nginx' ||
 			scenario === 'startup-pristine-disabled-apache' ||
 			scenario === 'startup-compiled-drift' ||
+			scenario === 'startup-enabled-halted-drift' ||
 			scenario === 'reconciliation-interruption-retry' ||
 			scenario === 'corrupt-service-unavailable' ||
 			scenario === 'corrupt-cleanup-retry' ||
@@ -465,7 +482,9 @@ async function flushAsyncWork() {
 			scenario === 'corrupt-profile-envelope'
 		) {
 			await runNextTimer();
-			await runNextTimer();
+			if (timers.size > 0) {
+				await runNextTimer();
+			}
 			await flushAsyncWork();
 			if (scenario === 'corrupt-cleanup-retry') {
 				retryTimersAfterFailure = timers.size;
@@ -479,21 +498,30 @@ async function flushAsyncWork() {
 				await runNextTimer();
 				await flushAsyncWork();
 			}
-		} else if (scenario === 'site-start-matching') {
+		} else if (
+			scenario === 'site-start-matching' ||
+			scenario === 'site-start-configured-disabled-halted'
+		) {
 			const [siteStarted] = hooks.get('siteStarted') || [];
 			assert.equal(typeof siteStarted, 'function');
 			siteStarted(site.id);
 			await runNextTimer();
 			await runNextTimer();
 			await flushAsyncWork();
-		} else if (scenario === 'global-enable-matching') {
+		} else if (
+			scenario === 'global-enable-matching' ||
+			scenario === 'global-enable-configured-disabled-halted' ||
+			scenario === 'global-enable-configured-disabled-running'
+		) {
 			ipcMain.emit(
 				'addonInstallerService:enable',
 				{},
 				{ npmPackageName: 'local-media-proxy' },
 			);
 			await runNextTimer();
-			await runNextTimer();
+			if (timers.size > 0) {
+				await runNextTimer();
+			}
 			await flushAsyncWork();
 		} else if (scenario === 'same-value-halted-repair') {
 			state = await ipcMain.handlers.get(IPC_CHANNELS.setEnabled)(

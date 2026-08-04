@@ -389,6 +389,23 @@ export function storedSettingsRequireBackgroundReconciliation(value: unknown): b
 	}
 }
 
+export function storedSettingsHaveValidDisabledIntent(value: unknown): boolean {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) {
+		return false;
+	}
+	if ((value as { enabled?: unknown }).enabled !== false) {
+		return false;
+	}
+
+	try {
+		return !normalizeStoredSettingsEnvelope(value).enabled;
+	} catch {
+		// Unknown schemas and malformed envelopes must continue through fail-closed
+		// reconciliation even when they contain an enabled-looking false value.
+		return false;
+	}
+}
+
 export function preserveStoredBlankCurrentProfile(
 	envelope: StoredSettingsEnvelope,
 	storedValue: unknown,

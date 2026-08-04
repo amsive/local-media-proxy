@@ -21,6 +21,7 @@ const {
 	setStoredSettingsLastServer,
 	storedSettingsEnvelopeNeedsMigration,
 	storedSettingsForServer,
+	storedSettingsHaveValidDisabledIntent,
 	storedSettingsRequireBackgroundReconciliation,
 } = require('../lib/settings');
 const { validateAndNormalizeOrigin } = require('../lib/validation');
@@ -435,6 +436,48 @@ test('schedules background reconciliation only for meaningful or unsafe saved st
 		schemaVersion: 3,
 	}), true);
 	assert.equal(storedSettingsRequireBackgroundReconciliation('unknown stored value'), true);
+});
+
+test('recognizes only parseable stored envelopes as having valid disabled intent', () => {
+	assert.equal(storedSettingsHaveValidDisabledIntent({
+		enabled: false,
+		originIp: '192.0.2.44',
+		productionUrl: 'https://legacy.example.com',
+	}), true);
+	assert.equal(storedSettingsHaveValidDisabledIntent({
+		enabled: false,
+		profiles: {
+			apache: {},
+			nginx: { siteUrl: 'https://media.example.com' },
+		},
+		schemaVersion: 2,
+	}), true);
+	assert.equal(storedSettingsHaveValidDisabledIntent({
+		enabled: true,
+		profiles: { apache: {}, nginx: {} },
+		schemaVersion: 2,
+	}), false);
+	assert.equal(storedSettingsHaveValidDisabledIntent({
+		profiles: { apache: {}, nginx: {} },
+		schemaVersion: 2,
+	}), false);
+	assert.equal(storedSettingsHaveValidDisabledIntent({
+		enabled: 'false',
+		profiles: { apache: {}, nginx: {} },
+		schemaVersion: 2,
+	}), false);
+	assert.equal(storedSettingsHaveValidDisabledIntent({
+		enabled: false,
+		profiles: null,
+		schemaVersion: 2,
+	}), false);
+	assert.equal(storedSettingsHaveValidDisabledIntent({
+		enabled: false,
+		profiles: {},
+		schemaVersion: 3,
+	}), false);
+	assert.equal(storedSettingsHaveValidDisabledIntent(null), false);
+	assert.equal(storedSettingsHaveValidDisabledIntent('unknown stored value'), false);
 });
 
 test('does not overwrite an intentionally cleared or otherwise non-pristine profile', () => {

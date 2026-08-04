@@ -210,6 +210,25 @@ test('startup and Local lifecycle reconciliation wait for stable ready sites wit
 			scheduler.indexOf('siteProcessManager.getSiteStatus(site)'),
 		'passive reconciliation must reject pristine settings before reading service lifecycle or paths',
 	);
+	assertInOrder(
+		scheduler,
+		[
+			'siteStatus = siteProcessManager.getSiteStatus(site)',
+			'shouldSkipHaltedDisabledReconciliation(site, siteStatus, pending.options)',
+			'detectSiteServer(site)',
+		],
+		'passive reconciliation must skip stopped disabled profiles before resolving server paths',
+	);
+	const siteStartedHook = sourceSection(
+		"HooksMain.addAction('siteStarted'",
+		"HooksMain.addAction('siteAdded'",
+	);
+	assert.doesNotMatch(siteStartedHook, /skipHaltedDisabledProfile/);
+	const globalEnable = sourceSection(
+		'const restoreAfterGlobalEnable',
+		'const listenerRegistry',
+	);
+	assert.match(globalEnable, /skipHaltedDisabledProfile: true/);
 	assert.match(reconcile, /const managedFilesMatch = await serverManagedFilesMatch\(/);
 	assert.match(reconcile, /compiledConfigMatches = await serverCompiledConfigMatches\(/);
 	assert.match(
@@ -649,6 +668,53 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 	assert.equal(configuredDisabledNginx.compiledMatchChecks, 1);
 	assert.equal(configuredDisabledNginx.pendingTimers, 0);
 	assert.deepEqual(configuredDisabledNginx.updates, []);
+
+	for (const scenario of [
+		'startup-configured-disabled-halted',
+		'global-enable-configured-disabled-halted',
+	]) {
+		const passiveHaltedDisabled = runScenario(scenario);
+		assert.deepEqual(passiveHaltedDisabled.calls, []);
+		assert.equal(passiveHaltedDisabled.compiledMatchChecks, 0);
+		assert.equal(passiveHaltedDisabled.filesystemReadyChecks, 0);
+		assert.equal(passiveHaltedDisabled.managedArtifactChecks, 0);
+		assert.equal(passiveHaltedDisabled.serviceLookupCalls, 0);
+		assert.equal(passiveHaltedDisabled.pendingTimers, 0);
+		assert.equal(passiveHaltedDisabled.restartCalls, 0);
+		assert.deepEqual(passiveHaltedDisabled.updates, []);
+		assert.deepEqual(
+			passiveHaltedDisabled.finalStoredSettings,
+			passiveHaltedDisabled.storedSettingsBeforeReconciliation,
+		);
+	}
+
+	const globalEnableRunningDisabled = runScenario('global-enable-configured-disabled-running');
+	assert.deepEqual(globalEnableRunningDisabled.calls, [
+		'captureAllManagedFiles',
+		'removeAllManagedFiles',
+		'compileNginx:clean',
+		'restart:nginx-1.26.1+3',
+	]);
+	assert.equal(globalEnableRunningDisabled.pendingTimers, 0);
+	assert.equal(globalEnableRunningDisabled.restartCalls, 1);
+
+	const siteStartedHaltedDisabled = runScenario('site-start-configured-disabled-halted');
+	assert.deepEqual(siteStartedHaltedDisabled.calls, [
+		'captureAllManagedFiles',
+		'removeAllManagedFiles',
+		'compileNginx:clean',
+	]);
+	assert.equal(siteStartedHaltedDisabled.pendingTimers, 0);
+	assert.equal(siteStartedHaltedDisabled.restartCalls, 0);
+
+	const startupEnabledHalted = runScenario('startup-enabled-halted-drift');
+	assert.deepEqual(startupEnabledHalted.calls, [
+		'captureAllManagedFiles',
+		'applyServerManagedFiles',
+		'compileNginx:managed',
+	]);
+	assert.equal(startupEnabledHalted.pendingTimers, 0);
+	assert.equal(startupEnabledHalted.restartCalls, 0);
 
 	const startupRepair = runScenario('startup-compiled-drift');
 	assert.deepEqual(startupRepair.calls, [

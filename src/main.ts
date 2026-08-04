@@ -78,6 +78,7 @@ import {
 	setStoredSettingsLastServer,
 	storedSettingsEnvelopeNeedsMigration,
 	storedSettingsForServer,
+	storedSettingsHaveValidDisabledIntent,
 	storedSettingsRequireBackgroundReconciliation,
 } from './settings';
 import type {
@@ -103,6 +104,7 @@ type SiteWithSettings = Local.Site & {
 interface ReconcileOptions {
 	configuredOnly?: boolean;
 	refreshMatchingEnabledRuntime?: boolean;
+	skipHaltedDisabledProfile?: boolean;
 }
 
 interface DeferredReconciliation {
@@ -173,6 +175,18 @@ function failClosedSettingsForInvalidEnvelope(
 		...fallback,
 		enabled: raw?.enabled === true,
 	};
+}
+
+function shouldSkipHaltedDisabledReconciliation(
+	site: Local.Site,
+	siteStatus: string,
+	options: ReconcileOptions,
+): boolean {
+	return options.skipHaltedDisabledProfile === true &&
+		siteStatus === 'halted' &&
+		storedSettingsHaveValidDisabledIntent(
+			(site as SiteWithSettings)[SITE_SETTINGS_KEY],
+		);
 }
 
 async function withSiteLock<T>(siteId: string, operation: () => Promise<T>): Promise<T> {
@@ -1673,8 +1687,12 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				const siteStatusAllowsReconciliation = (candidate: Local.Site): boolean => (
 					shouldReconcileManagedFiles(siteProcessManager.getSiteStatus(candidate))
 				);
-				if (!siteStatusAllowsReconciliation(site)) {
+				const initialSiteStatus = siteProcessManager.getSiteStatus(site);
+				if (!shouldReconcileManagedFiles(initialSiteStatus)) {
 					return false;
+				}
+				if (shouldSkipHaltedDisabledReconciliation(site, initialSiteStatus, options)) {
+					return true;
 				}
 
 				const detectedServer = detectSiteServer(site);
@@ -2087,6 +2105,10 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					existing.options.refreshMatchingEnabledRuntime ||
 					options.refreshMatchingEnabledRuntime,
 				),
+				skipHaltedDisabledProfile: Boolean(
+					existing.options.skipHaltedDisabledProfile &&
+					options.skipHaltedDisabledProfile,
+				),
 			};
 			existing.revision += 1;
 			return;
@@ -2148,6 +2170,10 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				return;
 			}
 			if (shouldCancelDeferredReconciliation(siteStatus)) {
+				cancelDeferredReconciliation(siteId);
+				return;
+			}
+			if (shouldSkipHaltedDisabledReconciliation(site, siteStatus, pending.options)) {
 				cancelDeferredReconciliation(siteId);
 				return;
 			}
@@ -2726,6 +2752,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			scheduleDeferredReconciliation(site.id, {
 				configuredOnly: true,
 				refreshMatchingEnabledRuntime: true,
+				skipHaltedDisabledProfile: true,
 			});
 		}
 	};
@@ -3000,6 +3027,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		scheduleDeferredReconciliation(site.id, {
 			configuredOnly: true,
 			refreshMatchingEnabledRuntime: false,
+			skipHaltedDisabledProfile: true,
 		});
 	}
 }
