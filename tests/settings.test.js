@@ -8,10 +8,12 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
+	carrySiteUrlToPristineServerProfile,
 	fallbackStoredSettings,
 	normalizeStoredSettings,
 	normalizeStoredSettingsEnvelope,
 	originPairMatches,
+	preserveStoredBlankCurrentProfile,
 	replaceStoredSettingsForServer,
 	serializeStoredSettings,
 	serializeStoredSettingsEnvelope,
@@ -19,6 +21,8 @@ const {
 	setStoredSettingsLastServer,
 	storedSettingsEnvelopeNeedsMigration,
 	storedSettingsForServer,
+	storedSettingsHaveValidDisabledIntent,
+	storedSettingsRequireBackgroundReconciliation,
 } = require('../lib/settings');
 const { validateAndNormalizeOrigin } = require('../lib/validation');
 
@@ -221,6 +225,378 @@ test('normalizes partial v2 profiles and fails closed on unknown schema versions
 	assert.equal(storedSettingsEnvelopeNeedsMigration({ profiles: {}, schemaVersion: 3 }), true);
 	assert.equal(storedSettingsEnvelopeNeedsMigration({}), false);
 	assert.equal(storedSettingsEnvelopeNeedsMigration({ unrelated: true }), false);
+});
+
+test('carries only a canonical Site URL from Nginx into a pristine Apache profile', () => {
+	const envelope = normalizeStoredSettingsEnvelope({
+		enabled: true,
+		lastServerKind: 'nginx',
+		profiles: {
+			apache: {},
+			nginx: {
+				certificate: {
+					fingerprint256: 'AA:BB',
+					issuer: 'Example issuer',
+					subject: 'Example subject',
+					validTo: '2027-01-01T00:00:00.000Z',
+				},
+				lastOriginStatus: 200,
+				lastVerifiedAt: '2026-08-01T12:00:00.000Z',
+				originEnvironment: 'production',
+				originIp: '192.0.2.20',
+				originSource: 'wpengine',
+				originTlsHostname: 'origin.wpengine.com',
+				originWpEngineInstallId: 'install-id',
+				originWpEngineSiteId: 'site-id',
+				resolvedAt: '2026-08-01T11:00:00.000Z',
+				siteUrl: 'HTTPS://MEDIA.EXAMPLE.COM:443/',
+			},
+		},
+		schemaVersion: 2,
+	});
+	const carried = carrySiteUrlToPristineServerProfile(envelope, 'apache');
+
+	assert.notStrictEqual(carried, envelope);
+	assert.equal(carried.enabled, true);
+	assert.equal(carried.lastServerKind, 'nginx');
+	assert.deepEqual(carried.profiles.nginx, envelope.profiles.nginx);
+	assert.deepEqual(carried.profiles.apache, {
+		...envelope.profiles.apache,
+		siteUrl: 'https://media.example.com',
+	});
+	assert.equal(
+		validateAndNormalizeOrigin(
+			storedSettingsForServer(carried, 'apache'),
+			{ requiresOriginIp: false },
+		).siteUrl,
+		'https://media.example.com',
+	);
+});
+
+test('carries only Site URL from Apache into pristine Nginx and still requires its own IP', () => {
+	const envelope = normalizeStoredSettingsEnvelope({
+		enabled: true,
+		lastServerKind: 'apache',
+		profiles: {
+			apache: {
+				certificate: {
+					fingerprint256: 'CC:DD',
+					issuer: 'Example issuer',
+					subject: 'Example subject',
+					validTo: '2027-01-01T00:00:00.000Z',
+				},
+				lastOriginStatus: 206,
+				lastVerifiedAt: '2026-08-02T12:00:00.000Z',
+				originIp: '',
+				siteUrl: 'https://files.example.com/',
+			},
+			nginx: {},
+		},
+		schemaVersion: 2,
+	});
+	const carried = carrySiteUrlToPristineServerProfile(envelope, 'nginx');
+
+	assert.deepEqual(carried.profiles.apache, envelope.profiles.apache);
+	assert.deepEqual(carried.profiles.nginx, {
+		...envelope.profiles.nginx,
+		siteUrl: 'https://files.example.com',
+	});
+	assert.throws(
+		() => validateAndNormalizeOrigin(storedSettingsForServer(carried, 'nginx')),
+		/Remote IP address must be a valid IPv4 or IPv6 address/,
+	);
+});
+
+test('stamps a v0.3.1 blank current profile before switch-away and switch-back', () => {
+	const stored = {
+		enabled: true,
+		lastServerKind: 'apache',
+		profiles: {
+			apache: {},
+			nginx: {
+				originIp: '192.0.2.21',
+				siteUrl: 'https://source.example.com',
+			},
+		},
+		schemaVersion: 2,
+	};
+	const envelope = preserveStoredBlankCurrentProfile(
+		normalizeStoredSettingsEnvelope(stored),
+		stored,
+		'apache',
+	);
+
+	assert.strictEqual(carrySiteUrlToPristineServerProfile(envelope, 'apache'), envelope);
+	assert.equal(envelope.profiles.apache.siteUrl, '');
+	assert.equal(envelope.profiles.apache.originSource, 'manual');
+
+	const switchedAway = setStoredSettingsLastServer(envelope, 'nginx');
+	assert.strictEqual(
+		carrySiteUrlToPristineServerProfile(switchedAway, 'apache'),
+		switchedAway,
+	);
+});
+
+test('preserves only an existing blank Apache profile recorded as current', () => {
+	const stored = {
+		enabled: false,
+		lastServerKind: 'apache',
+		profiles: {
+			apache: {},
+			nginx: {},
+		},
+		schemaVersion: 2,
+	};
+	const envelope = normalizeStoredSettingsEnvelope(stored);
+
+	assert.notStrictEqual(preserveStoredBlankCurrentProfile(envelope, stored, 'apache'), envelope);
+	assert.strictEqual(preserveStoredBlankCurrentProfile(envelope, stored, 'nginx'), envelope);
+	assert.strictEqual(preserveStoredBlankCurrentProfile(envelope, undefined, 'apache'), envelope);
+	const configuredEnvelope = normalizeStoredSettingsEnvelope({
+		...stored,
+		profiles: {
+			...stored.profiles,
+			apache: { siteUrl: 'https://configured.example.com' },
+		},
+	});
+	assert.strictEqual(
+		preserveStoredBlankCurrentProfile(
+			configuredEnvelope,
+			stored,
+			'apache',
+		),
+		configuredEnvelope,
+	);
+});
+
+test('does not stamp or serialize a touched marker for a pristine Nginx profile', () => {
+	const stored = {
+		enabled: false,
+		lastServerKind: 'nginx',
+		profiles: {
+			apache: {},
+			nginx: {},
+		},
+		schemaVersion: 2,
+	};
+	const envelope = normalizeStoredSettingsEnvelope(stored);
+	const preserved = preserveStoredBlankCurrentProfile(envelope, stored, 'nginx');
+
+	assert.strictEqual(preserved, envelope);
+	assert.equal(preserved.profiles.nginx.originSource, undefined);
+	assert.equal(serializeStoredSettingsEnvelope(preserved).originSource, undefined);
+});
+
+test('schedules background reconciliation only for meaningful or unsafe saved state', () => {
+	const pristine = {
+		enabled: false,
+		lastServerKind: 'nginx',
+		originIp: '',
+		productionUrl: '',
+		profiles: {
+			apache: { originIp: '', productionUrl: '', siteUrl: '' },
+			nginx: { originIp: '', productionUrl: '', siteUrl: '' },
+		},
+		schemaVersion: 2,
+		siteUrl: '',
+	};
+
+	assert.equal(storedSettingsRequireBackgroundReconciliation(undefined), false);
+	assert.equal(storedSettingsRequireBackgroundReconciliation(pristine), false);
+	assert.equal(storedSettingsRequireBackgroundReconciliation({
+		...pristine,
+		lastServerKind: 'apache',
+	}), true);
+	assert.equal(storedSettingsRequireBackgroundReconciliation({ enabled: false }), false);
+	assert.equal(storedSettingsRequireBackgroundReconciliation({ unrelated: true }), false);
+	assert.equal(storedSettingsRequireBackgroundReconciliation({
+		...pristine,
+		enabled: true,
+	}), true);
+	assert.equal(storedSettingsRequireBackgroundReconciliation({
+		...pristine,
+		profiles: {
+			...pristine.profiles,
+			nginx: { originIp: '', originSource: 'manual', siteUrl: '' },
+		},
+	}), true);
+	assert.equal(storedSettingsRequireBackgroundReconciliation({
+		enabled: false,
+		originIp: '192.0.2.44',
+		productionUrl: 'https://legacy.example.com',
+	}), true);
+	assert.equal(storedSettingsRequireBackgroundReconciliation({
+		enabled: false,
+		profiles: null,
+		schemaVersion: 2,
+	}), true);
+	assert.equal(storedSettingsRequireBackgroundReconciliation({
+		enabled: false,
+		profiles: {},
+		schemaVersion: 3,
+	}), true);
+	assert.equal(storedSettingsRequireBackgroundReconciliation('unknown stored value'), true);
+});
+
+test('recognizes only parseable stored envelopes as having valid disabled intent', () => {
+	assert.equal(storedSettingsHaveValidDisabledIntent({
+		enabled: false,
+		originIp: '192.0.2.44',
+		productionUrl: 'https://legacy.example.com',
+	}), true);
+	assert.equal(storedSettingsHaveValidDisabledIntent({
+		enabled: false,
+		profiles: {
+			apache: {},
+			nginx: { siteUrl: 'https://media.example.com' },
+		},
+		schemaVersion: 2,
+	}), true);
+	assert.equal(storedSettingsHaveValidDisabledIntent({
+		enabled: true,
+		profiles: { apache: {}, nginx: {} },
+		schemaVersion: 2,
+	}), false);
+	assert.equal(storedSettingsHaveValidDisabledIntent({
+		profiles: { apache: {}, nginx: {} },
+		schemaVersion: 2,
+	}), false);
+	assert.equal(storedSettingsHaveValidDisabledIntent({
+		enabled: 'false',
+		profiles: { apache: {}, nginx: {} },
+		schemaVersion: 2,
+	}), false);
+	assert.equal(storedSettingsHaveValidDisabledIntent({
+		enabled: false,
+		profiles: null,
+		schemaVersion: 2,
+	}), false);
+	assert.equal(storedSettingsHaveValidDisabledIntent({
+		enabled: false,
+		profiles: {},
+		schemaVersion: 3,
+	}), false);
+	assert.equal(storedSettingsHaveValidDisabledIntent(null), false);
+	assert.equal(storedSettingsHaveValidDisabledIntent('unknown stored value'), false);
+});
+
+test('does not overwrite an intentionally cleared or otherwise non-pristine profile', () => {
+	const nonPristineFields = {
+		certificate: {
+			fingerprint256: 'EE:FF',
+			issuer: 'Example issuer',
+			subject: 'Example subject',
+			validTo: '2027-01-01T00:00:00.000Z',
+		},
+		lastOriginStatus: 404,
+		lastVerifiedAt: '2026-08-01T12:00:00.000Z',
+		originEnvironment: 'production',
+		originIp: '198.51.100.10',
+		originSource: 'manual',
+		originTlsHostname: 'origin.wpengine.com',
+		originWpEngineInstallId: 'install-id',
+		originWpEngineSiteId: 'site-id',
+		resolvedAt: '2026-08-01T11:00:00.000Z',
+		siteUrl: 'https://configured.example.com',
+	};
+
+	for (const destination of ['apache', 'nginx']) {
+		const source = destination === 'apache' ? 'nginx' : 'apache';
+		for (const [field, value] of Object.entries(nonPristineFields)) {
+			const envelope = normalizeStoredSettingsEnvelope({
+				enabled: false,
+				lastServerKind: source,
+				profiles: {
+					[destination]: { [field]: value },
+					[source]: { siteUrl: 'https://source.example.com' },
+				},
+				schemaVersion: 2,
+			});
+
+			assert.strictEqual(
+				carrySiteUrlToPristineServerProfile(envelope, destination),
+				envelope,
+				`${destination}.${field} must mark the profile as previously touched`,
+			);
+		}
+	}
+});
+
+test('preserves an explicitly cleared destination across switch-away and switch-back', () => {
+	const configured = normalizeStoredSettingsEnvelope({
+		enabled: false,
+		lastServerKind: 'apache',
+		profiles: {
+			apache: { siteUrl: 'https://configured.example.com' },
+			nginx: {
+				originIp: '192.0.2.40',
+				originSource: 'manual',
+				siteUrl: 'https://configured.example.com',
+			},
+		},
+		schemaVersion: 2,
+	});
+	const cleared = replaceStoredSettingsForServer(configured, 'apache', {
+		enabled: false,
+		originIp: '',
+		originSource: 'manual',
+		siteUrl: '',
+	});
+	const switchedAway = setStoredSettingsLastServer(cleared, 'nginx');
+
+	assert.equal(switchedAway.profiles.apache.siteUrl, '');
+	assert.equal(switchedAway.profiles.apache.originSource, 'manual');
+	assert.strictEqual(
+		carrySiteUrlToPristineServerProfile(switchedAway, 'apache'),
+		switchedAway,
+	);
+});
+
+test('invalid source URLs and unrelated envelopes remain no-op identities', () => {
+	for (const siteUrl of ['', 'not a URL', 'https://example.com/path', 'ftp://example.com']) {
+		const envelope = normalizeStoredSettingsEnvelope({
+			enabled: true,
+			lastServerKind: 'nginx',
+			profiles: {
+				apache: {},
+				nginx: { siteUrl },
+			},
+			schemaVersion: 2,
+		});
+		assert.strictEqual(carrySiteUrlToPristineServerProfile(envelope, 'apache'), envelope);
+	}
+
+	const siteA = normalizeStoredSettingsEnvelope({
+		enabled: false,
+		lastServerKind: 'nginx',
+		profiles: {
+			apache: {},
+			nginx: { siteUrl: 'https://site-a.example.com' },
+		},
+		schemaVersion: 2,
+	});
+	const siteB = normalizeStoredSettingsEnvelope({
+		enabled: false,
+		lastServerKind: 'nginx',
+		profiles: {
+			apache: {},
+			nginx: { siteUrl: 'https://site-b.example.com' },
+		},
+		schemaVersion: 2,
+	});
+	const siteABefore = structuredClone(siteA);
+	const siteBBefore = structuredClone(siteB);
+
+	assert.equal(
+		carrySiteUrlToPristineServerProfile(siteA, 'apache').profiles.apache.siteUrl,
+		'https://site-a.example.com',
+	);
+	assert.deepEqual(siteA, siteABefore);
+	assert.deepEqual(siteB, siteBBefore);
+	assert.equal(
+		carrySiteUrlToPristineServerProfile(siteB, 'apache').profiles.apache.siteUrl,
+		'https://site-b.example.com',
+	);
 });
 
 test('selects and replaces one profile without allowing enabled intent to diverge', () => {

@@ -336,6 +336,16 @@ test('Apache hostname mode requires only Site URL and discards IP and split TLS 
 		originIp: '',
 		siteUrl: 'https://media.example.com',
 	});
+	assert.deepEqual(validateSettingsInput({
+		enabled: false,
+		originSource: 'manual',
+		siteUrl: '',
+	}, { requiresOriginIp: false }), {
+		enabled: false,
+		originIp: '',
+		originSource: 'manual',
+		siteUrl: '',
+	});
 	assert.deepEqual(validateAndNormalizeOrigin({
 		originEnvironment: 'production',
 		originIp: '192.0.2.10',

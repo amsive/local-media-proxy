@@ -6,6 +6,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-03
+
+This release expands the local-first fallback to safe missing upload assets and makes saved site state converge reliably across add-on and web-server changes.
+
+### Added
+
+- Missing video, audio, caption, document, font, archive, generated stylesheet, data, manifest, and future upload formats can now stream from the configured origin without maintaining an extension allowlist. Existing eligible local files always win, while unsafe executable, browser-active, hidden, configuration, secret, database, backup, and malformed upload paths fail closed instead of falling through to another proxy rule. Browser execution destinations are rejected before proxying, and upstream redirect targets are not exposed to the local browser. ([#32](https://github.com/amsive/local-media-proxy/issues/32))
+- Read-only range requests now support seeking and partial downloads for video, audio, and documents on both Nginx and Apache. Query strings are preserved for cache busting while credentials, cookies, request bodies, standard browser identity, and tracing headers remain stripped. Origin-controlled cookies, browser-state controls, reporting endpoints, and conflicting security headers are also removed. ([#32](https://github.com/amsive/local-media-proxy/issues/32))
+
+### Changed
+
+- First-time web-server profile changes carry only a validated canonical Site URL into a truly untouched destination profile. Apache-to-Nginx changes still require their own remote IP, and existing or intentionally cleared profiles are never overwritten. ([#33](https://github.com/amsive/local-media-proxy/issues/33))
+- Updated the development-only `@types/node` declaration package and its recorded provenance from 26.1.1 to 26.1.2 through Dependabot [#35](https://github.com/amsive/local-media-proxy/pull/35). This maintenance change does not alter the packaged runtime.
+
+### Fixed
+
+- Per-site enabled intent now survives global add-on disable and uninstall. Re-enabling or reinstalling v0.4.0 reapplies valid profiles while invalid profiles remain fail-closed without losing the user's saved intent. Replacing an earlier release may require enabling a site once because the earlier uninstaller runs before v0.4.0 is installed. ([#31](https://github.com/amsive/local-media-proxy/issues/31))
+- Server switches, same-value repair requests, startup reconciliation, and settings changes now verify that managed source, compiled configuration, and the targeted runtime converge before settings are committed. Confirmed drift is repaired without waking stopped sites, and failures restore the prior files, settings, and runtime state. ([#34](https://github.com/amsive/local-media-proxy/issues/34))
+- Untouched disabled Nginx profiles remain unchanged during passive startup and lifecycle checks; only sites with meaningful saved Media Proxy state enter background reconciliation. ([#34](https://github.com/amsive/local-media-proxy/issues/34))
+- Legacy settings from v0.1.0 through v0.3.1 now migrate into the current managed routes without inventing unsupported historical marker formats. ([#34](https://github.com/amsive/local-media-proxy/issues/34))
+
 ## [0.3.1] - 2026-07-30
 
 This patch restores Media Proxy setup for running Apache sites while preserving Local site-lifecycle protections.
@@ -137,7 +158,8 @@ This release keeps Local Media Proxy out of Local's way during site creation, fi
 - Prevented slow or cancelled connection probes from hanging the UI and replaced low-level timeout errors with actionable messages.
 - Preserved correct TLS verification when switching between direct WP Engine origins and compatible proxy, CDN, or load-balancer endpoints.
 
-[Unreleased]: https://github.com/amsive/local-media-proxy/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/amsive/local-media-proxy/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/amsive/local-media-proxy/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/amsive/local-media-proxy/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/amsive/local-media-proxy/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/amsive/local-media-proxy/compare/v0.2.3...v0.2.4

@@ -17,6 +17,7 @@ import {
 	sanitizeOriginSource,
 	sanitizeResolvedAt,
 	siteUrlComparisonKey,
+	validateAndNormalizeSiteUrl,
 } from './validation';
 
 type RawStoredSettings = {
@@ -352,6 +353,126 @@ export function setStoredSettingsLastServer(
 	return envelope.lastServerKind === serverKind
 		? envelope
 		: { ...envelope, lastServerKind: serverKind };
+}
+
+function connectionProfileIsPristine(profile: StoredConnectionProfile): boolean {
+	const defaults = defaultConnectionProfile();
+	return (Object.keys(defaults) as Array<keyof StoredConnectionProfile>).every(
+		(key) => profile[key] === defaults[key],
+	);
+}
+
+export function storedSettingsRequireBackgroundReconciliation(value: unknown): boolean {
+	if (value === undefined) {
+		return false;
+	}
+
+	const raw = rawObject(value);
+	if (!raw) {
+		return true;
+	}
+
+	try {
+		const envelope = normalizeStoredSettingsEnvelope(value);
+		const rawProfiles = rawObject(raw.profiles);
+		const hasBlankCurrentApacheProfile = raw.schemaVersion === 2 &&
+			envelope.lastServerKind === 'apache' &&
+			Boolean(rawProfiles && Object.prototype.hasOwnProperty.call(rawProfiles, 'apache')) &&
+			connectionProfileIsPristine(envelope.profiles.apache);
+		return envelope.enabled ||
+			hasBlankCurrentApacheProfile ||
+			!connectionProfileIsPristine(envelope.profiles.apache) ||
+			!connectionProfileIsPristine(envelope.profiles.nginx);
+	} catch {
+		// Unknown schemas and malformed envelopes still need fail-closed cleanup.
+		return true;
+	}
+}
+
+export function storedSettingsHaveValidDisabledIntent(value: unknown): boolean {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) {
+		return false;
+	}
+	if ((value as { enabled?: unknown }).enabled !== false) {
+		return false;
+	}
+
+	try {
+		return !normalizeStoredSettingsEnvelope(value).enabled;
+	} catch {
+		// Unknown schemas and malformed envelopes must continue through fail-closed
+		// reconciliation even when they contain an enabled-looking false value.
+		return false;
+	}
+}
+
+export function preserveStoredBlankCurrentProfile(
+	envelope: StoredSettingsEnvelope,
+	storedValue: unknown,
+	currentServerKind: SupportedServerKind,
+): StoredSettingsEnvelope {
+	// v0.3.x Apache saves could persist an intentionally cleared current profile
+	// without a touched marker. Nginx saves retained their manual-origin marker,
+	// so stamping pristine Nginx profiles would turn untouched profiles into
+	// false server-switch destinations and cause passive startup writes.
+	const raw = rawObject(storedValue);
+	const rawProfiles = rawObject(raw?.profiles);
+	if (
+		currentServerKind !== 'apache' ||
+		raw?.schemaVersion !== 2 ||
+		envelope.lastServerKind !== currentServerKind ||
+		!rawProfiles ||
+		!Object.prototype.hasOwnProperty.call(rawProfiles, currentServerKind) ||
+		!connectionProfileIsPristine(envelope.profiles[currentServerKind])
+	) {
+		return envelope;
+	}
+
+	return {
+		...envelope,
+		profiles: {
+			...envelope.profiles,
+			[currentServerKind]: {
+				...envelope.profiles[currentServerKind],
+				originSource: 'manual',
+			},
+		},
+	};
+}
+
+export function carrySiteUrlToPristineServerProfile(
+	envelope: StoredSettingsEnvelope,
+	destinationServerKind: SupportedServerKind,
+): StoredSettingsEnvelope {
+	const sourceServerKind = envelope.lastServerKind;
+	if (!sourceServerKind || sourceServerKind === destinationServerKind) {
+		return envelope;
+	}
+
+	const destinationProfile = envelope.profiles[destinationServerKind];
+	if (!connectionProfileIsPristine(destinationProfile)) {
+		return envelope;
+	}
+
+	let siteUrl: string;
+	try {
+		siteUrl = validateAndNormalizeSiteUrl(
+			envelope.profiles[sourceServerKind].siteUrl,
+		).siteUrl;
+	} catch {
+		return envelope;
+	}
+
+	return {
+		...envelope,
+		profiles: {
+			...envelope.profiles,
+			[destinationServerKind]: {
+				...destinationProfile,
+				siteUrl,
+			},
+		},
+	};
 }
 
 export function originPairMatches(

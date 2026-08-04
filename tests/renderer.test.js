@@ -15,8 +15,11 @@ const {
 	IPC_DISCOVERY_DEADLINE_MS,
 	IPC_MUTATION_DEADLINE_MS,
 	IPC_READ_DEADLINE_MS,
+	PASSIVE_STATE_REFRESH_DELAY_MS,
+	PASSIVE_STATE_REFRESH_MAX_ATTEMPTS,
 	connectionTestControlState,
 	draftOriginKey,
+	enabledIntentToggleState,
 	handoffFocusAfterRemovedControl,
 	isIpcDeadlineError,
 	originCandidateLabel,
@@ -28,6 +31,7 @@ const {
 	proxyPrivacySummary,
 	settingsActionAvailability,
 	settingsDraftIsDirty,
+	siteStateNeedsPassiveRefresh,
 	siteServerFingerprint,
 	siteUrlIsUsableForDns,
 	siteUrlUsesHttps,
@@ -35,11 +39,68 @@ const {
 	withIpcDeadline,
 } = rendererModule;
 
-test('describes the stronger Nginx header allowlist and Apache finite denylist accurately', () => {
+test('describes the Nginx allowlist and Apache fail-closed header gate accurately', () => {
 	assert.match(proxyPrivacySummary('nginx'), /incoming visitor headers.*are not forwarded/);
-	assert.match(proxyPrivacySummary('apache'), /named credential, nonce, CSRF, sensitive, and client-IP headers are stripped/);
-	assert.match(proxyPrivacySummary('apache'), /cannot wildcard-remove arbitrary custom header names/);
+	assert.match(proxyPrivacySummary('apache'), /standard browser, credential, nonce, CSRF, tracing, and client-IP headers are stripped/);
+	assert.match(proxyPrivacySummary('apache'), /unknown data-bearing headers fail closed/);
 	assert.doesNotMatch(proxyPrivacySummary('apache'), /visitor headers.*are not forwarded/);
+});
+
+test('requests bounded passive refreshes for enabled repair and disabled cleanup drift', () => {
+	assert.equal(siteStateNeedsPassiveRefresh(createSiteState({
+		applied: false,
+		enabled: true,
+		needsAttention: true,
+	})), true);
+	assert.equal(siteStateNeedsPassiveRefresh(createSiteState({
+		applied: true,
+		enabled: false,
+		needsAttention: true,
+	})), true);
+	assert.equal(siteStateNeedsPassiveRefresh(createSiteState({
+		applied: false,
+		enabled: false,
+		needsAttention: false,
+	})), false);
+	assert.equal(siteStateNeedsPassiveRefresh(createSiteState({
+		applied: true,
+		enabled: true,
+		lifecycleReady: false,
+		needsAttention: true,
+	})), false);
+});
+
+test('keeps toggle direction aligned with enabled intent and cleanup drift', () => {
+	assert.deepEqual(enabledIntentToggleState(createSiteState({
+		applied: true,
+		canEnable: false,
+		cleanupSupported: true,
+		enabled: false,
+	})), {
+		allowed: true,
+		nextEnabled: false,
+		repairingCleanup: true,
+	});
+	assert.deepEqual(enabledIntentToggleState(createSiteState({
+		applied: true,
+		canEnable: false,
+		cleanupSupported: true,
+		enabled: true,
+	})), {
+		allowed: true,
+		nextEnabled: false,
+		repairingCleanup: false,
+	});
+	assert.deepEqual(enabledIntentToggleState(createSiteState({
+		applied: false,
+		canEnable: false,
+		cleanupSupported: true,
+		enabled: false,
+	})), {
+		allowed: false,
+		nextEnabled: true,
+		repairingCleanup: false,
+	});
 });
 
 test('recognizes when an Apache draft selects an HTTPS origin', () => {
@@ -168,9 +229,11 @@ function createSiteState({
 	enableUnavailableReason,
 	lifecycleReady = true,
 	needsAttention,
+	originIp = '192.0.2.10',
 	reason,
 	requiresOriginIp = true,
 	serverKind = 'nginx',
+	settingsReadOnly,
 	siteStatus = 'running',
 	siteUrl = 'https://example.com',
 	supported = true,
@@ -189,9 +252,10 @@ function createSiteState({
 		serverKind,
 		settings: {
 			enabled,
-			originIp: '192.0.2.10',
+			originIp,
 			siteUrl,
 		},
+		settingsReadOnly,
 		siteStatus,
 		supported,
 		supportsHttpsOrigin,
@@ -318,6 +382,7 @@ function installManualTimers() {
 		runNext(delay) {
 			const timer = [...timers.entries()].find(([, entry]) => entry.delay === delay);
 			assert.ok(timer, `missing ${delay}ms timer`);
+			timers.delete(timer[0]);
 			timer[1].callback();
 		},
 		timers,
@@ -328,6 +393,8 @@ test('bounds renderer IPC waits, clears timers, and ignores late settlement', as
 	assert.equal(IPC_READ_DEADLINE_MS, 15_000);
 	assert.equal(IPC_DISCOVERY_DEADLINE_MS, 30_000);
 	assert.equal(IPC_MUTATION_DEADLINE_MS, 90_000);
+	assert.equal(PASSIVE_STATE_REFRESH_DELAY_MS, 1_000);
+	assert.equal(PASSIVE_STATE_REFRESH_MAX_ATTEMPTS, 3);
 
 	const originalSetTimeout = global.setTimeout;
 	const originalClearTimeout = global.clearTimeout;
@@ -898,6 +965,160 @@ test('refreshes Overview status when the Local site status changes', async () =>
 	);
 });
 
+test('bounded Overview follow-up observes deferred runtime convergence', async () => {
+	const timers = installManualTimers();
+	let stateReads = 0;
+	try {
+		const { contentHooks, React } = createRendererRegistration(async (channel) => {
+			assert.equal(channel, IPC_CHANNELS.getSiteState);
+			stateReads += 1;
+			return stateReads === 1
+				? createSiteState({
+					applied: false,
+					enabled: true,
+					needsAttention: true,
+					reason: 'Runtime reconciliation is pending.',
+				})
+				: createSiteState({ applied: true, enabled: true, needsAttention: false });
+		});
+		const element = contentHooks.get('SiteInfoOverview_TableList')(
+			{ id: 'site-a' },
+			'running',
+		);
+		const harness = createHookHarness(React);
+
+		harness.render(element.type, element.props);
+		await flushPromises();
+		let tree = harness.render(element.type, element.props);
+		assert.equal(stateReads, 1);
+		assert.match(elementText(findElement(tree, (node) => node.props?.role === 'status')), /Needs attention/);
+		assert.equal(
+			[...timers.timers.values()].filter(({ delay }) => delay === PASSIVE_STATE_REFRESH_DELAY_MS).length,
+			1,
+		);
+
+		timers.runNext(PASSIVE_STATE_REFRESH_DELAY_MS);
+		await flushPromises();
+		tree = harness.render(element.type, element.props);
+		assert.equal(stateReads, 2);
+		assert.equal(
+			elementText(findElement(tree, (node) => node.props?.role === 'status')),
+			'Active: Enabled and applied.',
+		);
+		assert.equal(
+			[...timers.timers.values()].filter(({ delay }) => delay === PASSIVE_STATE_REFRESH_DELAY_MS).length,
+			0,
+		);
+	} finally {
+		timers.restore();
+	}
+});
+
+test('bounded Overview follow-up survives one transient refresh failure', async () => {
+	const timers = installManualTimers();
+	let stateReads = 0;
+	try {
+		const { contentHooks, React } = createRendererRegistration(async (channel) => {
+			assert.equal(channel, IPC_CHANNELS.getSiteState);
+			stateReads += 1;
+			if (stateReads === 2) {
+				throw new Error('transient read failure');
+			}
+			return stateReads === 1
+				? createSiteState({
+					applied: false,
+					enabled: true,
+					needsAttention: true,
+					reason: 'Runtime reconciliation is pending.',
+				})
+				: createSiteState({ applied: true, enabled: true, needsAttention: false });
+		});
+		const element = contentHooks.get('SiteInfoOverview_TableList')(
+			{ id: 'site-a' },
+			'running',
+		);
+		const harness = createHookHarness(React);
+
+		harness.render(element.type, element.props);
+		await flushPromises();
+		timers.runNext(PASSIVE_STATE_REFRESH_DELAY_MS);
+		await flushPromises();
+		assert.equal(stateReads, 2);
+		assert.equal(
+			[...timers.timers.values()].filter(({ delay }) => delay === PASSIVE_STATE_REFRESH_DELAY_MS).length,
+			1,
+		);
+
+		timers.runNext(PASSIVE_STATE_REFRESH_DELAY_MS);
+		await flushPromises();
+		const tree = harness.render(element.type, element.props);
+		assert.equal(stateReads, 3);
+		assert.equal(
+			elementText(findElement(tree, (node) => node.props?.role === 'status')),
+			'Active: Enabled and applied.',
+		);
+	} finally {
+		timers.restore();
+	}
+});
+
+test('bounded Overview follow-up observes deferred cleanup for a disabled profile', async () => {
+	const timers = installManualTimers();
+	let stateReads = 0;
+	try {
+		const { contentHooks, React } = createRendererRegistration(async (channel) => {
+			assert.equal(channel, IPC_CHANNELS.getSiteState);
+			stateReads += 1;
+			return stateReads === 1
+				? createSiteState({
+					applied: true,
+					canEnable: false,
+					cleanupSupported: true,
+					enabled: false,
+					needsAttention: true,
+					reason: 'Runtime cleanup is pending.',
+				})
+				: createSiteState({
+					applied: false,
+					canEnable: false,
+					cleanupSupported: true,
+					enabled: false,
+					needsAttention: false,
+				});
+		});
+		const element = contentHooks.get('SiteInfoOverview_TableList')(
+			{ id: 'site-a' },
+			'running',
+		);
+		const harness = createHookHarness(React);
+
+		harness.render(element.type, element.props);
+		await flushPromises();
+		let tree = harness.render(element.type, element.props);
+		assert.equal(stateReads, 1);
+		assert.match(elementText(findElement(tree, (node) => node.props?.role === 'status')), /Needs attention/);
+		assert.equal(
+			[...timers.timers.values()].filter(({ delay }) => delay === PASSIVE_STATE_REFRESH_DELAY_MS).length,
+			1,
+		);
+
+		timers.runNext(PASSIVE_STATE_REFRESH_DELAY_MS);
+		await flushPromises();
+		tree = harness.render(element.type, element.props);
+		assert.equal(stateReads, 2);
+		assert.equal(
+			elementText(findElement(tree, (node) => node.props?.role === 'status')),
+			'Inactive: Disabled and not applied.',
+		);
+		assert.equal(
+			[...timers.timers.values()].filter(({ delay }) => delay === PASSIVE_STATE_REFRESH_DELAY_MS).length,
+			0,
+		);
+	} finally {
+		timers.restore();
+	}
+});
+
 test('keeps Overview reads and controls out of Local lifecycle transitions', () => {
 	for (const status of [
 		'creating',
@@ -1039,6 +1260,102 @@ test('auto-saves the Overview switch through the guarded enabled-intent IPC', as
 	assert.equal(toggle.props['aria-checked'], true);
 });
 
+test('repairs Overview cleanup drift without enabling and permits invalid enabled cleanup', async () => {
+	for (const scenario of [
+		{
+			id: 'site-disabled-drift',
+			state: createSiteState({
+				applied: true,
+				canEnable: false,
+				cleanupSupported: true,
+				enabled: false,
+				needsAttention: true,
+				reason: 'Managed proxy configuration remains.',
+			}),
+			guidance: /Off switch to retry cleanup.*enabled intent off/i,
+		},
+		{
+			id: 'site-invalid-enabled',
+			state: createSiteState({
+				applied: true,
+				canEnable: false,
+				cleanupSupported: true,
+				enabled: true,
+				enableUnavailableReason: 'The connection profile is incomplete.',
+				needsAttention: true,
+			}),
+			guidance: /Turn this off to remove the managed proxy configuration/i,
+		},
+	]) {
+		const calls = [];
+		const registration = createRendererRegistration(async (channel, ...args) => {
+			calls.push([channel, ...args]);
+			if (channel === IPC_CHANNELS.getSiteState) {
+				return scenario.state;
+			}
+			if (channel === IPC_CHANNELS.setEnabled) {
+				return createSiteState({
+					applied: false,
+					canEnable: false,
+					cleanupSupported: true,
+					enabled: false,
+					needsAttention: false,
+				});
+			}
+			throw new Error(`Unexpected channel: ${channel}`);
+		});
+		const element = registration.contentHooks.get('SiteInfoOverview_TableList')(
+			{ id: scenario.id },
+			'running',
+		);
+		const harness = createHookHarness(registration.React);
+
+		harness.render(element.type, element.props);
+		await flushPromises();
+		let tree = harness.render(element.type, element.props);
+		let toggle = findElement(tree, (node) => node.props?.role === 'switch');
+		assert.equal(toggle.props.disabled, false);
+		findElement(tree, (node) => (
+			node.props?.className === 'LocalMediaProxy__OverviewTooltipAnchor'
+		)).props.onFocus();
+		tree = harness.render(element.type, element.props);
+		assert.match(elementText(findElement(tree, (node) => node.props?.role === 'tooltip')), scenario.guidance);
+		toggle = findElement(tree, (node) => node.props?.role === 'switch');
+		toggle.props.onClick();
+		await flushPromises();
+		tree = harness.render(element.type, element.props);
+
+		assert.deepEqual(calls.filter(([channel]) => channel === IPC_CHANNELS.setEnabled), [
+			[IPC_CHANNELS.setEnabled, scenario.id, 'nginx', false],
+		]);
+		toggle = findElement(tree, (node) => node.props?.role === 'switch');
+		assert.equal(toggle.props['aria-checked'], false);
+		assert.equal(toggle.props.disabled, true);
+		assert.match(elementText(findElement(tree, (node) => node.props?.role === 'status')), /Inactive: Disabled and not applied/i);
+	}
+
+	const calls = [];
+	const registration = createRendererRegistration(async (channel, ...args) => {
+		calls.push([channel, ...args]);
+		return createSiteState({
+			applied: false,
+			canEnable: false,
+			cleanupSupported: true,
+			enabled: false,
+		});
+	});
+	const element = registration.contentHooks.get('SiteInfoOverview_TableList')(
+		{ id: 'site-clean-invalid' },
+		'running',
+	);
+	const harness = createHookHarness(registration.React);
+	harness.render(element.type, element.props);
+	await flushPromises();
+	const tree = harness.render(element.type, element.props);
+	assert.equal(findElement(tree, (node) => node.props?.role === 'switch').props.disabled, true);
+	assert.equal(calls.some(([channel]) => channel === IPC_CHANNELS.setEnabled), false);
+});
+
 test('fails closed immediately when an Overview mutation reaches its deadline', async () => {
 	const timers = installManualTimers();
 	const mutation = deferred();
@@ -1153,7 +1470,7 @@ test('clears Overview progress on backend rejection while bounded recovery resto
 	}
 });
 
-test('keeps invalid-profile Overview guidance available and gates both switch directions', async () => {
+test('keeps invalid-profile Overview guidance available while allowing cleanup', async () => {
 	const blockedState = createSiteState({
 		applied: false,
 		canEnable: false,
@@ -1196,7 +1513,7 @@ test('keeps invalid-profile Overview guidance available and gates both switch di
 	cleanupHarness.render(cleanupElement.type, cleanupElement.props);
 	await flushPromises();
 	tree = cleanupHarness.render(cleanupElement.type, cleanupElement.props);
-	assert.equal(findElement(tree, (node) => node.props?.role === 'switch').props.disabled, true);
+	assert.equal(findElement(tree, (node) => node.props?.role === 'switch').props.disabled, false);
 	findElement(tree, (node) => node.props?.className === 'LocalMediaProxy__OverviewTooltipAnchor').props.onFocus();
 	tree = cleanupHarness.render(cleanupElement.type, cleanupElement.props);
 	assert.match(
@@ -1514,7 +1831,7 @@ test('tracks mutation initiators and wires restored focus targets through refs',
 	);
 	assert.match(
 		rendererSource,
-		/onClick: \(event\?: \{ currentTarget\?: FocusTargetLike \}\) => void toggleEnabled\(\s*!enabled,\s*event\?\.currentTarget \?\? enableSwitchRef\.current,\s*\),\s*ref: enableSwitchRef/,
+		/onClick: \(event\?: \{ currentTarget\?: FocusTargetLike \}\) => void toggleEnabled\(\s*enabledToggleState\?\.nextEnabled \?\? !enabled,\s*event\?\.currentTarget \?\? enableSwitchRef\.current,\s*\),\s*ref: enableSwitchRef/,
 	);
 	assert.match(
 		rendererSource,
@@ -1592,7 +1909,7 @@ test('renders provider-aware controls and fields in accessible vertical order', 
 	assert.ok(siteUrlLabelIndex < remoteIpLabelIndex);
 	assert.ok(remoteIpLabelIndex < dnsButtonIndex);
 	assert.ok(dnsButtonIndex < discoveryResultIndex);
-	assert.match(rendererSource, /discoveryLayout !== 'pending' && e\('button', \{[\s\S]{0,500}disabled: Boolean\(busy\) \|\| !supported \|\| !canDiscoverFromDns,[\s\S]{0,300}busy === 'discovering' \? 'Finding…' : 'Find via public DNS'/);
+	assert.match(rendererSource, /discoveryLayout !== 'pending' && e\('button', \{[\s\S]{0,500}disabled: Boolean\(busy\) \|\| settingsReadOnly \|\| !supported \|\| !canDiscoverFromDns,[\s\S]{0,300}busy === 'discovering' \? 'Finding…' : 'Find via public DNS'/);
 	assert.match(rendererSource, /e\('label', \{ htmlFor: `\$\{ADDON_ID\}-site-url` \}, 'Site URL'\)[\s\S]{0,800}id: `\$\{ADDON_ID\}-site-url`/);
 	assert.match(rendererSource, /e\('label', \{ htmlFor: `\$\{ADDON_ID\}-origin-ip` \}, 'Remote IP address'\)[\s\S]{0,800}id: `\$\{ADDON_ID\}-origin-ip`/);
 	assert.match(stylesheet, /\.LocalMediaProxy__Fields \{[\s\S]{0,220}grid-template-columns: minmax\(0, 1fr\);/);
@@ -1799,6 +2116,105 @@ test('auto-saves the Tools switch without round-tripping connection profile fiel
 	assert.ok(toggleFeedback.props.ref && Object.hasOwn(toggleFeedback.props.ref, 'current'));
 });
 
+test('repairs Tools cleanup drift without enabling and permits invalid enabled cleanup', async () => {
+	const discovery = {
+		canAutoPopulate: false,
+		environments: [],
+		message: 'Manual setup',
+		provider: 'none',
+	};
+	for (const scenario of [
+		{
+			id: 'site-disabled-drift',
+			state: createSiteState({
+				applied: true,
+				canEnable: false,
+				cleanupSupported: true,
+				enabled: false,
+				needsAttention: true,
+				reason: 'Managed proxy configuration remains.',
+			}),
+			guidance: /Off switch to retry cleanup without enabling/i,
+		},
+		{
+			id: 'site-invalid-enabled',
+			state: createSiteState({
+				applied: true,
+				canEnable: false,
+				cleanupSupported: true,
+				enabled: true,
+				enableUnavailableReason: 'The connection profile is incomplete.',
+				needsAttention: true,
+			}),
+			guidance: /Turn this off to remove the managed proxy configuration/i,
+		},
+	]) {
+		const calls = [];
+		const registration = createRendererRegistration(async (channel, ...args) => {
+			calls.push([channel, ...args]);
+			if (channel === IPC_CHANNELS.getSiteState) {
+				return scenario.state;
+			}
+			if (channel === IPC_CHANNELS.getOriginDiscoveryOptions) {
+				return discovery;
+			}
+			if (channel === IPC_CHANNELS.setEnabled) {
+				return createSiteState({
+					applied: false,
+					canEnable: false,
+					cleanupSupported: true,
+					enabled: false,
+					needsAttention: false,
+				});
+			}
+			throw new Error(`Unexpected channel: ${channel}`);
+		});
+		const element = registration.filters.get('siteInfoToolsItem')([])[0]
+			.render({ site: { id: scenario.id, name: 'Example site' } });
+		const harness = createHookHarness(registration.React);
+
+		harness.render(element.type, element.props);
+		await flushPromises();
+		let tree = harness.render(element.type, element.props);
+		let toggle = findElement(tree, (node) => node.props?.role === 'switch');
+		assert.equal(toggle.props.disabled, false);
+		assert.match(elementText(tree), scenario.guidance);
+		toggle.props.onClick();
+		await flushPromises();
+		tree = harness.render(element.type, element.props);
+
+		assert.deepEqual(calls.filter(([channel]) => channel === IPC_CHANNELS.setEnabled), [
+			[IPC_CHANNELS.setEnabled, scenario.id, 'nginx', false],
+		]);
+		toggle = findElement(tree, (node) => node.props?.role === 'switch');
+		assert.equal(toggle.props['aria-checked'], false);
+		assert.equal(toggle.props.disabled, true);
+		assert.match(elementText(tree), /Media proxy disabled.*managed web-server configuration was removed/i);
+	}
+
+	const calls = [];
+	const registration = createRendererRegistration(async (channel, ...args) => {
+		calls.push([channel, ...args]);
+		if (channel === IPC_CHANNELS.getOriginDiscoveryOptions) {
+			return discovery;
+		}
+		return createSiteState({
+			applied: false,
+			canEnable: false,
+			cleanupSupported: true,
+			enabled: false,
+		});
+	});
+	const element = registration.filters.get('siteInfoToolsItem')([])[0]
+		.render({ site: { id: 'site-clean-invalid', name: 'Example site' } });
+	const harness = createHookHarness(registration.React);
+	harness.render(element.type, element.props);
+	await flushPromises();
+	const tree = harness.render(element.type, element.props);
+	assert.equal(findElement(tree, (node) => node.props?.role === 'switch').props.disabled, true);
+	assert.equal(calls.some(([channel]) => channel === IPC_CHANNELS.setEnabled), false);
+});
+
 test('fails closed immediately when a Tools toggle reaches its deadline', async () => {
 	const timers = installManualTimers();
 	const mutation = deferred();
@@ -1916,7 +2332,7 @@ test('clears Tools progress on backend rejection and stays unavailable when reco
 	}
 });
 
-test('blocks Tools toggles for dirty or invalid profiles and guards full profile saves by server kind', async () => {
+test('blocks Tools toggles for dirty or clean invalid profiles and guards full profile saves by server kind', async () => {
 	const calls = [];
 	const discovery = {
 		canAutoPopulate: false,
@@ -1992,12 +2408,18 @@ test('blocks Tools toggles for dirty or invalid profiles and guards full profile
 	assert.equal(applyCall[2].siteUrl, 'https://changed.example.com');
 	assert.equal(applyCall[3], 'nginx');
 
-	const renderInvalid = async (enabled) => {
+	const renderInvalid = async (enabled, settingsReadOnly = false) => {
+		const invalidReason = settingsReadOnly
+			? 'Saved settings are read-only until a compatible add-on version is installed.'
+			: 'Save a valid profile first.';
 		const invalidState = createSiteState({
 			applied: false,
 			canEnable: false,
 			enabled,
-			enableUnavailableReason: 'Save a valid profile first.',
+			enableUnavailableReason: invalidReason,
+			needsAttention: true,
+			reason: invalidReason,
+			settingsReadOnly,
 		});
 		const invalidRegistration = createRendererRegistration(async (channel) => (
 			channel === IPC_CHANNELS.getSiteState ? invalidState : discovery
@@ -2015,8 +2437,270 @@ test('blocks Tools toggles for dirty or invalid profiles and guards full profile
 	assert.match(elementText(tree), /Save a valid profile first/);
 	tree = await renderInvalid(true);
 	toggle = findElement(tree, (node) => node.props?.role === 'switch');
-	assert.equal(toggle.props.disabled, true);
+	assert.equal(toggle.props.disabled, false);
 	assert.match(elementText(tree), /enabled intent is still on.*Save a valid profile first/i);
+
+	tree = await renderInvalid(false, true);
+	assert.match(elementText(tree), /read-only until a compatible add-on version/i);
+	assert.equal(findElement(tree, (node) => node.props?.role === 'switch').props.disabled, true);
+	assert.equal(
+		findElement(tree, (node) => node.props?.id === 'local-media-proxy-site-url').props.disabled,
+		true,
+	);
+	assert.equal(
+		findElement(tree, (node) => node.type === 'button' && elementText(node) === 'Test connection').props.disabled,
+		true,
+	);
+	assert.equal(
+		findElement(tree, (node) => node.type === 'button' && elementText(node) === 'Save & apply').props.disabled,
+		true,
+	);
+});
+
+test('routes an explicit same-value repair through applySettings when runtime needs attention', async () => {
+	const calls = [];
+	const state = createSiteState({
+		applied: false,
+		canEnable: true,
+		enabled: true,
+		needsAttention: true,
+		reason: 'The enabled profile is not applied.',
+	});
+	const discovery = {
+		canAutoPopulate: false,
+		environments: [],
+		message: 'Manual setup',
+		provider: 'none',
+	};
+	const registration = createRendererRegistration(async (channel, ...args) => {
+		calls.push([channel, ...args]);
+		if (channel === IPC_CHANNELS.getSiteState) {
+			return state;
+		}
+		if (channel === IPC_CHANNELS.getOriginDiscoveryOptions) {
+			return discovery;
+		}
+		if (channel === IPC_CHANNELS.applySettings) {
+			return createSiteState({ applied: true, enabled: true, needsAttention: false });
+		}
+		throw new Error(`Unexpected channel: ${channel}`);
+	});
+	const element = registration.filters.get('siteInfoToolsItem')([])[0]
+		.render({ site: { id: 'site-repair', name: 'Example site' } });
+	const harness = createHookHarness(registration.React);
+
+	harness.render(element.type, element.props);
+	await flushPromises();
+	let tree = harness.render(element.type, element.props);
+	const save = findElement(tree, (node) => (
+		node.type === 'button' && elementText(node) === 'Save & apply'
+	));
+	assert.equal(save.props.disabled, false);
+	save.props.onClick({ currentTarget: { id: 'repair-initiator' } });
+	await flushPromises();
+	tree = harness.render(element.type, element.props);
+	assert.match(elementText(tree), /Media proxy enabled/i);
+
+	const applyCall = calls.find(([channel]) => channel === IPC_CHANNELS.applySettings);
+	assert.deepEqual(applyCall, [
+		IPC_CHANNELS.applySettings,
+		'site-repair',
+		{
+			enabled: true,
+			originEnvironment: undefined,
+			originIp: '192.0.2.10',
+			originSource: 'manual',
+			originTlsHostname: undefined,
+			resolvedAt: undefined,
+			siteUrl: 'https://example.com',
+		},
+		'nginx',
+	]);
+});
+
+test('bounded Tools follow-up observes deferred runtime convergence without a view reopen', async () => {
+	const timers = installManualTimers();
+	let stateReads = 0;
+	const discovery = {
+		canAutoPopulate: false,
+		environments: [],
+		message: 'Manual setup',
+		provider: 'none',
+	};
+	try {
+		const registration = createRendererRegistration(async (channel) => {
+			if (channel === IPC_CHANNELS.getOriginDiscoveryOptions) {
+				return discovery;
+			}
+			assert.equal(channel, IPC_CHANNELS.getSiteState);
+			stateReads += 1;
+			return stateReads === 1
+				? createSiteState({
+					applied: false,
+					enabled: true,
+					needsAttention: true,
+					reason: 'Runtime reconciliation is pending.',
+				})
+				: createSiteState({ applied: true, enabled: true, needsAttention: false });
+		});
+		const element = registration.filters.get('siteInfoToolsItem')([])[0]
+			.render({ site: { id: 'site-a', name: 'Example site' } });
+		const harness = createHookHarness(registration.React);
+
+		harness.render(element.type, element.props);
+		await flushPromises();
+		let tree = harness.render(element.type, element.props);
+		assert.equal(stateReads, 1);
+		assert.equal(
+			findElement(tree, (node) => node.type === 'button' && elementText(node) === 'Save & apply').props.disabled,
+			false,
+		);
+
+		timers.runNext(PASSIVE_STATE_REFRESH_DELAY_MS);
+		await flushPromises();
+		tree = harness.render(element.type, element.props);
+		assert.equal(stateReads, 2);
+		assert.equal(
+			findElement(tree, (node) => node.type === 'button' && elementText(node) === 'Save & apply').props.disabled,
+			true,
+		);
+		assert.equal(
+			elementText(findElement(tree, (node) => (
+				String(node.props?.className ?? '').split(/\s+/).includes('LocalMediaProxy__Status')
+			))),
+			'Enabled',
+		);
+		assert.equal(
+			[...timers.timers.values()].filter(({ delay }) => delay === PASSIVE_STATE_REFRESH_DELAY_MS).length,
+			0,
+		);
+	} finally {
+		timers.restore();
+	}
+});
+
+test('bounded Tools follow-up survives one transient refresh failure', async () => {
+	const timers = installManualTimers();
+	let stateReads = 0;
+	const discovery = {
+		canAutoPopulate: false,
+		environments: [],
+		message: 'Manual setup',
+		provider: 'none',
+	};
+	try {
+		const registration = createRendererRegistration(async (channel) => {
+			if (channel === IPC_CHANNELS.getOriginDiscoveryOptions) {
+				return discovery;
+			}
+			assert.equal(channel, IPC_CHANNELS.getSiteState);
+			stateReads += 1;
+			if (stateReads === 2) {
+				throw new Error('transient read failure');
+			}
+			return stateReads === 1
+				? createSiteState({
+					applied: false,
+					enabled: true,
+					needsAttention: true,
+					reason: 'Runtime reconciliation is pending.',
+				})
+				: createSiteState({ applied: true, enabled: true, needsAttention: false });
+		});
+		const element = registration.filters.get('siteInfoToolsItem')([])[0]
+			.render({ site: { id: 'site-a', name: 'Example site' } });
+		const harness = createHookHarness(registration.React);
+
+		harness.render(element.type, element.props);
+		await flushPromises();
+		timers.runNext(PASSIVE_STATE_REFRESH_DELAY_MS);
+		await flushPromises();
+		assert.equal(stateReads, 2);
+		assert.equal(
+			[...timers.timers.values()].filter(({ delay }) => delay === PASSIVE_STATE_REFRESH_DELAY_MS).length,
+			1,
+		);
+
+		timers.runNext(PASSIVE_STATE_REFRESH_DELAY_MS);
+		await flushPromises();
+		const tree = harness.render(element.type, element.props);
+		assert.equal(stateReads, 3);
+		assert.equal(
+			elementText(findElement(tree, (node) => (
+				String(node.props?.className ?? '').split(/\s+/).includes('LocalMediaProxy__Status')
+			))),
+			'Enabled',
+		);
+	} finally {
+		timers.restore();
+	}
+});
+
+test('bounded Tools follow-up observes deferred cleanup for a disabled profile', async () => {
+	const timers = installManualTimers();
+	let stateReads = 0;
+	const discovery = {
+		canAutoPopulate: false,
+		environments: [],
+		message: 'Manual setup',
+		provider: 'none',
+	};
+	try {
+		const registration = createRendererRegistration(async (channel) => {
+			if (channel === IPC_CHANNELS.getOriginDiscoveryOptions) {
+				return discovery;
+			}
+			assert.equal(channel, IPC_CHANNELS.getSiteState);
+			stateReads += 1;
+			return stateReads === 1
+				? createSiteState({
+					applied: true,
+					canEnable: false,
+					cleanupSupported: true,
+					enabled: false,
+					needsAttention: true,
+					reason: 'Runtime cleanup is pending.',
+				})
+				: createSiteState({
+					applied: false,
+					canEnable: false,
+					cleanupSupported: true,
+					enabled: false,
+					needsAttention: false,
+				});
+		});
+		const element = registration.filters.get('siteInfoToolsItem')([])[0]
+			.render({ site: { id: 'site-a', name: 'Example site' } });
+		const harness = createHookHarness(registration.React);
+
+		harness.render(element.type, element.props);
+		await flushPromises();
+		let tree = harness.render(element.type, element.props);
+		assert.equal(stateReads, 1);
+		assert.equal(
+			elementText(findElement(tree, (node) => (
+				String(node.props?.className ?? '').split(/\s+/).includes('LocalMediaProxy__Status')
+			))),
+			'Needs attention',
+		);
+
+		timers.runNext(PASSIVE_STATE_REFRESH_DELAY_MS);
+		await flushPromises();
+		tree = harness.render(element.type, element.props);
+		assert.equal(stateReads, 2);
+		assert.equal(
+			elementText(findElement(tree, (node) => (
+				String(node.props?.className ?? '').split(/\s+/).includes('LocalMediaProxy__Status')
+			))),
+			'Disabled',
+		);
+		assert.equal(
+			[...timers.timers.values()].filter(({ delay }) => delay === PASSIVE_STATE_REFRESH_DELAY_MS).length,
+			0,
+		);
+	} finally {
+		timers.restore();
+	}
 });
 
 test('fails closed on a Tools apply deadline while preserving the unsaved draft', async () => {
@@ -2211,7 +2895,109 @@ test('rehydrates the Tools panel for a same-site server switch and ignores stale
 	);
 });
 
-test('gates Tools controls when the current Apache profile or service cannot enable', async () => {
+test('renders a handed-off Site URL in both server-switch directions without inventing Nginx IP data', async () => {
+	const discovery = {
+		canAutoPopulate: false,
+		environments: [],
+		message: 'Manual setup',
+		provider: 'none',
+	};
+	const cases = [
+		{
+			from: createSiteState({
+				applied: true,
+				enabled: true,
+				siteUrl: 'https://media.example.com',
+			}),
+			fromServer: 'nginx',
+			to: createSiteState({
+				applied: true,
+				enabled: true,
+				requiresOriginIp: false,
+				serverKind: 'apache',
+				siteUrl: 'https://media.example.com',
+			}),
+			toServer: 'apache',
+		},
+		{
+			from: createSiteState({
+				applied: true,
+				enabled: true,
+				requiresOriginIp: false,
+				serverKind: 'apache',
+				siteUrl: 'https://files.example.com',
+			}),
+			fromServer: 'apache',
+			to: createSiteState({
+				applied: false,
+				canEnable: false,
+				enabled: true,
+				enableUnavailableReason: 'Remote IP address must be a valid IPv4 or IPv6 address.',
+				needsAttention: true,
+				originIp: '',
+				siteUrl: 'https://files.example.com',
+			}),
+			toServer: 'nginx',
+		},
+	];
+
+	for (const switchCase of cases) {
+		let currentState = switchCase.from;
+		const registration = createRendererRegistration(async (channel) => {
+			if (channel === IPC_CHANNELS.getSiteState) {
+				return currentState;
+			}
+			if (channel === IPC_CHANNELS.getOriginDiscoveryOptions) {
+				return discovery;
+			}
+			throw new Error(`Unexpected channel: ${channel}`);
+		});
+		const menuItem = registration.filters.get('siteInfoToolsItem')([])[0];
+		const siteProps = (serverKind) => ({
+			site: {
+				id: 'site-a',
+				name: 'Example site',
+				services: {
+					[serverKind]: {
+						name: serverKind,
+						role: 'http',
+						version: serverKind === 'apache' ? '2.4' : '1.27',
+					},
+				},
+				webServer: serverKind,
+			},
+		});
+		const initialElement = menuItem.render(siteProps(switchCase.fromServer));
+		const harness = createHookHarness(registration.React);
+		harness.render(initialElement.type, initialElement.props);
+		await flushPromises();
+		harness.render(initialElement.type, initialElement.props);
+
+		currentState = switchCase.to;
+		const switchedElement = menuItem.render(siteProps(switchCase.toServer));
+		harness.render(switchedElement.type, switchedElement.props);
+		await flushPromises();
+		const tree = harness.render(switchedElement.type, switchedElement.props);
+		assert.equal(
+			findElement(tree, (node) => node.props?.id === 'local-media-proxy-site-url').props.value,
+			switchCase.to.settings.siteUrl,
+		);
+		assert.doesNotMatch(elementText(tree), /Unsaved changes/);
+		const originIpInput = findElement(
+			tree,
+			(node) => node.props?.id === 'local-media-proxy-origin-ip',
+		);
+		if (switchCase.toServer === 'apache') {
+			assert.equal(originIpInput, null);
+		} else {
+			assert.equal(originIpInput.props.value, '');
+			assert.match(elementText(tree), /Remote IP address must be a valid IPv4 or IPv6 address/);
+			assert.equal(findElement(tree, (node) => node.props?.role === 'switch').props.disabled, false);
+		}
+	}
+});
+
+test('gates Apache enable and save while preserving available cleanup', async () => {
 	const discovery = {
 		canAutoPopulate: false,
 		environments: [],
@@ -2264,7 +3050,7 @@ test('gates Tools controls when the current Apache profile or service cannot ena
 	]) {
 		const rendered = await renderPanel(state);
 		const panelControls = controls(rendered.tree);
-		assert.equal(panelControls.switch.props.disabled, true);
+		assert.equal(panelControls.switch.props.disabled, false);
 		assert.equal(panelControls.save.props.disabled, true);
 		assert.match(elementText(rendered.tree), /enabled intent is still on/);
 	}

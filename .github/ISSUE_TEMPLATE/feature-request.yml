@@ -43,7 +43,7 @@ body:
     attributes:
       label: Project boundaries
       options:
-        - label: The request preserves the local-first, read-only, uploads-image-only proxy model, or clearly explains why that model would need discussion.
+        - label: The request preserves the local-first, read-only, guarded uploads-asset proxy model, or clearly explains why that model would need discussion.
           required: true
         - label: I removed client data, domains, IP addresses, credentials, and proprietary material.
           required: true

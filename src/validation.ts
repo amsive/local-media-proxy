@@ -74,6 +74,7 @@ export function validateSettingsInput(
 		return {
 			enabled: input.enabled,
 			originIp: '',
+			...(input.originSource === 'manual' ? { originSource: 'manual' as const } : {}),
 			siteUrl: input.siteUrl,
 		};
 	}

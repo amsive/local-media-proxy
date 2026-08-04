@@ -8,20 +8,177 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type * as Local from '@getflywheel/local';
 import {
+	APACHE_UPLOAD_ASSET_ROUTE_PATTERN,
+	BLOCKED_BROWSER_FETCH_DESTINATION_PATTERN,
+	BLOCKED_UPLOAD_ASSET_PATH_PATTERN,
+	UNSAFE_RAW_PERCENT_ENCODING_PATTERN,
+	UPLOAD_ASSET_ROUTE_REVISION,
+	UPLOAD_ASSET_URI_PATTERN,
+	uploadAssetPathIsProxyEligible,
+} from './asset-policy';
+import {
 	MANAGED_MARKER_END,
 	MANAGED_MARKER_START,
 	ORIGIN_REQUEST_USER_AGENT,
+	PROXIED_CONTENT_SECURITY_POLICY,
+	PROXIED_RESPONSE_HEADERS_TO_STRIP,
 } from './constants';
+import {
+	assertSafeCompiledFilePath,
+	COMPILED_INCLUDE_TOMBSTONE,
+	compileCompiledIncludeTombstone,
+} from './compiled-config';
 import type { NormalizedOrigin } from './types';
 import type { ExecFilePromise } from './nginx';
 
 const APACHE_COMMAND_TIMEOUT_MS = 10_000;
 const APACHE_READINESS_ATTEMPTS = 20;
 const APACHE_READINESS_INTERVAL_MS = 100;
-const MEDIA_EXTENSIONS = 'avif|bmp|gif|heic|heif|ico|jpe?g|png|svgz?|tiff?|webp';
-const SAFE_MEDIA_SEGMENT = `(?!\\.{1,2}(?:/|$))[A-Za-z0-9%._~!$&'()*+,;=:@-]+`;
-const SAFE_MEDIA_PATH = `(?:${SAFE_MEDIA_SEGMENT}/)*${SAFE_MEDIA_SEGMENT}\\.(?:${MEDIA_EXTENSIONS})`;
-const MEDIA_EXTENSION = new RegExp(`\\.(?:${MEDIA_EXTENSIONS})$`, 'i');
+const APACHE_REQUEST_HEADERS_TO_STRIP = [
+	'Accept',
+	'Accept-Charset',
+	'Accept-Encoding',
+	'Accept-Language',
+	'Authorization',
+	'B3',
+	'Baggage',
+	'Cache-Control',
+	'CF-Access-Client-Id',
+	'CF-Access-Client-Secret',
+	'CF-Connecting-IP',
+	'Content-Encoding',
+	'Content-Language',
+	'Content-Length',
+	'Content-Location',
+	'Content-MD5',
+	'Content-Type',
+	'Cookie',
+	'Device-Memory',
+	'Digest',
+	'DNT',
+	'Downlink',
+	'DPR',
+	'Early-Data',
+	'ECT',
+	'Expect',
+	'Fastly-Client-IP',
+	'Forwarded',
+	'From',
+	'If-Match',
+	'If-Modified-Since',
+	'If-None-Match',
+	'If-Unmodified-Since',
+	'Max-Forwards',
+	'Origin',
+	'Pragma',
+	'Priority',
+	'Purpose',
+	'Proxy-Authorization',
+	'Referer',
+	'Sec-CH-UA',
+	'Sec-CH-UA-Arch',
+	'Sec-CH-UA-Bitness',
+	'Sec-CH-UA-Full-Version',
+	'Sec-CH-UA-Full-Version-List',
+	'Sec-CH-UA-Mobile',
+	'Sec-CH-UA-Model',
+	'Sec-CH-UA-Platform',
+	'Sec-CH-UA-Platform-Version',
+	'Sec-CH-UA-WoW64',
+	'Sec-CH-Prefers-Color-Scheme',
+	'Sec-CH-Prefers-Contrast',
+	'Sec-CH-Prefers-Reduced-Motion',
+	'Sec-CH-Prefers-Reduced-Transparency',
+	'Sec-CH-Viewport-Height',
+	'Sec-CH-Viewport-Width',
+	'Sec-Fetch-Dest',
+	'Sec-Fetch-Mode',
+	'Sec-Fetch-Site',
+	'Sec-Fetch-User',
+	'Sec-GPC',
+	'Sec-Purpose',
+	'Save-Data',
+	'Sentry-Trace',
+	'TE',
+	'Traceparent',
+	'Tracestate',
+	'Trailer',
+	'Transfer-Encoding',
+	'True-Client-IP',
+	'Uber-Trace-Id',
+	'Upgrade',
+	'Upgrade-Insecure-Requests',
+	'Via',
+	'Viewport-Width',
+	'Want-Digest',
+	'Warning',
+	'Width',
+	'X-Access-Token',
+	'X-Amz-Credential',
+	'X-Amz-Security-Token',
+	'X-API-Key',
+	'X-ARR-ClientCert',
+	'X-Auth-Token',
+	'X-B3-Flags',
+	'X-B3-ParentSpanId',
+	'X-B3-Sampled',
+	'X-B3-SpanId',
+	'X-B3-TraceId',
+	'X-Client-Cert',
+	'X-Client-IP',
+	'X-Cloud-Trace-Context',
+	'X-Cluster-Client-IP',
+	'X-Correlation-ID',
+	'X-CSRF-Token',
+	'X-Device-ID',
+	'X-Forwarded',
+	'X-Forwarded-By',
+	'X-Forwarded-Client-Cert',
+	'X-Forwarded-For',
+	'X-Forwarded-Host',
+	'X-Forwarded-Path',
+	'X-Forwarded-Port',
+	'X-Forwarded-Prefix',
+	'X-Forwarded-Proto',
+	'X-Forwarded-Scheme',
+	'X-Forwarded-Server',
+	'X-Forwarded-Uri',
+	'X-HTTP-Method',
+	'X-HTTP-Method-Override',
+	'X-Id-Token',
+	'X-Method-Override',
+	'X-Moz',
+	'X-Original-Forwarded-For',
+	'X-Original-Host',
+	'X-Original-Method',
+	'X-Original-URI',
+	'X-Original-URL',
+	'X-Originating-IP',
+	'X-Ot-Span-Context',
+	'X-Playback-Session-Id',
+	'X-Purpose',
+	'X-Real-IP',
+	'X-Refresh-Token',
+	'X-Remote-Addr',
+	'X-Remote-IP',
+	'X-Request-ID',
+	'X-Requested-With',
+	'X-Rewrite-URL',
+	'X-Session-ID',
+	'X-SSL-Client-Cert',
+	'X-UIDH',
+	'X-User-ID',
+	'X-WP-Nonce',
+] as const;
+const APACHE_REQUEST_HEADERS_TO_ACCEPT = [
+	...APACHE_REQUEST_HEADERS_TO_STRIP,
+	'Connection',
+	'Host',
+	'If-Range',
+	'Keep-Alive',
+	'Range',
+	'User-Agent',
+] as const;
 
 export interface ApacheRuntimeService {
 	bin: { [binaryName: string]: string } | undefined;
@@ -55,14 +212,103 @@ export interface ApacheRuntimeCapabilities {
 }
 
 export interface ApacheServiceRefreshOptions {
+	assertCurrent?: () => void;
 	attempts?: number;
+	expectedManagedInclude?: string;
+	expectedManagedModules?: string;
 	intervalMs?: number;
 	masterProcessExists?: (pid: number) => boolean;
 	wait?: (milliseconds: number) => Promise<void>;
 }
 
+async function assertRealDirectoryPath(
+	directoryPath: string,
+	description: string,
+	assertCurrent: () => void = (): void => undefined,
+): Promise<string> {
+	if (!directoryPath || !path.isAbsolute(directoryPath)) {
+		throw new Error(`Local returned a relative ${description}.`);
+	}
+	const resolvedPath = path.resolve(directoryPath);
+	let currentPath = path.parse(resolvedPath).root;
+	const segments = path.relative(currentPath, resolvedPath).split(path.sep).filter(Boolean);
+	for (const segment of segments) {
+		assertCurrent();
+		const metadata = await fs.lstat(currentPath);
+		assertCurrent();
+		if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+			throw new Error(`Local returned an unsafe ${description}.`);
+		}
+		currentPath = path.join(currentPath, segment);
+	}
+	assertCurrent();
+	const metadata = await fs.lstat(currentPath);
+	assertCurrent();
+	if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+		throw new Error(`Local returned an unsafe ${description}.`);
+	}
+	return resolvedPath;
+}
+
 function escapeRegularExpression(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function markerLineCount(config: string, marker: string): number {
+	const escaped = escapeRegularExpression(marker);
+	return (config.match(new RegExp(`^[\\t ]*${escaped}[\\t ]*$`, 'gm')) ?? []).length;
+}
+
+function hasExactManagedMarker(config: string): boolean {
+	return markerLineCount(config, MANAGED_MARKER_START) > 0 ||
+		markerLineCount(config, MANAGED_MARKER_END) > 0;
+}
+
+function isExpectedCompiledFileAbsence(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException).code;
+	return code === 'ENOENT' || code === 'ENOTDIR' || code === 'ESTALE';
+}
+
+async function readOptionalCompiledFile(
+	rootPath: string,
+	filePath: string,
+	assertCurrent: () => void = (): void => undefined,
+): Promise<string | null> {
+	try {
+		const root = await assertRealDirectoryPath(
+			rootPath,
+			'compiled Apache root',
+			assertCurrent,
+		);
+		const relative = path.relative(root, filePath);
+		if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+			throw new Error('Local returned an unsafe compiled Apache path.');
+		}
+		assertCurrent();
+		let current = root;
+		const segments = relative.split(path.sep);
+		for (let index = 0; index < segments.length; index += 1) {
+			current = path.join(current, segments[index]);
+			assertCurrent();
+			const metadata = await fs.lstat(current);
+			const isFile = index === segments.length - 1;
+			if (
+				metadata.isSymbolicLink() ||
+				(isFile ? !metadata.isFile() : !metadata.isDirectory())
+			) {
+				throw new Error('Local returned an unsafe compiled Apache path.');
+			}
+		}
+		assertCurrent();
+		const content = await fs.readFile(filePath, 'utf8');
+		assertCurrent();
+		return content;
+	} catch (error) {
+		if (isExpectedCompiledFileAbsence(error)) {
+			return null;
+		}
+		throw error;
+	}
 }
 
 function assertSafeApacheValue(value: string, description: string): string {
@@ -108,28 +354,7 @@ function backendAuthority(origin: NormalizedOrigin): string {
 }
 
 export function apacheMediaPathIsProxyEligible(requestPath: string): boolean {
-	if (
-		/[?#\\\\\0\r\n]/.test(requestPath) ||
-		!requestPath.startsWith('/wp-content/uploads/') ||
-		!MEDIA_EXTENSION.test(requestPath)
-	) {
-		return false;
-	}
-
-	const segments = requestPath.slice('/wp-content/uploads/'.length).split('/');
-	return segments.length > 0 && segments.every((segment) => {
-		if (!segment || !/^[A-Za-z0-9%._~!$&'()*+,;=:@-]+$/.test(segment)) {
-			return false;
-		}
-		try {
-			const decoded = decodeURIComponent(segment);
-			return decoded !== '.' &&
-				decoded !== '..' &&
-				/^[A-Za-z0-9._~!$&'()*+,;=:@-]+$/.test(decoded);
-		} catch {
-			return false;
-		}
-	});
+	return uploadAssetPathIsProxyEligible(requestPath);
 }
 
 export function removeApacheManagedBlock(template: string): string {
@@ -146,6 +371,9 @@ export function removeApacheManagedBlock(template: string): string {
 function appendManagedBlock(template: string, lines: string[]): string {
 	const eol = template.includes('\r\n') ? '\r\n' : '\n';
 	const cleanTemplate = removeApacheManagedBlock(template);
+	if (hasExactManagedMarker(cleanTemplate)) {
+		throw new Error('The Local Apache template contains an incomplete managed block.');
+	}
 	const prefix = cleanTemplate && !cleanTemplate.endsWith('\n') ? eol : '';
 	return `${cleanTemplate}${prefix}${[
 		MANAGED_MARKER_START,
@@ -158,6 +386,9 @@ function appendManagedBlock(template: string, lines: string[]): string {
 export function upsertApacheInclude(template: string): string {
 	const eol = template.includes('\r\n') ? '\r\n' : '\n';
 	const cleanTemplate = removeApacheManagedBlock(template);
+	if (hasExactManagedMarker(cleanTemplate)) {
+		throw new Error('The Local Apache template contains an incomplete managed include block.');
+	}
 	const virtualHostEnd = /^[\t ]*<\/VirtualHost>[\t ]*$/gm;
 	const matches = [...cleanTemplate.matchAll(virtualHostEnd)];
 	if (matches.length === 0) {
@@ -170,6 +401,7 @@ export function upsertApacheInclude(template: string): string {
 		const indent = match[0].match(/^[\t ]*/)?.[0] ?? '';
 		const block = [
 			`${indent}${MANAGED_MARKER_START}`,
+			`${indent}Protocols http/1.1`,
 			`${indent}IncludeOptional "{{ configPath }}/includes/local-media-proxy.conf"`,
 			`${indent}${MANAGED_MARKER_END}`,
 		].join(eol);
@@ -220,6 +452,7 @@ export function upsertApacheModules(
 	const modules = [
 		...module('proxy_http_module', 'mod_proxy_http.so'),
 		...module('headers_module', 'mod_headers.so'),
+		...module('setenvif_module', 'mod_setenvif.so'),
 		...(secure ? module('ssl_module', 'mod_ssl.so') : []),
 	];
 
@@ -240,7 +473,12 @@ export async function inspectApacheRuntimeCapabilities(
 	httpdBinary: string,
 ): Promise<ApacheRuntimeCapabilities> {
 	const availability = new Map<string, boolean>();
-	for (const filename of ['mod_proxy_http.so', 'mod_headers.so', 'mod_ssl.so']) {
+	for (const filename of [
+		'mod_proxy_http.so',
+		'mod_headers.so',
+		'mod_setenvif.so',
+		'mod_ssl.so',
+	]) {
 		const modulePath = apacheModulePath(httpdBinary, filename);
 		try {
 			await fs.access(modulePath);
@@ -249,7 +487,7 @@ export async function inspectApacheRuntimeCapabilities(
 			availability.set(filename, false);
 		}
 	}
-	const missingRequired = ['mod_proxy_http.so', 'mod_headers.so']
+	const missingRequired = ['mod_proxy_http.so', 'mod_headers.so', 'mod_setenvif.so']
 		.filter((filename) => !availability.get(filename));
 	const platform = apacheBundlePlatform(httpdBinary);
 	if (missingRequired.length > 0) {
@@ -270,14 +508,16 @@ export async function inspectApacheRuntimeCapabilities(
 }
 
 export function hasApacheManagedBlock(template: string): boolean {
-	return template.includes(MANAGED_MARKER_START) && template.includes(MANAGED_MARKER_END);
+	return hasExactManagedMarker(template);
+}
+
+export function hasCompleteApacheManagedBlock(template: string): boolean {
+	const cleaned = removeApacheManagedBlock(template);
+	return cleaned !== template && !hasExactManagedMarker(cleaned);
 }
 
 export function apacheConfigReferencesInclude(siteConfig: string, expectedInclude: string): boolean {
-	const normalizeSeparators = (value: string): string => value.replace(/\\/g, '/');
-	const expected = normalizeSeparators(expectedInclude);
-	return [...siteConfig.matchAll(/^[\t ]*IncludeOptional[\t ]+"([^"\r\n]+)"[\t ]*$/gm)]
-		.some((match) => normalizeSeparators(match[1]) === expected);
+	return apacheIncludeReferenceCount(siteConfig, expectedInclude) > 0;
 }
 
 export function buildManagedApacheConfig(
@@ -293,7 +533,10 @@ export function buildManagedApacheConfig(
 
 	const authority = backendAuthority(origin);
 	const backend = `${origin.protocol}//${authority}`;
-	const route = `^/(wp-content/uploads/${SAFE_MEDIA_PATH})$`;
+	const route = APACHE_UPLOAD_ASSET_ROUTE_PATTERN;
+	const uploadsGuardRoute = '^/wp-content/uploads/';
+	const unknownHeaderPattern =
+		`^(?!(?:${APACHE_REQUEST_HEADERS_TO_ACCEPT.map(escapeRegularExpression).join('|')})$).+`;
 	const tls = origin.protocol === 'https:'
 		? [
 			'SSLProxyEngine On',
@@ -308,79 +551,368 @@ export function buildManagedApacheConfig(
 	return [
 		MANAGED_MARKER_START,
 		'# Generated by Local Media Proxy. Changes will be overwritten.',
+		`# Managed route revision: ${UPLOAD_ASSET_ROUTE_REVISION}`,
 		'ProxyRequests Off',
-		'ProxyAddHeaders Off',
-		'ProxyPreserveHost Off',
 		...tls,
 		'',
-		`<LocationMatch "(?i)^/wp-content/uploads/.*\\.(?:${MEDIA_EXTENSIONS})$">`,
-		'\tRequestHeader unset Authorization env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset Proxy-Authorization env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset Cookie env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset Referer env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset Origin env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset Forwarded env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset X-Forwarded-For env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset X-Forwarded env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset X-Forwarded-By env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset X-Forwarded-Host env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset X-Forwarded-Proto env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset X-Forwarded-Port env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset X-Forwarded-Server env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset X-Forwarded-Scheme env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset X-Real-IP env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset X-Remote-IP env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset X-Remote-Addr env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset X-Client-IP env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset X-Cluster-Client-IP env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset X-Originating-IP env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset X-Original-Forwarded-For env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset True-Client-IP env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset CF-Connecting-IP env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset Fastly-Client-IP env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset X-WP-Nonce env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset X-API-Key env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset X-Auth-Token env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset X-CSRF-Token env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset Content-Length env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'\tRequestHeader unset Transfer-Encoding env=LOCAL_MEDIA_PROXY_ORIGIN',
+		`SetEnvIfNoCase ${quoteApachePattern(unknownHeaderPattern, 'Apache accepted request headers')} ".+" LOCAL_MEDIA_PROXY_UNKNOWN_HEADER=1`,
+		'',
+		`<LocationMatch "(?i)${UPLOAD_ASSET_URI_PATTERN}">`,
+		'\tProxyAddHeaders Off',
+		'\tProxyErrorOverride Off',
+		'\tProxyPreserveHost Off',
+		...APACHE_REQUEST_HEADERS_TO_STRIP.map((header) => (
+			`\tRequestHeader unset ${header} env=LOCAL_MEDIA_PROXY_ORIGIN`
+		)),
 		`\tRequestHeader set User-Agent ${quoteApache(ORIGIN_REQUEST_USER_AGENT, 'Apache User-Agent')} env=LOCAL_MEDIA_PROXY_ORIGIN`,
 		'</LocationMatch>',
 		'',
 		'RewriteEngine On',
-		'RewriteCond %{REQUEST_METHOD} !^(?:GET|HEAD)$ [NC]',
+		'RewriteCond %{REQUEST_METHOD} !^(?:GET|HEAD)$',
 		`RewriteRule ${quoteApachePattern(route, 'Apache media route')} - [R=405,L,NC]`,
 		'RewriteCond %{HTTP:Transfer-Encoding} !^$ [OR]',
 		'RewriteCond %{HTTP:Content-Length} !^(?:|0)$',
-		`RewriteRule ${quoteApachePattern(route, 'Apache media route')} - [R=400,L,NC]`,
+		`RewriteRule ${quoteApachePattern(route, 'Apache asset route')} - [R=400,L,NC]`,
+		`RewriteCond %{THE_REQUEST} ${quoteApachePattern('!\\s/wp-content/uploads/', 'Apache raw uploads prefix')} [NC]`,
+		`RewriteRule ${quoteApachePattern(uploadsGuardRoute, 'Apache uploads guard route')} - [R=400,L,NC]`,
+		`RewriteCond %{THE_REQUEST} ${quoteApachePattern(`\\s/+wp-content/uploads/[^?\\s]*${UNSAFE_RAW_PERCENT_ENCODING_PATTERN}`, 'Apache raw unsafe encoding')} [NC,OR]`,
+		`RewriteCond %{THE_REQUEST} ${quoteApachePattern('\\s/+wp-content/uploads/[^?\\s]*\\x5c', 'Apache raw backslash')} [NC,OR]`,
+		`RewriteCond %{THE_REQUEST} ${quoteApachePattern('\\s/+wp-content/uploads/(?:[^?\\s]*/)?(?:\\.|%2e){1,2}(?:/|\\?|\\s)', 'Apache raw dot segment')} [NC,OR]`,
+		`RewriteCond %{THE_REQUEST} ${quoteApachePattern('\\s/+wp-content/uploads/(?:/|[^?\\s]*//)', 'Apache raw empty segment')} [NC]`,
+		`RewriteRule ${quoteApachePattern(uploadsGuardRoute, 'Apache uploads guard route')} - [R=400,L,NC]`,
 		'RewriteCond $1 "%" [OR]',
 		'RewriteCond $1 "(?:^|/)(?:\\.{1,2}|%(?:25)*2e(?:%(?:25)*2e)?)(?:/|$)" [NC,OR]',
 		'RewriteCond $1 "%(?:25)*(?:2f|5c|3f|23|00)" [NC,OR]',
 		'RewriteCond $1 "%(?![0-9a-f]{2})" [NC]',
-		`RewriteRule ${quoteApachePattern(route, 'Apache media route')} - [R=400,L,NC]`,
+		`RewriteRule ${quoteApachePattern(route, 'Apache asset route')} - [R=400,L,NC]`,
 		'RewriteCond "%{DOCUMENT_ROOT}/$1" !-f',
-		`RewriteRule ${quoteApachePattern(route, 'Apache media route')} ${quoteApache(`${backend}/$1`, 'Apache proxy target')} [P,L,NE,QSA,NC,E=LOCAL_MEDIA_PROXY_ORIGIN:1]`,
+		`RewriteCond %{HTTP:Sec-Fetch-Dest} ${quoteApachePattern(BLOCKED_BROWSER_FETCH_DESTINATION_PATTERN, 'Apache blocked Fetch Metadata destination')} [NC]`,
+		`RewriteRule ${quoteApachePattern(route, 'Apache asset route')} - [R=404,L,NC]`,
+		'RewriteCond "%{DOCUMENT_ROOT}/$1" !-f',
+		'RewriteCond %{ENV:LOCAL_MEDIA_PROXY_UNKNOWN_HEADER} =1',
+		`RewriteRule ${quoteApachePattern(route, 'Apache asset route')} - [R=400,L,NC]`,
+		'RewriteCond "%{DOCUMENT_ROOT}/$1" !-f',
+		`RewriteCond $1 ${quoteApachePattern(BLOCKED_UPLOAD_ASSET_PATH_PATTERN, 'Apache blocked asset path')} [NC]`,
+		`RewriteRule ${quoteApachePattern(route, 'Apache asset route')} - [R=404,L,NC]`,
+		'RewriteCond "%{DOCUMENT_ROOT}/$1" !-f',
+		`RewriteRule ${quoteApachePattern(route, 'Apache asset route')} ${quoteApache(`${backend}/$1`, 'Apache proxy target')} [P,L,NE,QSA,NC,E=LOCAL_MEDIA_PROXY_ORIGIN:1]`,
 		'',
-		'Header unset Set-Cookie env=LOCAL_MEDIA_PROXY_ORIGIN',
-		'Header always unset Set-Cookie env=LOCAL_MEDIA_PROXY_ORIGIN',
+		...PROXIED_RESPONSE_HEADERS_TO_STRIP.flatMap((header) => [
+			`Header unset ${header} env=LOCAL_MEDIA_PROXY_ORIGIN`,
+			`Header always unset ${header} env=LOCAL_MEDIA_PROXY_ORIGIN`,
+		]),
 		'Header always set X-Local-Media-Proxy "origin" env=LOCAL_MEDIA_PROXY_ORIGIN',
 		'Header always set X-Content-Type-Options "nosniff" env=LOCAL_MEDIA_PROXY_ORIGIN',
+		`Header always set Content-Security-Policy ${quoteApache(PROXIED_CONTENT_SECURITY_POLICY, 'Apache content security policy')} env=LOCAL_MEDIA_PROXY_ORIGIN`,
 		MANAGED_MARKER_END,
 		'',
 	].join('\n');
 }
 
 export function apacheCompiledPaths(service: ApacheRuntimeService): ApacheCompiledPaths {
+	if (!service.configPath || !path.isAbsolute(service.configPath)) {
+		throw new Error('Local returned a relative Apache compiled configuration root.');
+	}
+	const root = path.resolve(service.configPath);
+	const child = (relativePath: string): string => {
+		const candidate = path.resolve(root, relativePath);
+		const relative = path.relative(root, candidate);
+		if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+			throw new Error('Local returned an unsafe compiled Apache path.');
+		}
+		return candidate;
+	};
 	return {
-		include: path.join(service.configPath, 'includes', 'local-media-proxy.conf'),
-		main: path.join(service.configPath, 'apache2.conf'),
-		modules: path.join(service.configPath, 'modules.conf'),
-		site: path.join(service.configPath, 'site.conf'),
+		include: child(path.join('includes', 'local-media-proxy.conf')),
+		main: child('apache2.conf'),
+		modules: child('modules.conf'),
+		site: child('site.conf'),
 	};
 }
 
-async function readApacheMasterPid(service: ApacheRuntimeService): Promise<number> {
-	const pidText = await fs.readFile(path.join(service.runPath, 'logs', 'httpd.pid'), 'utf8');
+function compiledApacheSiteHasCanonicalManagedIncludes(
+	siteConfig: string,
+	expectedInclude: string,
+	compiledSitePath?: string,
+): boolean {
+	const normalizedConfig = siteConfig.replace(/\\/g, '/');
+	const normalizedInclude = expectedInclude.replace(/\\/g, '/');
+	const start = escapeRegularExpression(MANAGED_MARKER_START);
+	const end = escapeRegularExpression(MANAGED_MARKER_END);
+	const include = escapeRegularExpression(normalizedInclude);
+	const canonicalBlocks = normalizedConfig.match(new RegExp(
+		`^[\\t ]*${start}[\\t ]*\\r?\\n` +
+		`[\\t ]*Protocols[\\t ]+http/1\\.1[\\t ]*\\r?\\n` +
+		`[\\t ]*IncludeOptional[\\t ]+"${include}"[\\t ]*\\r?\\n` +
+		`[\\t ]*${end}[\\t ]*\\r?\\n` +
+		`[\\t ]*<\\/VirtualHost>[\\t ]*$`,
+		'gm',
+	)) ?? [];
+	const virtualHostCount = (normalizedConfig.match(/^[\t ]*<\/VirtualHost>[\t ]*$/gm) ?? []).length;
+	return virtualHostCount > 0 &&
+		canonicalBlocks.length === virtualHostCount &&
+		markerLineCount(normalizedConfig, MANAGED_MARKER_START) === canonicalBlocks.length &&
+		markerLineCount(normalizedConfig, MANAGED_MARKER_END) === canonicalBlocks.length &&
+		apacheIncludeReferenceCount(
+			normalizedConfig,
+			normalizedInclude,
+			compiledSitePath,
+		) === canonicalBlocks.length;
+}
+
+function apacheIncludeReferences(config: string): string[] {
+	return [...config.matchAll(
+		/^[\t ]*Include(?:Optional)?[\t ]+(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s\r\n]+))[\t ]*$/gmi,
+	)].map((match) => match[1] ?? match[2] ?? match[3]);
+}
+
+function apacheReferenceTargets(
+	reference: string,
+	expectedInclude: string,
+	sourceConfigPath?: string,
+): boolean {
+	const normalizedReference = reference.replace(/\\/g, '/');
+	const normalizedExpected = expectedInclude.replace(/\\/g, '/');
+	if (
+		normalizedReference === normalizedExpected ||
+		normalizedReference.endsWith(`/${normalizedExpected}`)
+	) {
+		return true;
+	}
+	if (!sourceConfigPath || !path.isAbsolute(expectedInclude)) {
+		return false;
+	}
+	const resolvedReference = path.isAbsolute(reference)
+		? path.normalize(reference)
+		: path.resolve(path.dirname(sourceConfigPath), reference);
+	return path.normalize(resolvedReference) === path.normalize(expectedInclude);
+}
+
+function apacheIncludeReferenceCount(
+	config: string,
+	expectedInclude: string,
+	sourceConfigPath?: string,
+): number {
+	return apacheIncludeReferences(config).filter((reference) => apacheReferenceTargets(
+		reference,
+		expectedInclude,
+		sourceConfigPath,
+	)).length;
+}
+
+function extractSingleManagedBlock(config: string): string | null {
+	const start = escapeRegularExpression(MANAGED_MARKER_START);
+	const end = escapeRegularExpression(MANAGED_MARKER_END);
+	const blocks = config.replace(/\r\n/g, '\n').match(new RegExp(
+		`^[\\t ]*${start}[\\t ]*\\r?\\n` +
+		`(?:(?!^[\\t ]*(?:${start}|${end})[\\t ]*$)[\\s\\S])+?` +
+		`^[\\t ]*${end}[\\t ]*$`,
+		'gm',
+	)) ?? [];
+	return blocks.length === 1 &&
+		markerLineCount(config, MANAGED_MARKER_START) === 1 &&
+		markerLineCount(config, MANAGED_MARKER_END) === 1
+		? blocks[0].trimEnd()
+		: null;
+}
+
+function compiledApacheModulesHaveExpectedManagedBlock(
+	modulesConfig: string,
+	expectedModulesTemplate: string,
+): boolean {
+	const actual = extractSingleManagedBlock(modulesConfig);
+	const expected = extractSingleManagedBlock(expectedModulesTemplate);
+	return actual !== null && expected !== null && actual === expected;
+}
+
+function apacheMainLoadsCompiledFiles(
+	mainConfig: string,
+	compiled: ApacheCompiledPaths,
+): boolean {
+	const references = apacheIncludeReferences(mainConfig);
+	const exactCount = (filePath: string): number => {
+		return references.filter((reference) => apacheReferenceTargets(
+			reference,
+			filePath,
+			compiled.main,
+		)).length;
+	};
+	return exactCount(compiled.modules) === 1 &&
+		exactCount(compiled.site) === 1 &&
+		exactCount(compiled.include) === 0;
+}
+
+async function compileOrphanedApacheIncludeTombstone(
+	site: Local.Site,
+	service: ApacheRuntimeService,
+	configTemplates: ApacheConfigTemplates,
+	assertCurrent: () => void,
+): Promise<void> {
+	assertCurrent();
+	const compiled = apacheCompiledPaths(service);
+	const [mainConfig, modulesConfig, siteConfig, includeConfig] = await Promise.all([
+		readOptionalCompiledFile(service.configPath, compiled.main, assertCurrent),
+		readOptionalCompiledFile(service.configPath, compiled.modules, assertCurrent),
+		readOptionalCompiledFile(service.configPath, compiled.site, assertCurrent),
+		readOptionalCompiledFile(service.configPath, compiled.include, assertCurrent),
+	]);
+	assertCurrent();
+	if (includeConfig === null || includeConfig === COMPILED_INCLUDE_TOMBSTONE) {
+		return;
+	}
+	if (
+		mainConfig === null ||
+		modulesConfig === null ||
+		siteConfig === null ||
+		!apacheMainLoadsCompiledFiles(mainConfig, compiled) ||
+		hasExactManagedMarker(siteConfig) ||
+		apacheIncludeReferenceCount(siteConfig, compiled.include, compiled.site) > 0 ||
+		hasExactManagedMarker(modulesConfig) ||
+		apacheIncludeReferenceCount(modulesConfig, compiled.include, compiled.modules) > 0
+	) {
+		throw new Error('Local retained a managed Apache configuration after cleanup.');
+	}
+
+	await compileCompiledIncludeTombstone(
+		service.configPath,
+		compiled.include,
+		'compiled Apache managed include',
+		(templatesDirectory) => configTemplates.compileConfigTemplates(
+			site,
+			templatesDirectory,
+			service.configPath,
+			service.configVariables,
+		),
+		assertCurrent,
+	);
+}
+
+async function assertCompiledApacheState(
+	service: ApacheRuntimeService,
+	expectedManagedInclude: string | null,
+	expectedManagedModules: string | null,
+	assertCurrent: () => void = (): void => undefined,
+	requireRunnableConfig = false,
+): Promise<void> {
+	assertCurrent();
+	const compiled = apacheCompiledPaths(service);
+	const [mainConfig, modulesConfig, siteConfig, includeConfig] = await Promise.all([
+		readOptionalCompiledFile(service.configPath, compiled.main, assertCurrent),
+		readOptionalCompiledFile(service.configPath, compiled.modules, assertCurrent),
+		readOptionalCompiledFile(service.configPath, compiled.site, assertCurrent),
+		readOptionalCompiledFile(service.configPath, compiled.include, assertCurrent),
+	]);
+	assertCurrent();
+	if (expectedManagedInclude !== null) {
+		if (
+			mainConfig === null ||
+			modulesConfig === null ||
+			siteConfig === null ||
+			expectedManagedModules === null ||
+			!apacheMainLoadsCompiledFiles(mainConfig, compiled) ||
+			!compiledApacheSiteHasCanonicalManagedIncludes(
+				siteConfig,
+				compiled.include,
+				compiled.site,
+			) ||
+			!compiledApacheModulesHaveExpectedManagedBlock(modulesConfig, expectedManagedModules) ||
+			apacheIncludeReferenceCount(modulesConfig, compiled.include, compiled.modules) > 0 ||
+			includeConfig !== expectedManagedInclude
+		) {
+			throw new Error('Local did not compile the expected managed Apache configuration.');
+		}
+		return;
+	}
+	if (
+		(requireRunnableConfig && (
+			mainConfig === null ||
+			modulesConfig === null ||
+			siteConfig === null ||
+			!apacheMainLoadsCompiledFiles(mainConfig, compiled)
+		)) ||
+		(siteConfig !== null && hasExactManagedMarker(siteConfig)) ||
+		(siteConfig !== null && apacheIncludeReferenceCount(
+			siteConfig,
+			compiled.include,
+			compiled.site,
+		) > 0) ||
+		(modulesConfig !== null && hasExactManagedMarker(modulesConfig)) ||
+		(modulesConfig !== null && apacheIncludeReferenceCount(
+			modulesConfig,
+			compiled.include,
+			compiled.modules,
+		) > 0) ||
+		(includeConfig !== null && includeConfig !== COMPILED_INCLUDE_TOMBSTONE)
+	) {
+		throw new Error('Local retained a managed Apache configuration after cleanup.');
+	}
+}
+
+export async function apacheCompiledConfigMatches(
+	service: ApacheRuntimeService,
+	expectedManagedInclude: string | null,
+	expectedManagedModules: string | null,
+	assertCurrent: () => void = (): void => undefined,
+): Promise<boolean> {
+	try {
+		await assertCompiledApacheState(
+			service,
+			expectedManagedInclude,
+			expectedManagedModules,
+			assertCurrent,
+		);
+		return true;
+	} catch (error) {
+		if (isExpectedCompiledFileAbsence(error)) {
+			return expectedManagedInclude === null;
+		}
+		if (
+			error instanceof Error && (
+				error.message.startsWith('Local did not compile') ||
+				error.message === 'Local retained a managed Apache configuration after cleanup.'
+			)
+		) {
+			return false;
+		}
+		throw error;
+	}
+}
+
+async function readApacheMasterPid(
+	service: ApacheRuntimeService,
+	assertCurrent: () => void = (): void => undefined,
+): Promise<number> {
+	if (!service.runPath || !path.isAbsolute(service.runPath)) {
+		throw new Error('Local returned a relative Apache runtime root.');
+	}
+	const runRoot = await assertRealDirectoryPath(
+		service.runPath,
+		'Apache runtime root',
+		assertCurrent,
+	);
+	const pidFile = path.join(runRoot, 'logs', 'httpd.pid');
+	const relative = path.relative(runRoot, pidFile);
+	if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+		throw new Error('Local returned an unsafe Apache PID path.');
+	}
+	let current = runRoot;
+	const segments = relative.split(path.sep);
+	for (let index = 0; index < segments.length; index += 1) {
+		assertCurrent();
+		const metadata = await fs.lstat(current);
+		if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+			throw new Error('Local returned an unsafe Apache runtime path.');
+		}
+		current = path.join(current, segments[index]);
+	}
+	assertCurrent();
+	const pidMetadata = await fs.lstat(pidFile);
+	if (!pidMetadata.isFile() || pidMetadata.isSymbolicLink()) {
+		throw new Error('Local returned an unsafe Apache PID file.');
+	}
+	assertCurrent();
+	const pidText = await fs.readFile(pidFile, 'utf8');
+	assertCurrent();
 	if (!/^[1-9][0-9]*\s*$/.test(pidText)) {
 		throw new Error('invalid PID file contents');
 	}
@@ -429,44 +961,75 @@ export async function compileAndValidateApacheConfig(
 	configTemplates: ApacheConfigTemplates,
 	execFilePromise: ExecFilePromise,
 	expectManaged: boolean,
+	expectedManagedInclude?: string,
+	expectedManagedModules?: string,
+	assertCurrent: () => void = (): void => undefined,
 ): Promise<void> {
 	const httpdBinary = service.bin?.httpd;
 	if (!httpdBinary) {
 		throw new Error('Local did not provide an Apache httpd binary for this site.');
 	}
+	if (!path.isAbsolute(service.siteConfigTemplatePath)) {
+		throw new Error('Local returned a relative Apache template root.');
+	}
 
+	assertCurrent();
+	await assertRealDirectoryPath(
+		service.configPath,
+		'Apache compiled configuration root',
+		assertCurrent,
+	);
+	const compiled = apacheCompiledPaths(service);
+	for (const [filePath, description] of [
+		[compiled.main, 'compiled Apache main configuration'],
+		[compiled.modules, 'compiled Apache modules configuration'],
+		[compiled.site, 'compiled Apache site configuration'],
+		[compiled.include, 'compiled Apache managed include'],
+	] as const) {
+		await assertSafeCompiledFilePath(
+			service.configPath,
+			filePath,
+			description,
+			assertCurrent,
+		);
+	}
+	assertCurrent();
 	await configTemplates.compileConfigTemplates(
 		site,
 		service.siteConfigTemplatePath,
 		service.configPath,
 		service.configVariables,
 	);
+	assertCurrent();
 
-	const compiled = apacheCompiledPaths(service);
-	const [mainConfig, modulesConfig, siteConfig] = await Promise.all([
-		fs.readFile(compiled.main, 'utf8'),
-		fs.readFile(compiled.modules, 'utf8'),
-		fs.readFile(compiled.site, 'utf8'),
-	]);
-	if (expectManaged) {
-		const includeConfig = await fs.readFile(compiled.include, 'utf8');
-		if (
-			!hasApacheManagedBlock(siteConfig) ||
-			!hasApacheManagedBlock(modulesConfig) ||
-			!hasApacheManagedBlock(includeConfig) ||
-			!apacheConfigReferencesInclude(siteConfig, compiled.include)
-		) {
-			throw new Error('Local did not compile the complete managed Apache configuration.');
-		}
-	} else if (hasApacheManagedBlock(siteConfig) || hasApacheManagedBlock(modulesConfig)) {
-		throw new Error('Local retained a managed Apache include after cleanup.');
+	const expectedInclude = expectManaged ? expectedManagedInclude ?? null : null;
+	const expectedModules = expectManaged ? expectedManagedModules ?? null : null;
+	if (expectManaged && (expectedInclude === null || expectedModules === null)) {
+		throw new Error('Local did not compile the expected managed Apache configuration.');
 	}
+	if (!expectManaged) {
+		await compileOrphanedApacheIncludeTombstone(
+			site,
+			service,
+			configTemplates,
+			assertCurrent,
+		);
+	}
+	await assertCompiledApacheState(
+		service,
+		expectedInclude,
+		expectedModules,
+		assertCurrent,
+		true,
+	);
 
+	assertCurrent();
 	await execFilePromise(
 		httpdBinary,
 		['-t', '-f', compiled.main],
 		apacheCommandOptions(service.env),
 	);
+	assertCurrent();
 }
 
 export async function refreshApacheService(
@@ -483,18 +1046,27 @@ export async function refreshApacheService(
 	if (!httpdBinary) {
 		throw new Error('Local did not provide an Apache httpd binary for this site.');
 	}
+	const assertCurrent = refreshOptions.assertCurrent ?? ((): void => undefined);
 	await compileAndValidateApacheConfig(
 		site,
 		service,
 		configTemplates,
 		execFilePromise,
 		expectManaged,
+		refreshOptions.expectedManagedInclude,
+		refreshOptions.expectedManagedModules,
+		assertCurrent,
 	);
-	if (!isSiteRunning()) {
+	assertCurrent();
+	const siteRunning = isSiteRunning();
+	assertCurrent();
+	if (!siteRunning) {
 		return false;
 	}
 
-	if (!isServiceRunning()) {
+	const serviceRunning = isServiceRunning();
+	assertCurrent();
+	if (!serviceRunning) {
 		throw new Error(
 			"Local no longer reports this site's Apache service as running. Stop and start the site in Local, then retry.",
 		);
@@ -502,8 +1074,17 @@ export async function refreshApacheService(
 
 	let masterPid: number;
 	try {
-		masterPid = await readApacheMasterPid(service);
+		assertCurrent();
+		masterPid = await readApacheMasterPid(service, assertCurrent);
+		assertCurrent();
 	} catch (cause) {
+		assertCurrent();
+		if (
+			cause instanceof Error &&
+			/^Local returned (?:an unsafe|a relative) Apache runtime/.test(cause.message)
+		) {
+			throw cause;
+		}
 		throw new Error(
 			"Local's Apache master PID is unavailable for this site. Stop and start the site in Local, then retry.",
 			{ cause },
@@ -511,7 +1092,10 @@ export async function refreshApacheService(
 	}
 
 	const masterProcessExists = refreshOptions.masterProcessExists ?? apacheMasterProcessExists;
-	if (!masterProcessExists(masterPid)) {
+	assertCurrent();
+	const masterIsRunning = masterProcessExists(masterPid);
+	assertCurrent();
+	if (!masterIsRunning) {
 		throw new Error(
 			"Local's Apache master PID is stale for this site. Stop and start the site in Local, then retry.",
 		);
@@ -519,22 +1103,34 @@ export async function refreshApacheService(
 
 	const compiled = apacheCompiledPaths(service);
 	try {
+		assertCurrent();
 		await execFilePromise(
 			httpdBinary,
 			['-k', 'graceful', '-f', compiled.main],
 			apacheCommandOptions(service.env),
 		);
 	} catch (cause) {
+		assertCurrent();
+		if (
+			cause instanceof Error &&
+			/^Local returned (?:an unsafe|a relative) Apache runtime/.test(cause.message)
+		) {
+			throw cause;
+		}
 		throw new Error(
 			"Apache could not gracefully reload this site's validated configuration. Stop and start the site in Local, then retry.",
 			{ cause },
 		);
 	}
+	assertCurrent();
 
 	let reloadedMasterPid: number;
 	try {
-		reloadedMasterPid = await readApacheMasterPid(service);
+		assertCurrent();
+		reloadedMasterPid = await readApacheMasterPid(service, assertCurrent);
+		assertCurrent();
 	} catch (cause) {
+		assertCurrent();
 		throw new Error(
 			"Local's Apache master PID disappeared after the graceful reload. Stop and start the site in Local, then retry.",
 			{ cause },
@@ -553,12 +1149,20 @@ export async function refreshApacheService(
 	}));
 	let running = false;
 	for (let attempt = 0; attempt < attempts; attempt += 1) {
-		if (isSiteRunning() && isServiceRunning() && masterProcessExists(masterPid)) {
+		assertCurrent();
+		const stillRunning = isSiteRunning();
+		assertCurrent();
+		const serviceStillRunning = isServiceRunning();
+		assertCurrent();
+		const masterStillRunning = masterProcessExists(masterPid);
+		assertCurrent();
+		if (stillRunning && serviceStillRunning && masterStillRunning) {
 			running = true;
 			break;
 		}
 		if (attempt < attempts - 1) {
 			await wait(intervalMs);
+			assertCurrent();
 		}
 	}
 	if (!running) {

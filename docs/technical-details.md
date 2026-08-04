@@ -4,11 +4,13 @@ This document describes Local Media Proxy's operating, security, compatibility, 
 
 ## Operating model
 
-Local Media Proxy inserts bounded managed configuration into the selected Local site's persistent Nginx or Apache templates. The generated rules check the local uploads directory first and proxy only an eligible image when the file is missing.
+Local Media Proxy inserts bounded managed configuration into the selected Local site's persistent Nginx or Apache templates. The generated rules check the local uploads directory first and proxy only an eligible upload asset when the file is missing.
 
 The response header `X-Local-Media-Proxy: origin` identifies a remote fallback. Locally served files do not receive that header. Remote responses are streamed without a persistent media cache; Nginx proxy buffering is disabled.
 
 Saved Nginx and Apache connection profiles are separate because the servers have different routing models. The enabled intent is shared. When a Local site changes web-server type, the add-on reapplies the saved profile for the new server only when that profile is complete and valid.
+
+For a truly untouched destination profile, the first server change carries only the other profile's validated canonical Site URL. It does not carry IP addresses, hosting provenance, TLS identity, certificates, timestamps, or verification results. Apache can apply the carried URL when its service supports that origin; Nginx still requires a separately configured remote IP. An existing or intentionally cleared destination profile is never overwritten.
 
 ## Nginx connection identity
 
@@ -28,7 +30,7 @@ Apache uses the Site URL hostname as its DNS target, HTTP `Host`, TLS SNI, and c
 
 This constraint avoids presenting a configuration that Apache 2.4.43 cannot safely represent with its reverse-proxy hostname behavior. Apache therefore performs normal DNS resolution for the validated Site URL.
 
-`mod_proxy_http` and `mod_headers` are required for every Apache origin. HTTPS additionally requires `mod_ssl`. The add-on checks the modules exposed by the selected Local platform bundle before connection testing or persistent writes and reports an unsupported bundle without applying partial configuration.
+`mod_proxy_http`, `mod_headers`, and `mod_setenvif` are required for every Apache origin. HTTPS additionally requires `mod_ssl`. The add-on checks the modules exposed by the selected Local platform bundle before connection testing or persistent writes and reports an unsupported bundle without applying partial configuration.
 
 ## Origin discovery
 
@@ -44,18 +46,23 @@ Discovery never saves settings or enables the proxy automatically. Every suggest
 
 ## Request boundary
 
-Fallback rules are deliberately narrow:
+Fallback rules are deliberately narrow while remaining format-tolerant:
 
-- Requests must remain below `/wp-content/uploads/`.
-- Only the project's allowlisted image extensions are eligible.
-- Only `GET` and `HEAD` are allowed.
+- A request must be a missing local `GET` or `HEAD` below `/wp-content/uploads/`, with no request body.
+- The path must end in a visible, non-hidden filename with an extension. The extension is not checked against an allowlist, so new asset formats work without a code change.
+- Executable and interpreter suffixes, browser-active documents, hidden paths, and obvious secret, configuration, database, and backup material are blocked. SVG and SVGZ remain supported exceptions to the browser-document block.
+- Browser-controlled script, worker, worklet, and XSLT destinations are rejected for missing assets using Fetch Metadata before an upstream MIME type can make an unknown extension executable. Document and embed destinations remain available for PDFs, SVG, and other media and are constrained by the managed response sandbox.
+- Interpreter tokens are rejected at any non-alphanumeric boundary in every decoded path segment, including double-suffix and path-info forms such as `shell.php.jpg` and `shell.php/image.jpg`.
+- Traversal, empty or dot segments, encoded or literal backslashes, colons, malformed or repeated encoding, encoded slashes, NUL and control characters, and ambiguous decoded paths are rejected.
+- Query strings are validated separately from the path and retained for cache busting.
+- Nginx reserves the complete uploads boundary ahead of later custom locations: eligible local files are served locally, eligible misses use the verified proxy, and blocked or malformed misses return `404` instead of reaching another proxy rule. Existing local-only assets remain local; hidden and interpreter paths fail closed before static handling so they cannot expose sensitive content or source.
 - Request bodies are not forwarded.
 - The remote request receives a fixed, non-visitor-identifying add-on `User-Agent`.
 - The configured Site URL supplies the upstream HTTP `Host`.
 
-Nginx suppresses incoming request headers before adding a small allowlist. Apache removes named credential, cookie, authorization, nonce, CSRF, and proxy-identity headers. Apache 2.4 `mod_headers` cannot wildcard-remove arbitrary custom header names, so its conservative URL-safe filename matcher and fixed upload-image boundary remain important.
+Nginx suppresses incoming request headers before reconstructing only `Host`, the fixed add-on `User-Agent`, `Range`, and `If-Range`. Apache admits a bounded set of standard browser and Local-router header names, removes browser identity, content-negotiation, tracing, credential, cookie, authorization, nonce, CSRF, and proxy-identity values, then preserves the same fixed identity and range behavior. A missing-asset request carrying an unrecognized data-bearing header fails closed before reaching the origin; an empty-valued unknown name carries no visitor data, and the gate does not affect an existing local file. Runtime tests verify both the resulting upstream header set and unknown-header rejection.
 
-Apache upload filenames containing decoded spaces or characters outside its allowlist remain local-only rather than broadening the proxy matcher.
+Apache upload filenames containing decoded spaces or characters outside its path-character allowlist remain local-only rather than broadening the proxy matcher. The upstream status, content type, disposition, length, and range headers are preserved. Origin-controlled redirect targets, cookies, browser-storage controls, service-worker scope, reporting endpoints, authentication prompts, proxy controls, and conflicting security headers are removed. Remote responses receive a managed sandboxing Content Security Policy, `X-Content-Type-Options: nosniff`, and `X-Local-Media-Proxy: origin`.
 
 ## TLS trust model
 
@@ -88,7 +95,7 @@ For Apache, the add-on:
 - writes `conf/apache/includes/local-media-proxy.conf.hbs`; and
 - writes `conf/apache/local-media-proxy-origin-ca.pem` for HTTPS.
 
-Only content between `# BEGIN Local Media Proxy (managed)` and `# END Local Media Proxy (managed)` belongs to the add-on. It does not edit Local's generated runtime configuration under the application-support `run/` directory.
+Only content between `# BEGIN Local Media Proxy (managed)` and `# END Local Media Proxy (managed)` belongs to the add-on. The add-on edits only its persistent templates and managed files. It asks Local's authoritative compiler to produce the selected service's runtime configuration, then verifies the exact compiled include and marker state rather than editing generated files directly. Template, compiled-config, and run roots are required to be contained real directories without symlinked ancestors.
 
 ## Local lifecycle isolation
 
@@ -106,15 +113,19 @@ The renderer does not start proxy-state or origin-discovery requests for a trans
 
 If a bounded readiness check expires, the add-on leaves the site untouched. A later stable lifecycle notification or explicit user action can start a fresh check.
 
-Global disable or uninstall first attempts guarded synchronous managed-file removal for each lifecycle-ready site. It revalidates the current site, status, service identity, and managed paths before every removal; remaining verification and runtime refresh work continues on a separate bounded cleanup lane. A transitional site skips synchronous access and stays pending but dormant on that lane. Cleanup resumes only if the site becomes lifecycle-ready, is cancelled if the site is deleted or disappears, and expires with an error rather than touching transitional files. If the add-on is re-enabled first, re-enable cancels the deferred global cleanup before normal configured-site reconciliation is scheduled.
+Global disable or uninstall first attempts guarded synchronous managed-file removal for each lifecycle-ready site. It revalidates the current site, status, service identity, and managed paths before every removal; remaining verification and runtime refresh work continues on a separate bounded cleanup lane. A transitional site skips synchronous access and stays pending but dormant on that lane. Cleanup resumes only if the site becomes lifecycle-ready, is cancelled if the site is deleted or disappears, and expires with an error rather than touching transitional files. Cleanup does not change persisted per-site enabled intent. If the add-on is re-enabled first, re-enable cancels the deferred global cleanup before normal configured-site reconciliation is scheduled and valid enabled profiles are reapplied. Invalid profiles remain fail-closed without losing intent.
 
 ## Validation, apply, rollback, and cleanup
 
-Before activation, the add-on validates user input, builds the managed configuration, compiles the selected Local server templates, and runs the available server syntax checks.
+Passive state reads compare persistent and compiled state and report drift without writing. Settings changes, explicit same-value repair requests, server changes, startup reconciliation, and site-start reconciliation may repair confirmed drift.
 
-Running Nginx sites receive a graceful reload, with a targeted Nginx-service restart only for a stale master PID. Apache performs a bounded, site-scoped graceful reload using the selected site configuration. Stopped sites are compiled and validated without being started.
+Before activation, the add-on validates user input, builds the managed configuration, compiles the selected Local server templates, and runs server syntax checks. Apache verifies its exact compiled main, module, virtual-host, and include state before `httpd -t`. Nginx performs targeted compilation, exact include comparison, `nginx -t`, and a bounded `nginx -T` inspection of the configuration that would actually load.
 
-Writes use snapshots and rollback. If apply fails while the site remains lifecycle-ready, the add-on restores previous settings and managed files before attempting to return the service to its prior configuration. If Local enters a transition, rollback stops rather than writing into or recreating Local-owned state; later lifecycle-ready cleanup or reconciliation handles the surviving intent.
+Local's generic template compiler can retain a compiled include after its source template is removed. Cleanup never deletes that Local-generated output directly: after proving the authoritative compiled core no longer references the include, the add-on invokes the same Local compiler with a private temporary source tree containing one exact inert comment-only tombstone. Passive and active validation accept only an absent include or that exact tombstone; stale proxy bytes, changed tombstones, symbolic links, and reference-bearing configurations remain drift and fail closed.
+
+After successful compilation and validation, a running Nginx site uses a bounded, site-scoped graceful reload. The add-on verifies the contained PID file, the live master and its command identity where the platform exposes it, the unchanged master PID, and sustained post-reload readiness without invoking Local's hard service restart. Nginx for Windows uses its PID-scoped named control event, so an unrelated reused PID cannot receive the reload signal. Apache performs its own bounded, site-scoped graceful reload using the selected site configuration. Stopped sites are compiled and validated without being started, and no other site's service is refreshed.
+
+Writes use validated snapshots and rollback. Settings are committed only after persistent files, compiled configuration, and the targeted runtime converge. If apply fails while the site remains lifecycle-ready, the add-on restores previous settings and managed files, recompiles, and attempts to return the service to its prior runtime configuration. A malformed or unsafe snapshot is never classified as restorable. If Local enters a transition, rollback stops rather than writing into or recreating Local-owned state; later lifecycle-ready cleanup or reconciliation handles the surviving intent.
 
 Disabling removes managed includes, generated proxy rules, and trust files while retaining saved connection fields for later reuse. If Local cannot resolve the selected service, cleanup is deferred without falsely reporting that a running proxy was removed.
 
@@ -140,6 +151,6 @@ The fallback is scoped to this add-on's detail queries. Other add-ons and GraphQ
 
 ## Release package
 
-The installable TGZ uses npm's single `package/` root and an exact 26-file allowlist. It contains compiled runtime JavaScript, package metadata, CSS, runtime artwork, the Cloudflare trust material, `LICENSE`, `NOTICE`, and the packaged README.
+The installable TGZ uses npm's single `package/` root and an exact 28-file allowlist. It contains compiled runtime JavaScript, package metadata, CSS, runtime artwork, the Cloudflare trust material, `LICENSE`, `NOTICE`, and the packaged README.
 
 Source TypeScript, tests, source maps, `node_modules`, development configuration, provenance documents, and repository process files are excluded. CI, release creation, and promotion independently verify the package structure, source equivalence, public-release safety, and third-party material contract.

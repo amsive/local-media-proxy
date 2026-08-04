@@ -11,6 +11,8 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const {
+	apacheCompiledConfigMatches,
+	apacheCompiledPaths,
 	apacheMasterProcessExists,
 	apacheConfigReferencesInclude,
 	apacheMediaPathIsProxyEligible,
@@ -18,13 +20,19 @@ const {
 	buildManagedApacheConfig,
 	compileAndValidateApacheConfig,
 	hasApacheManagedBlock,
+	hasCompleteApacheManagedBlock,
 	inspectApacheRuntimeCapabilities,
 	removeApacheManagedBlock,
 	refreshApacheService,
 	upsertApacheInclude,
 	upsertApacheModules,
 } = require('../lib/apache');
-const { ORIGIN_REQUEST_USER_AGENT } = require('../lib/constants');
+const {
+	MANAGED_MARKER_END,
+	MANAGED_MARKER_START,
+	ORIGIN_REQUEST_USER_AGENT,
+} = require('../lib/constants');
+const { COMPILED_INCLUDE_TOMBSTONE } = require('../lib/compiled-config');
 const { validateAndNormalizeOrigin } = require('../lib/validation');
 
 const httpd = '/opt/Local/lightning-services/apache-2.4.43+11/bin/darwin-arm64/bin/httpd';
@@ -32,6 +40,60 @@ const secureOrigin = validateAndNormalizeOrigin({
 	originIp: '',
 	siteUrl: 'https://media.example.com:8443',
 }, { requiresOriginIp: false });
+
+function apacheManagedFixture(service) {
+	const includePath = path.join(service.configPath, 'includes', 'local-media-proxy.conf');
+	const managedInclude = [
+		MANAGED_MARKER_START,
+		'# exact managed route',
+		MANAGED_MARKER_END,
+		'',
+	].join('\n');
+	const managedModules = [
+		MANAGED_MARKER_START,
+		'<IfModule !proxy_http_module>',
+		'\tLoadModule proxy_http_module "/opt/Local/modules/mod_proxy_http.so"',
+		'</IfModule>',
+		MANAGED_MARKER_END,
+		'',
+	].join('\n');
+	const virtualHost = (port) => [
+		`<VirtualHost *:${port}>`,
+		MANAGED_MARKER_START,
+		'Protocols http/1.1',
+		`IncludeOptional "${includePath}"`,
+		MANAGED_MARKER_END,
+		'</VirtualHost>',
+	].join('\n');
+	const managedSite = `${virtualHost(10000)}\n${virtualHost(10001)}\n`;
+	const cleanSite = '<VirtualHost *:10000>\n</VirtualHost>\n<VirtualHost *:10001>\n</VirtualHost>\n';
+	const main = [
+		`Include "${path.join(service.configPath, 'modules.conf')}"`,
+		`Include "${path.join(service.configPath, 'site.conf')}"`,
+		'',
+	].join('\n');
+	return { cleanSite, includePath, main, managedInclude, managedModules, managedSite };
+}
+
+async function writeCompiledApacheFixture(service, managed = true) {
+	const fixture = apacheManagedFixture(service);
+	await fs.mkdir(path.join(service.configPath, 'includes'), { recursive: true });
+	await Promise.all([
+		fs.writeFile(path.join(service.configPath, 'apache2.conf'), fixture.main),
+		fs.writeFile(
+			path.join(service.configPath, 'modules.conf'),
+			managed ? fixture.managedModules : '# clean modules\n',
+		),
+		fs.writeFile(
+			path.join(service.configPath, 'site.conf'),
+			managed ? fixture.managedSite : fixture.cleanSite,
+		),
+		managed
+			? fs.writeFile(fixture.includePath, fixture.managedInclude)
+			: fs.rm(fixture.includePath, { force: true }),
+	]);
+	return fixture;
+}
 
 test('Apache master liveness treats EPERM as present, ESRCH as absent, and propagates unexpected errors', () => {
 	const errorWithCode = (code) => {
@@ -108,6 +170,7 @@ test('derives guarded module paths from the exact Local +11 platform archive lay
 	assert.equal(upsertApacheModules(applied, httpd, true), applied);
 	assert.match(applied, /<IfModule !proxy_http_module>\r\n\tLoadModule proxy_http_module "\/opt\/Local\/lightning-services\/apache-2\.4\.43\+11\/bin\/darwin-arm64\/modules\/mod_proxy_http\.so"/);
 	assert.match(applied, /mod_headers\.so/);
+	assert.match(applied, /mod_setenvif\.so/);
 	assert.match(applied, /mod_ssl\.so/);
 	const windowsApplied = upsertApacheModules(
 		'# human module\n',
@@ -130,6 +193,7 @@ test('reports HTTPS capability from the validated Local bundle platform instead 
 			fs.writeFile(binary, ''),
 			fs.writeFile(path.join(platformRoot, 'modules', 'mod_proxy_http.so'), ''),
 			fs.writeFile(path.join(platformRoot, 'modules', 'mod_headers.so'), ''),
+			fs.writeFile(path.join(platformRoot, 'modules', 'mod_setenvif.so'), ''),
 		]);
 		const capabilities = await inspectApacheRuntimeCapabilities(binary);
 		assert.equal(capabilities.http, true);
@@ -145,8 +209,11 @@ test('builds a fixed-host local-first Apache proxy with guarded methods, bodies,
 	const config = buildManagedApacheConfig(secureOrigin, '/site/conf/apache/origin ca.pem');
 
 	assert.match(config, /ProxyRequests Off/);
-	assert.match(config, /ProxyAddHeaders Off/);
-	assert.match(config, /ProxyPreserveHost Off/);
+	assert.match(config, /<LocationMatch[^>]+>\n\tProxyAddHeaders Off\n\tProxyErrorOverride Off\n\tProxyPreserveHost Off/);
+	assert.equal((config.match(/ProxyAddHeaders Off/g) ?? []).length, 1);
+	assert.equal((config.match(/ProxyErrorOverride Off/g) ?? []).length, 1);
+	assert.equal((config.match(/ProxyPreserveHost Off/g) ?? []).length, 1);
+	assert.match(config, /Managed route revision: upload-assets-v3/);
 	assert.match(config, /SSLProxyEngine On/);
 	assert.match(config, /SSLProxyVerify require/);
 	assert.match(config, /SSLProxyVerifyDepth 5/);
@@ -155,33 +222,103 @@ test('builds a fixed-host local-first Apache proxy with guarded methods, bodies,
 	assert.match(config, /RewriteRule "\^\/\(wp-content\/uploads\//);
 	assert.ok(config.includes('\\.'));
 	assert.ok(!config.includes('\\\\.'));
-	assert.match(config, /RewriteCond %\{REQUEST_METHOD\} !\^\(\?:GET\|HEAD\)\$/);
+	assert.match(config, /RewriteCond %\{REQUEST_METHOD\} !\^\(\?:GET\|HEAD\)\$$/m);
+	assert.doesNotMatch(config, /RewriteCond %\{REQUEST_METHOD\}[^\n]*\[NC\]/);
 	assert.match(config, /RewriteCond %\{HTTP:Transfer-Encoding\} !\^\$/);
 	assert.match(config, /RewriteCond %\{HTTP:Content-Length\} !\^\(\?:\|0\)\$/);
+	assert.match(config, /SetEnvIfNoCase .*Host.*If-Range.*Range.*User-Agent.* "\.\+" LOCAL_MEDIA_PROXY_UNKNOWN_HEADER=1/);
+	assert.match(config, /RewriteCond %\{ENV:LOCAL_MEDIA_PROXY_UNKNOWN_HEADER\} =1/);
+	assert.match(config, /RewriteCond %\{THE_REQUEST\} "!\\s\/wp-content\/uploads\/" \[NC\]/);
+	assert.match(config, /RewriteCond %\{THE_REQUEST\} .*x5c/);
 	assert.match(config, /RewriteCond "%\{DOCUMENT_ROOT\}\/\$1" !-f/);
+	assert.match(config, /RewriteCond %\{HTTP:Sec-Fetch-Dest\} .*script.* \[NC\]/i);
+	const fetchDestinationGuard = config.split('\n')
+		.find((line) => line.includes('HTTP:Sec-Fetch-Dest')) ?? '';
+	assert.doesNotMatch(fetchDestinationGuard, /object|embed|frame|iframe|fencedframe/i);
+	assert.ok(
+		config.indexOf('RewriteCond %{HTTP:Sec-Fetch-Dest}') <
+		config.indexOf('[P,L,NE,QSA'),
+	);
 	assert.ok(config.indexOf('RewriteCond $1') < config.indexOf('RewriteCond "%{DOCUMENT_ROOT}/$1" !-f'));
+	assert.ok(
+		config.indexOf('RewriteCond "%{DOCUMENT_ROOT}/$1" !-f') <
+		config.indexOf('RewriteCond %{ENV:LOCAL_MEDIA_PROXY_UNKNOWN_HEADER} =1'),
+	);
+	assert.match(config, /RewriteCond "%\{DOCUMENT_ROOT\}\/\$1" !-f\nRewriteCond \$1 .*php/);
+	assert.ok(config.indexOf('RewriteCond $1') < config.indexOf('[P,L,NE,QSA'));
 	assert.ok(config.includes('"https://media.example.com:8443/$1"'));
 	assert.match(config, /\[P,L,NE,QSA,NC,E=LOCAL_MEDIA_PROXY_ORIGIN:1\]/);
 	assert.doesNotMatch(config, /192\.0\.2\./);
-	assert.doesNotMatch(config, /ProxyPassReverse|Redirect/);
-	assert.match(config, /Header unset Set-Cookie env=LOCAL_MEDIA_PROXY_ORIGIN/);
-	assert.match(config, /Header always unset Set-Cookie env=LOCAL_MEDIA_PROXY_ORIGIN/);
+	assert.doesNotMatch(config, /ProxyPassReverse|^[\t ]*Redirect\b/m);
+	for (const header of [
+		'Set-Cookie',
+		'Clear-Site-Data',
+		'Service-Worker-Allowed',
+		'Content-Security-Policy',
+		'Content-Security-Policy-Report-Only',
+		'Location',
+		'X-Content-Type-Options',
+		'X-Local-Media-Proxy',
+		'Report-To',
+		'Reporting-Endpoints',
+		'NEL',
+	]) {
+		assert.match(config, new RegExp(`Header unset ${header} env=LOCAL_MEDIA_PROXY_ORIGIN`));
+		assert.match(config, new RegExp(`Header always unset ${header} env=LOCAL_MEDIA_PROXY_ORIGIN`));
+	}
 	assert.match(config, /Header always set X-Local-Media-Proxy "origin" env=LOCAL_MEDIA_PROXY_ORIGIN/);
 	assert.match(config, /Header always set X-Content-Type-Options "nosniff" env=LOCAL_MEDIA_PROXY_ORIGIN/);
+	assert.match(config, /Header always set Content-Security-Policy "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'" env=LOCAL_MEDIA_PROXY_ORIGIN/);
 	assert.match(config, new RegExp(`RequestHeader set User-Agent "${ORIGIN_REQUEST_USER_AGENT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}" env=LOCAL_MEDIA_PROXY_ORIGIN`));
 	for (const line of config.split('\n').filter((line) => line.includes('RequestHeader '))) {
 		assert.match(line, /env=LOCAL_MEDIA_PROXY_ORIGIN$/, `local request header mutation was not proxy-conditioned: ${line}`);
 	}
-	for (const sensitiveHeader of ['X-WP-Nonce', 'X-API-Key', 'X-Auth-Token', 'X-CSRF-Token']) {
+	for (const sensitiveHeader of [
+		'X-WP-Nonce',
+		'X-API-Key',
+		'X-Auth-Token',
+		'X-CSRF-Token',
+		'X-Playback-Session-Id',
+	]) {
 		assert.match(config, new RegExp(`RequestHeader unset ${sensitiveHeader} env=LOCAL_MEDIA_PROXY_ORIGIN`));
 	}
+	for (const visitorHeader of [
+		'Accept',
+		'Accept-Language',
+		'Baggage',
+		'Sec-CH-UA',
+		'Sec-Fetch-Dest',
+		'Sec-Fetch-Site',
+		'Sentry-Trace',
+		'Traceparent',
+		'X-Request-ID',
+	]) {
+		assert.match(config, new RegExp(`RequestHeader unset ${visitorHeader} env=LOCAL_MEDIA_PROXY_ORIGIN`));
+	}
+	for (const unsafeProxyHeader of [
+		'X-HTTP-Method-Override',
+		'X-Original-URL',
+		'X-Forwarded-Client-Cert',
+		'X-Access-Token',
+		'CF-Access-Client-Secret',
+	]) {
+		assert.match(config, new RegExp(`RequestHeader unset ${unsafeProxyHeader} env=LOCAL_MEDIA_PROXY_ORIGIN`));
+	}
+	assert.doesNotMatch(config, /RequestHeader unset (?:Range|If-Range)/);
 });
 
-test('preserves the official vhost route regex and rejects traversal before the local-file check', () => {
+test('shares the future-tolerant asset policy and rejects unsafe paths before the local-file check', () => {
 	for (const requestPath of [
 		'/wp-content/uploads/2026/07/photo.jpg',
 		'/wp-content/uploads/photo%41.webp',
 		'/wp-content/uploads/icons/logo.svg',
+		'/wp-content/uploads/download.pdf',
+		'/wp-content/uploads/movie.mp4',
+		'/wp-content/uploads/data.json',
+		'/wp-content/uploads/new.futuremedia',
+		'/wp-content/uploads/app/image.jpg',
+		'/wp-content/uploads/config/image.jpg',
+		'/wp-content/uploads/js/image.jpg',
 	]) {
 		assert.equal(apacheMediaPathIsProxyEligible(requestPath), true, requestPath);
 	}
@@ -196,7 +333,16 @@ test('preserves the official vhost route regex and rejects traversal before the 
 		'/wp-content/uploads/photo%2541.jpg',
 		'/wp-content/uploads/photo.jpg?target=https://other.example.com',
 		'/wp-content/uploads/photo.jpg#fragment',
-		'/wp-content/uploads/photo.pdf',
+		'/wp-content/uploads/shell.php.jpg',
+		'/wp-content/uploads/index.html',
+		'/wp-content/uploads/index.shtm',
+		'/wp-content/uploads/program.exe',
+		'/wp-content/uploads/database.sqlite',
+		'/wp-content/uploads/shell.php/image.jpg',
+		'/wp-content/uploads/shell.php123/image.jpg',
+		'/wp-content/uploads/photo.jpg:preview.futuremedia',
+		'/wp-content/uploads/photo.jpg%3Apreview.futuremedia',
+		'/wp-content/uploads/photo\\name.jpg',
 		'/other/uploads/photo.jpg',
 	]) {
 		assert.equal(apacheMediaPathIsProxyEligible(requestPath), false, requestPath);
@@ -204,11 +350,14 @@ test('preserves the official vhost route regex and rejects traversal before the 
 
 	const config = buildManagedApacheConfig(secureOrigin, '/site/ca.pem');
 	assert.match(config, /RewriteRule "\^\/\(wp-content\/uploads\//);
+	const locationMatch = config.split('\n').find((line) => line.startsWith('<LocationMatch')) ?? '';
+	assert.doesNotMatch(locationMatch, /avif|jpe|webp|pdf|mp4|futuremedia/i);
 	for (const line of config.split('\n').filter((line) => line.startsWith('RewriteRule '))) {
 		assert.match(line, /\[[^\]]*NC[^\]]*\]$/);
 	}
 	assert.match(config, /%\(\?:25\)\*\(\?:2f\|5c\|3f\|23\|00\)/);
 	assert.match(config, /RewriteCond \$1 "%" \[OR\]/);
+	assert.match(config, /RewriteCond %\{THE_REQUEST\} .*%\(\?:25\|2f\|5c\|3f\|23/);
 	assert.ok(config.indexOf('RewriteCond $1') < config.indexOf('RewriteCond "%{DOCUMENT_ROOT}/$1" !-f'));
 });
 
@@ -229,7 +378,7 @@ test('requires Apache hostname mode and a trust bundle for HTTPS', () => {
 });
 
 test('targeted compilation verifies managed markers before httpd syntax validation', async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), 'local-media-proxy-apache-'));
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'local-media-proxy-apache-')));
 	try {
 		const service = {
 			bin: { httpd },
@@ -240,21 +389,15 @@ test('targeted compilation verifies managed markers before httpd syntax validati
 				PATH: '/opt/Local/lightning-services/apache-2.4.43+11/bin',
 			},
 			runPath: path.join(root, 'run'),
-			siteConfigTemplatePath: path.join(root, 'conf', 'apache'),
-		};
-		const calls = [];
+				siteConfigTemplatePath: path.join(root, 'conf', 'apache'),
+			};
+			await fs.mkdir(service.configPath, { recursive: true });
+			const calls = [];
+		const expected = apacheManagedFixture(service);
 		const compiler = {
 			compileConfigTemplates: async (...args) => {
 				calls.push(['compile', ...args]);
-				await fs.mkdir(path.join(service.configPath, 'includes'), { recursive: true });
-				const managed = '# BEGIN Local Media Proxy (managed)\n# END Local Media Proxy (managed)\n';
-				const compiledSite = `${managed}IncludeOptional "${path.join(service.configPath, 'includes', 'local-media-proxy.conf')}"\n`;
-				await Promise.all([
-					fs.writeFile(path.join(service.configPath, 'apache2.conf'), '# compiled global\n'),
-					fs.writeFile(path.join(service.configPath, 'modules.conf'), managed),
-					fs.writeFile(path.join(service.configPath, 'site.conf'), compiledSite),
-					fs.writeFile(path.join(service.configPath, 'includes', 'local-media-proxy.conf'), managed),
-				]);
+				await writeCompiledApacheFixture(service, true);
 			},
 		};
 		await compileAndValidateApacheConfig(
@@ -266,6 +409,8 @@ test('targeted compilation verifies managed markers before httpd syntax validati
 				return '';
 			},
 			true,
+			expected.managedInclude,
+			expected.managedModules,
 		);
 		assert.deepEqual(calls[0].slice(2), [
 			service.siteConfigTemplatePath,
@@ -283,40 +428,374 @@ test('targeted compilation verifies managed markers before httpd syntax validati
 		assert.ok(inheritedKey);
 		assert.equal(calls[1][3].env[inheritedKey], process.env[inheritedKey]);
 		assert.equal(hasApacheManagedBlock(await fs.readFile(path.join(service.configPath, 'site.conf'), 'utf8')), true);
-		assert.equal(await fs.readFile(path.join(service.configPath, 'apache2.conf'), 'utf8'), '# compiled global\n');
+		assert.equal(await fs.readFile(path.join(service.configPath, 'apache2.conf'), 'utf8'), expected.main);
+	} finally {
+		await fs.rm(root, { force: true, recursive: true });
+	}
+});
+
+test('clean Apache compilation replaces only an unreferenced regular orphan with an inert tombstone', async () => {
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'local-media-proxy-apache-cleanup-')));
+	try {
+		const service = {
+			bin: { httpd },
+			configPath: path.join(root, 'compiled', 'apache'),
+			configVariables: {},
+			runPath: path.join(root, 'run'),
+			siteConfigTemplatePath: path.join(root, 'templates', 'apache'),
+		};
+		const managed = await writeCompiledApacheFixture(service, true);
+		const compileRoots = [];
+		const compileCalls = [];
+		const cleanCompiler = {
+			compileConfigTemplates: async (
+				site,
+				templatesDirectory,
+				destinationDirectory,
+				configVariables,
+			) => {
+				compileCalls.push([
+					site,
+					templatesDirectory,
+					destinationDirectory,
+					configVariables,
+				]);
+				compileRoots.push(templatesDirectory);
+				if (templatesDirectory !== service.siteConfigTemplatePath) {
+					const tombstoneTemplate = await fs.readFile(
+						path.join(templatesDirectory, 'includes', 'local-media-proxy.conf.hbs'),
+						'utf8',
+					);
+					await fs.writeFile(managed.includePath, tombstoneTemplate);
+					return;
+				}
+				await Promise.all([
+					fs.writeFile(path.join(service.configPath, 'apache2.conf'), managed.main),
+					fs.writeFile(path.join(service.configPath, 'modules.conf'), '# clean modules\n'),
+					fs.writeFile(path.join(service.configPath, 'site.conf'), managed.cleanSite),
+				]);
+			},
+		};
+		const targetSite = { id: 'site-a' };
+		const commands = [];
+		await compileAndValidateApacheConfig(
+			targetSite,
+			service,
+			cleanCompiler,
+			async (_command, args) => { commands.push(args); return ''; },
+			false,
+		);
+		assert.deepEqual(commands.map((args) => args[0]), ['-t']);
+		assert.equal(
+			await fs.readFile(managed.includePath, 'utf8'),
+			COMPILED_INCLUDE_TOMBSTONE,
+		);
+		assert.equal(compileRoots.length, 2);
+		assert.equal(compileRoots[0], service.siteConfigTemplatePath);
+		assert.equal(compileCalls[1][0], targetSite);
+		assert.equal(compileCalls[1][2], service.configPath);
+		assert.equal(compileCalls[1][3], service.configVariables);
+		await assert.rejects(fs.lstat(compileRoots[1]), { code: 'ENOENT' });
+		assert.equal(await apacheCompiledConfigMatches(service, null, null), true);
+		await fs.appendFile(managed.includePath, '# changed tombstone\n');
+		assert.equal(await apacheCompiledConfigMatches(service, null, null), false);
+
+		await fs.writeFile(managed.includePath, managed.managedInclude);
+		const referenceBearingCompiler = {
+			compileConfigTemplates: async () => {
+				await Promise.all([
+					fs.writeFile(path.join(service.configPath, 'apache2.conf'), managed.main),
+					fs.writeFile(path.join(service.configPath, 'modules.conf'), '# clean modules\n'),
+				]);
+				await fs.writeFile(
+					path.join(service.configPath, 'site.conf'),
+					`${managed.cleanSite}IncludeOptional "${managed.includePath}"\n`,
+				);
+			},
+		};
+		await assert.rejects(
+			compileAndValidateApacheConfig(
+				{ id: 'site-a' },
+				service,
+				referenceBearingCompiler,
+				async () => '',
+				false,
+			),
+			/retained a managed Apache configuration after cleanup/,
+		);
+		assert.equal(await fs.readFile(managed.includePath, 'utf8'), managed.managedInclude);
+
+		await Promise.all([
+			fs.writeFile(path.join(service.configPath, 'apache2.conf'), managed.main),
+			fs.writeFile(path.join(service.configPath, 'modules.conf'), '# clean modules\n'),
+			fs.writeFile(path.join(service.configPath, 'site.conf'), managed.cleanSite),
+		]);
+		let current = true;
+		let temporaryTemplatesDirectory;
+		await assert.rejects(
+			compileAndValidateApacheConfig(
+				{ id: 'site-a' },
+				service,
+				{
+					compileConfigTemplates: async (...args) => {
+						const templatesDirectory = args[1];
+						await cleanCompiler.compileConfigTemplates(...args);
+						if (templatesDirectory !== service.siteConfigTemplatePath) {
+							temporaryTemplatesDirectory = templatesDirectory;
+							current = false;
+						}
+					},
+				},
+				async () => '',
+				false,
+				undefined,
+				undefined,
+				() => {
+					if (!current) {
+						throw new Error('lifecycle changed before orphan cleanup');
+					}
+				},
+			),
+			/lifecycle changed before orphan cleanup/,
+		);
+		assert.equal(
+			await fs.readFile(managed.includePath, 'utf8'),
+			COMPILED_INCLUDE_TOMBSTONE,
+		);
+		await assert.rejects(fs.lstat(temporaryTemplatesDirectory), { code: 'ENOENT' });
+
+		const outside = path.join(root, 'outside-managed-include.conf');
+		await fs.writeFile(outside, managed.managedInclude);
+		await fs.rm(managed.includePath, { force: true });
+		await fs.symlink(outside, managed.includePath);
+		let unsafeCompilerCalls = 0;
+		await assert.rejects(
+			compileAndValidateApacheConfig(
+				{ id: 'site-a' },
+				service,
+				{
+					compileConfigTemplates: async () => { unsafeCompilerCalls += 1; },
+				},
+				async () => '',
+				false,
+			),
+			/unsafe compiled Apache managed include/,
+		);
+		assert.equal(unsafeCompilerCalls, 0);
+		assert.equal(await fs.readFile(outside, 'utf8'), managed.managedInclude);
+
+		await fs.rm(managed.includePath, { force: true });
+		await fs.rm(path.dirname(managed.includePath), { recursive: true });
+		const outsideIncludes = path.join(root, 'outside-includes');
+		await fs.mkdir(outsideIncludes);
+		await fs.writeFile(
+			path.join(outsideIncludes, path.basename(managed.includePath)),
+			managed.managedInclude,
+		);
+		await fs.symlink(outsideIncludes, path.dirname(managed.includePath));
+		await assert.rejects(
+			compileAndValidateApacheConfig(
+				{ id: 'site-a' },
+				service,
+				{ compileConfigTemplates: async () => { unsafeCompilerCalls += 1; } },
+				async () => '',
+				false,
+			),
+			/unsafe compiled Apache managed include/,
+		);
+		assert.equal(unsafeCompilerCalls, 0);
+	} finally {
+		await fs.rm(root, { force: true, recursive: true });
+	}
+});
+
+test('preflights every known Apache compiled output before the first compiler call', async () => {
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'local-media-proxy-apache-output-preflight-')));
+	try {
+		const service = {
+			bin: { httpd },
+			configPath: path.join(root, 'compiled', 'apache'),
+			configVariables: {},
+			runPath: path.join(root, 'run'),
+			siteConfigTemplatePath: path.join(root, 'templates', 'apache'),
+		};
+		const compiled = apacheCompiledPaths(service);
+		const expected = apacheManagedFixture(service);
+		for (const [name, target] of [
+			['main', compiled.main],
+			['modules', compiled.modules],
+			['site', compiled.site],
+			['include', compiled.include],
+		]) {
+			await fs.rm(service.configPath, { force: true, recursive: true });
+			await writeCompiledApacheFixture(service, true);
+			const outside = path.join(root, `outside-${name}.conf`);
+			const outsideBytes = `outside ${name}\n`;
+			await fs.writeFile(outside, outsideBytes);
+			await fs.rm(target, { force: true });
+			await fs.symlink(outside, target);
+			let compilerCalls = 0;
+			await assert.rejects(
+				compileAndValidateApacheConfig(
+					{ id: 'site-a' },
+					service,
+					{ compileConfigTemplates: async () => { compilerCalls += 1; } },
+					async () => '',
+					true,
+					expected.managedInclude,
+					expected.managedModules,
+				),
+				/unsafe compiled Apache (?:main configuration|modules configuration|site configuration|managed include)/,
+			);
+			assert.equal(compilerCalls, 0, `${name} must fail before compilation`);
+			assert.equal(await fs.readFile(outside, 'utf8'), outsideBytes);
+		}
+	} finally {
+		await fs.rm(root, { force: true, recursive: true });
+	}
+});
+
+test('compiled Apache parity requires exact main, module, vhost, include, and path state', async () => {
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'local-media-proxy-apache-parity-')));
+	try {
+		const service = {
+			bin: { httpd },
+			configPath: path.join(root, 'compiled', 'apache'),
+			configVariables: {},
+			runPath: path.join(root, 'run'),
+			siteConfigTemplatePath: path.join(root, 'templates', 'apache'),
+		};
+		const expected = await writeCompiledApacheFixture(service, true);
+		assert.equal(await apacheCompiledConfigMatches(
+			service,
+			expected.managedInclude,
+			expected.managedModules,
+		), true);
+
+		await fs.writeFile(
+			path.join(service.configPath, 'apache2.conf'),
+			`Include "${path.join(service.configPath, 'modules.conf')}"\n`,
+		);
+		assert.equal(await apacheCompiledConfigMatches(
+			service,
+			expected.managedInclude,
+			expected.managedModules,
+		), false, 'the main config must load the exact compiled site');
+
+		await writeCompiledApacheFixture(service, true);
+		await fs.writeFile(
+			path.join(service.configPath, 'modules.conf'),
+			expected.managedModules.replace('mod_proxy_http.so', 'mod_wrong.so'),
+		);
+		assert.equal(await apacheCompiledConfigMatches(
+			service,
+			expected.managedInclude,
+			expected.managedModules,
+		), false, 'marker-shaped but incorrect modules must not converge');
+
+		await writeCompiledApacheFixture(service, true);
+		const oneManagedVhost = expected.managedSite.slice(
+			0,
+			expected.managedSite.indexOf('<VirtualHost *:10001>'),
+		);
+		await fs.writeFile(
+			path.join(service.configPath, 'site.conf'),
+			`${oneManagedVhost}<VirtualHost *:10001>\n</VirtualHost>\n`,
+		);
+		assert.equal(await apacheCompiledConfigMatches(
+			service,
+			expected.managedInclude,
+			expected.managedModules,
+		), false, 'every compiled VirtualHost must end with one canonical managed include');
+
+		for (const duplicateInclude of [
+			`IncludeOptional "${expected.includePath}"`,
+			`includeoptional ${expected.includePath}`,
+			`Include ${expected.includePath}`,
+		]) {
+			await writeCompiledApacheFixture(service, true);
+			await fs.appendFile(
+				path.join(service.configPath, 'site.conf'),
+				`${duplicateInclude}\n`,
+			);
+			assert.equal(await apacheCompiledConfigMatches(
+				service,
+				expected.managedInclude,
+				expected.managedModules,
+			), false, `duplicate reference must not converge: ${duplicateInclude}`);
+		}
+
+		await writeCompiledApacheFixture(service, true);
+		await fs.appendFile(
+			path.join(service.configPath, 'apache2.conf'),
+			`IncludeOptional ${expected.includePath}\n`,
+		);
+		assert.equal(await apacheCompiledConfigMatches(
+			service,
+			expected.managedInclude,
+			expected.managedModules,
+		), false, 'the main config must not load the managed include directly');
+
+		const outside = path.join(root, 'outside');
+		await fs.mkdir(outside);
+		await fs.writeFile(path.join(outside, 'local-media-proxy.conf'), expected.managedInclude);
+		await fs.rm(path.join(service.configPath, 'includes'), { recursive: true });
+		await fs.symlink(outside, path.join(service.configPath, 'includes'));
+		await assert.rejects(
+			apacheCompiledConfigMatches(
+				service,
+				expected.managedInclude,
+				expected.managedModules,
+			),
+			/unsafe compiled Apache path/,
+		);
+
+		const realParent = path.join(root, 'real-compiled-parent');
+		const realService = { ...service, configPath: path.join(realParent, 'apache') };
+		const realExpected = await writeCompiledApacheFixture(realService, true);
+		const linkedParent = path.join(root, 'linked-compiled-parent');
+		await fs.symlink(realParent, linkedParent);
+		await assert.rejects(
+			apacheCompiledConfigMatches(
+				{ ...service, configPath: path.join(linkedParent, 'apache') },
+				realExpected.managedInclude,
+				realExpected.managedModules,
+			),
+			/unsafe compiled Apache root/,
+			'compiled roots with a symlinked ancestor must fail closed',
+		);
+
+		assert.equal(await apacheCompiledConfigMatches(
+			{ ...service, configPath: path.join(root, 'absent-compiled-root') },
+			null,
+			null,
+		), true, 'a clean disabled stopped site may have no compiled output yet');
+		assert.equal(hasCompleteApacheManagedBlock(MANAGED_MARKER_START), false);
+		assert.equal(hasCompleteApacheManagedBlock(MANAGED_MARKER_END), false);
+		assert.equal(hasCompleteApacheManagedBlock(expected.managedInclude), true);
 	} finally {
 		await fs.rm(root, { force: true, recursive: true });
 	}
 });
 
 test('Apache refresh is bounded, site-scoped, and never hard-restarts Local-managed workers', async () => {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), 'local-media-proxy-apache-refresh-'));
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'local-media-proxy-apache-refresh-')));
 	try {
 		const service = {
 			bin: { httpd },
 			configPath: path.join(root, 'run', 'apache'),
 			configVariables: {},
 			runPath: path.join(root, 'run'),
-			siteConfigTemplatePath: path.join(root, 'conf', 'apache'),
-		};
-		let compileManaged = true;
+				siteConfigTemplatePath: path.join(root, 'conf', 'apache'),
+			};
+			await fs.mkdir(service.configPath, { recursive: true });
+			let compileManaged = true;
 		let pidContents = '4242\n';
+		const expected = apacheManagedFixture(service);
 		const compiler = {
 			compileConfigTemplates: async () => {
-				await Promise.all([
-					fs.mkdir(path.join(service.configPath, 'includes'), { recursive: true }),
-					fs.mkdir(path.join(service.runPath, 'logs'), { recursive: true }),
-				]);
-				const managed = '# BEGIN Local Media Proxy (managed)\n# END Local Media Proxy (managed)\n';
-				const compiledSite = compileManaged
-					? `${managed}IncludeOptional "${path.join(service.configPath, 'includes', 'local-media-proxy.conf')}"\n`
-					: '# clean site\n';
-				await Promise.all([
-					fs.writeFile(path.join(service.configPath, 'apache2.conf'), '# compiled global\n'),
-					fs.writeFile(path.join(service.configPath, 'modules.conf'), compileManaged ? managed : '# clean modules\n'),
-					fs.writeFile(path.join(service.configPath, 'site.conf'), compiledSite),
-					fs.writeFile(path.join(service.configPath, 'includes', 'local-media-proxy.conf'), managed),
-				]);
+				await writeCompiledApacheFixture(service, compileManaged);
+				await fs.mkdir(path.join(service.runPath, 'logs'), { recursive: true });
 				const pidFile = path.join(service.runPath, 'logs', 'httpd.pid');
 				if (pidContents === null) {
 					await fs.rm(pidFile, { force: true });
@@ -325,7 +804,11 @@ test('Apache refresh is bounded, site-scoped, and never hard-restarts Local-mana
 				}
 			},
 		};
-		const alwaysRunningOptions = { masterProcessExists: () => true };
+		const alwaysRunningOptions = {
+			expectedManagedInclude: expected.managedInclude,
+			expectedManagedModules: expected.managedModules,
+			masterProcessExists: () => true,
+		};
 		let commandCalls = [];
 		await assert.rejects(refreshApacheService(
 			{ id: 'site-a' },
@@ -420,7 +903,7 @@ test('Apache refresh is bounded, site-scoped, and never hard-restarts Local-mana
 			true,
 			() => true,
 			() => true,
-			{ masterProcessExists: () => false },
+			{ ...alwaysRunningOptions, masterProcessExists: () => false },
 		), /master PID is stale for this site/);
 		assert.deepEqual(commandCalls.map((args) => args[0]), ['-t']);
 
@@ -508,6 +991,7 @@ test('Apache refresh is bounded, site-scoped, and never hard-restarts Local-mana
 				return readinessChecks === 1 || readinessChecks === 3;
 			},
 			{
+				...alwaysRunningOptions,
 				attempts: 3,
 				intervalMs: 0,
 				masterProcessExists: () => true,
@@ -532,6 +1016,7 @@ test('Apache refresh is bounded, site-scoped, and never hard-restarts Local-mana
 				return readinessChecks === 1;
 			},
 			{
+				...alwaysRunningOptions,
 				attempts: 3,
 				intervalMs: 0,
 				masterProcessExists: () => true,
@@ -552,8 +1037,104 @@ test('Apache refresh is bounded, site-scoped, and never hard-restarts Local-mana
 			() => true,
 			() => true,
 			alwaysRunningOptions,
-		), true);
-		assert.deepEqual(commandCalls.map((args) => args[0]), ['-t', '-k']);
+			), true);
+			assert.deepEqual(commandCalls.map((args) => args[0]), ['-t', '-k']);
+
+			compileManaged = true;
+			const realRunParent = path.join(root, 'real-run-parent');
+			await fs.mkdir(path.join(realRunParent, 'apache'), { recursive: true });
+			const linkedRunParent = path.join(root, 'linked-run-parent');
+			await fs.symlink(realRunParent, linkedRunParent);
+			commandCalls = [];
+			await assert.rejects(refreshApacheService(
+				{ id: 'site-a' },
+				{ ...service, runPath: path.join(linkedRunParent, 'apache') },
+				compiler,
+				async (_command, args) => { commandCalls.push(args); return ''; },
+				true,
+				() => true,
+				() => true,
+				alwaysRunningOptions,
+			), /unsafe Apache runtime root/);
+			assert.deepEqual(commandCalls.map((args) => args[0]), ['-t']);
+		} finally {
+		await fs.rm(root, { force: true, recursive: true });
+	}
+});
+
+test('Apache refresh fences every compile, validation, PID, reload, and readiness phase', async () => {
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'local-media-proxy-apache-guards-')));
+	try {
+		const service = {
+			bin: { httpd },
+			configPath: path.join(root, 'compiled', 'apache'),
+			configVariables: {},
+			runPath: path.join(root, 'run'),
+				siteConfigTemplatePath: path.join(root, 'templates', 'apache'),
+			};
+			await fs.mkdir(service.configPath, { recursive: true });
+			const expected = apacheManagedFixture(service);
+		const runScenario = async (mutationPoint) => {
+			let current = true;
+			let serviceChecks = 0;
+			let waits = 0;
+			const commands = [];
+			const assertCurrent = () => {
+				if (!current) {
+					throw new Error('server identity changed');
+				}
+			};
+			const compiler = {
+				compileConfigTemplates: async () => {
+					await writeCompiledApacheFixture(service, true);
+					await fs.mkdir(path.join(service.runPath, 'logs'), { recursive: true });
+					await fs.writeFile(path.join(service.runPath, 'logs', 'httpd.pid'), '4242\n');
+					if (mutationPoint === 'compile') {
+						current = false;
+					}
+				},
+			};
+			await assert.rejects(refreshApacheService(
+				{ id: 'site-a' },
+				service,
+				compiler,
+				async (_command, args) => {
+					commands.push(args[0]);
+					if (mutationPoint === args[0]) {
+						current = false;
+					}
+					return '';
+				},
+				true,
+				() => true,
+				() => {
+					serviceChecks += 1;
+					return mutationPoint !== 'wait' || serviceChecks === 1;
+				},
+				{
+					assertCurrent,
+					attempts: 2,
+					expectedManagedInclude: expected.managedInclude,
+					expectedManagedModules: expected.managedModules,
+					intervalMs: 0,
+					masterProcessExists: () => true,
+					wait: async () => {
+						waits += 1;
+						if (mutationPoint === 'wait') {
+							current = false;
+						}
+					},
+				},
+			), /server identity changed/);
+			return { commands, waits };
+		};
+
+		assert.deepEqual((await runScenario('compile')).commands, []);
+		assert.deepEqual((await runScenario('-t')).commands, ['-t']);
+		assert.deepEqual((await runScenario('-k')).commands, ['-t', '-k']);
+		const waitResult = await runScenario('wait');
+		assert.deepEqual(waitResult.commands, ['-t', '-k']);
+		assert.equal(waitResult.waits, 1);
 	} finally {
 		await fs.rm(root, { force: true, recursive: true });
 	}

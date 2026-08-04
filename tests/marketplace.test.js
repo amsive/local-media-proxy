@@ -62,12 +62,12 @@ test('builds complete Amsive detail and release metadata', () => {
 		addon.details.homepage,
 		'https://www.amsive.com/?utm_source=localwp&utm_medium=referral&utm_campaign=local_media_proxy&utm_content=addon_details',
 	);
-	assert.equal(release.version, '0.3.1');
+	assert.equal(release.version, '0.4.0');
 	assert.equal(release.testedUpTo, '10.1.1');
 	assert.equal(release.localRequirement, '>=10.1.1');
 	assert.equal(
 		release.downloadUrl,
-		'https://github.com/amsive/local-media-proxy/releases/download/v0.3.1/local-media-proxy-v0.3.1.tgz',
+		'https://github.com/amsive/local-media-proxy/releases/download/v0.4.0/local-media-proxy-v0.4.0.tgz',
 	);
 	assert.match(
 		addon.avatar.original,
@@ -88,7 +88,13 @@ test('builds complete Amsive detail and release metadata', () => {
 	assert.doesNotMatch(addon.details.overview, /Test direct connection/);
 	assert.match(addon.details.overview, /Flywheel-connected sites retain the manual/);
 	assert.match(addon.details.overview, /fixed add-on User-Agent/);
+	assert.match(addon.details.overview, /without enumerating allowed extensions/);
+	assert.match(addon.details.overview, /video, audio, captions, PDFs, documents, fonts, archives/);
+	assert.match(addon.details.overview, /rejects executable, browser-active, hidden, configuration, secret, database, and backup paths/i);
 	assert.match(addon.details.overview, /does not overwrite the same add-on slug/);
+	assert.match(addon.details.overview, /release before v0\.4\.0 may clear a site's enabled state/);
+	assert.match(addon.details.overview, /only the validated Site URL is carried across/);
+	assert.match(addon.details.overview, /Nginx still requires its own remote IP/);
 	assert.match(addon.details.overview, /Select the TGZ directly in Local; do not extract it first/);
 	assert.match(addon.details.overview, /Apache License 2\.0/);
 	assert.match(addon.details.overview, /without a support SLA/);
@@ -98,27 +104,29 @@ test('builds complete Amsive detail and release metadata', () => {
 	assert.equal(releases.length, 5);
 	assert.deepEqual(
 		releases.map(({ version }) => version),
-		['0.3.1', '0.3.0', '0.2.4', '0.2.3', '0.2.2'],
+		['0.4.0', '0.3.1', '0.3.0', '0.2.4', '0.2.3'],
 	);
-	assert.match(releases[0].changelog, /Version 0\.3\.1 restores Media Proxy setup on running Apache sites/);
-	assert.match(releases[0].changelog, /web-server preparation screen/);
-	assert.match(releases[0].changelog, /#29/);
-	assert.match(releases[0].changelog, /Nginx readiness and managed-file behavior are unchanged/);
-	assert.match(releases[1].changelog, /Version 0\.3\.0 keeps Local Media Proxy out of Local's site creation/);
-	assert.match(releases[1].changelog, /first WP Engine pull/);
-	assert.match(releases[1].changelog, /Cancels deferred work when deletion starts/);
-	assert.match(releases[1].changelog, /required lifecycle smoke test/);
-	assert.match(releases[2].changelog, /Version 0\.2\.4 restores the README screenshot/);
-	assert.match(releases[2].changelog, /without linking to removed repository history/);
-	assert.match(releases[2].changelog, /campaign attribution/);
-	assert.match(releases[3].changelog, /Version 0\.2\.3 prepares the project for public open-source collaboration/);
-	assert.match(releases[3].changelog, /without changing proxy or TLS behavior/);
-	assert.match(releases[3].changelog, /both bundled Cloudflare Origin CA roots/);
-	assert.match(releases[3].changelog, /strict hostname and chain verification/);
-	assert.match(releases[4].changelog, /Version 0\.2\.2 makes server changes and origin discovery recover safely/);
-	assert.match(releases[4].changelog, /lifecycle status mid-operation/);
-	assert.match(releases[4].changelog, /currently selected service/);
-	assert.match(releases[4].changelog, /30 seconds/);
+	assert.match(releases[0].changelog, /Version 0\.4\.0 expands the local-first fallback/);
+	assert.match(releases[0].changelog, /future asset formats/);
+	assert.match(releases[0].changelog, /range requests support seeking/);
+	assert.match(releases[0].changelog, /enabled intent survives v0\.4\.0 add-on disable and reinstall/);
+	assert.match(releases[0].changelog, /older uninstaller runs first/);
+	assert.match(releases[0].changelog, /compiled server configuration/);
+	assert.match(releases[1].changelog, /Version 0\.3\.1 restores Media Proxy setup on running Apache sites/);
+	assert.match(releases[1].changelog, /web-server preparation screen/);
+	assert.match(releases[1].changelog, /#29/);
+	assert.match(releases[1].changelog, /Nginx readiness and managed-file behavior are unchanged/);
+	assert.match(releases[2].changelog, /Version 0\.3\.0 keeps Local Media Proxy out of Local's site creation/);
+	assert.match(releases[2].changelog, /first WP Engine pull/);
+	assert.match(releases[2].changelog, /Cancels deferred work when deletion starts/);
+	assert.match(releases[2].changelog, /required lifecycle smoke test/);
+	assert.match(releases[3].changelog, /Version 0\.2\.4 restores the README screenshot/);
+	assert.match(releases[3].changelog, /without linking to removed repository history/);
+	assert.match(releases[3].changelog, /campaign attribution/);
+	assert.match(releases[4].changelog, /Version 0\.2\.3 prepares the project for public open-source collaboration/);
+	assert.match(releases[4].changelog, /without changing proxy or TLS behavior/);
+	assert.match(releases[4].changelog, /both bundled Cloudflare Origin CA roots/);
+	assert.match(releases[4].changelog, /strict hostname and chain verification/);
 });
 
 test('uses packaged detail metadata only when the marketplace has no listing', async () => {
@@ -156,9 +164,9 @@ test('supplies packaged release notes for the native Release notes tab', async (
 	const [currentRelease] = payload.data.addon.releases;
 
 	assert.equal(payload.data.addon.releases.length, 5);
-	assert.equal(currentRelease.version, '0.3.1');
-	assert.equal(currentRelease.date, '2026-07-30T00:00:00.000Z');
-	assert.match(currentRelease.changelog, /Version 0\.3\.1 restores Media Proxy setup on running Apache sites/);
+	assert.equal(currentRelease.version, '0.4.0');
+	assert.equal(currentRelease.date, '2026-08-03T00:00:00.000Z');
+	assert.match(currentRelease.changelog, /Version 0\.4\.0 expands the local-first fallback/);
 });
 
 test('supports a single named target operation without operationName', async () => {
