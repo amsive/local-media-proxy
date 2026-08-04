@@ -689,7 +689,7 @@ if (isRouterScenario) {
 	global.localhostRouting = false;
 }
 if (
-	isRouterLifecycleGuardScenario ||
+	isRouterScenario ||
 	staleServerScenarios.has(scenario) ||
 	scenario === 'target-service-missing-restart-timeout'
 ) {
