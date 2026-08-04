@@ -31,8 +31,8 @@ import {
 	WpEngineVerificationUnavailableError,
 } from './hosting';
 import {
-	compileAndValidateNginxConfig,
 	nginxCompiledConfigMatches,
+	refreshNginxService,
 } from './nginx';
 import {
 	cleanupRequiresRefresh,
@@ -714,37 +714,26 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			return refreshed;
 		}
 
-		await compileAndValidateNginxConfig(
+		const targetSiteRunning = (): boolean => {
+			assertCurrent();
+			return siteProcessManager.getSiteStatus(site) === 'running';
+		};
+		const targetServiceRunning = (): boolean => {
+			assertCurrent();
+			return siteProcessManager.hasRunningProcess(site, serviceName);
+		};
+		const refreshed = await refreshNginxService(
 			site,
 			server.service,
 			configTemplates,
 			LocalMain.execFilePromise,
 			expectedManagedInclude,
-			assertCurrent,
+			targetSiteRunning,
+			targetServiceRunning,
+			{ assertCurrent },
 		);
 		assertCurrent();
-		const targetServiceRunning = (): boolean => {
-			assertCurrent();
-			return siteProcessManager.hasRunningProcess(site, serviceName);
-		};
-		const siteStatus = siteProcessManager.getSiteStatus(site);
-		const targetWasRunning = targetServiceRunning();
-		if (siteStatus === 'running' && !targetWasRunning) {
-			throw new Error(
-				"Local no longer reports this site's Nginx service as running. Stop and start the site in Local, then retry.",
-			);
-		}
-		if (shouldRefreshRuntime(siteStatus, targetWasRunning)) {
-			assertCurrent();
-			await siteProcessManager.restartSiteService(site, serviceName);
-			assertCurrent();
-			if (!siteProcessManager.hasRunningProcess(site, serviceName)) {
-				throw new Error('Local did not restart the targeted Nginx service with the validated configuration.');
-			}
-			return true;
-		}
-
-		return false;
+		return refreshed;
 	};
 
 	const runtimeCleanupUnavailableReason = (server: RuntimeServer): string => (

@@ -16,12 +16,12 @@ const {
 	compileAndValidateNginxConfig,
 	compiledNginxSiteHasCanonicalManagedInclude,
 	hasManagedInclude,
-	isMissingNginxMasterProcess,
-	reloadNginxInPlace,
-	reloadNginxWithFallback,
 	removeManagedInclude,
 	nginxCompiledConfigMatches,
 	nginxCompiledPaths,
+	nginxMasterProcessExists,
+	nginxMasterProcessMatches,
+	refreshNginxService,
 	upsertManagedInclude,
 } = require('../lib/nginx');
 const {
@@ -530,247 +530,313 @@ test('Nginx validation fences each phase and rejects an inexact or duplicated -T
 	}
 });
 
-test('validates the compiled config before reloading Nginx in place', async () => {
-	const calls = [];
-	const execFilePromise = async (...args) => {
-		calls.push(args);
-		return '';
-	};
+test('Nginx refresh proves the default master PID, identity, and stable in-place reload', async () => {
+	const root = await fsPromises.realpath(await fsPromises.mkdtemp(path.join(os.tmpdir(), 'local-media-proxy-nginx-refresh-')));
+	try {
+		const runtimeService = {
+			bin: { nginx: '/opt/Local/nginx' },
+			configPath: path.join(root, 'compiled', 'nginx'),
+			configVariables: {},
+			env: { LOCAL_NGINX_TEST_ENV: 'authoritative' },
+			runPath: path.join(root, 'run', 'nginx'),
+			siteConfigTemplatePath: path.join(root, 'templates', 'nginx'),
+		};
+		await fsPromises.mkdir(runtimeService.configPath, { recursive: true });
+		await fsPromises.mkdir(runtimeService.runPath, { recursive: true });
+		const expected = nginxManagedFixture(runtimeService, true);
+		let pidContents = '4242\n';
+		let pidFixture = 'regular';
+		let explicitPidPath = null;
+		let rawMainPrefix = '';
+		const compiler = {
+			compileConfigTemplates: async () => {
+				await writeCompiledNginxFixture(runtimeService, true);
+				if (rawMainPrefix) {
+					await fsPromises.writeFile(
+						expected.compiled.main,
+						`${rawMainPrefix}${expected.main}`,
+					);
+				} else if (explicitPidPath !== null) {
+					await fsPromises.writeFile(
+						expected.compiled.main,
+						`pid "${explicitPidPath}";\n${expected.main}`,
+					);
+				}
+				const logsPath = path.join(runtimeService.runPath, 'logs');
+				const outsidePath = path.join(root, 'outside-pid-fixture');
+				await fsPromises.rm(logsPath, { force: true, recursive: true });
+				await fsPromises.rm(outsidePath, { force: true, recursive: true });
+				if (pidFixture === 'parent-symlink') {
+					await fsPromises.mkdir(outsidePath, { recursive: true });
+					await fsPromises.writeFile(path.join(outsidePath, 'nginx.pid'), '4242\n');
+					await fsPromises.symlink(outsidePath, logsPath);
+					return;
+				}
+				await fsPromises.mkdir(logsPath, { recursive: true });
+				const pidFile = path.join(logsPath, 'nginx.pid');
+				if (pidFixture === 'file-symlink') {
+					await fsPromises.writeFile(outsidePath, '4242\n');
+					await fsPromises.symlink(outsidePath, pidFile);
+					return;
+				}
+				if (pidContents === null) {
+					await fsPromises.rm(pidFile, { force: true });
+				} else {
+					await fsPromises.writeFile(pidFile, pidContents);
+				}
+			},
+		};
+		const currentDump = async () => {
+			const main = await fsPromises.readFile(expected.compiled.main, 'utf8');
+			return expected.dump.replace(expected.main, main);
+		};
+		const run = async ({
+			isSiteRunning = () => true,
+			isServiceRunning = () => true,
+			onCommand = async () => undefined,
+			onReload = async () => undefined,
+			options = {},
+		} = {}) => {
+			const calls = [];
+			let signalOptions;
+			const result = await refreshNginxService(
+				{ id: 'site-a' },
+				runtimeService,
+				compiler,
+				async (_command, args, execOptions) => {
+					calls.push(args);
+					await onCommand(args[0]);
+					if (args[0] === '-T') {
+						return currentDump();
+					}
+					if (args[0] === '-s') {
+						signalOptions = execOptions;
+						await onReload();
+					}
+					return '';
+				},
+				expected.include,
+				isSiteRunning,
+				isServiceRunning,
+				{
+					attempts: 3,
+					intervalMs: 0,
+					masterProcessExists: () => true,
+					masterProcessMatches: async () => true,
+					stableSamples: 3,
+					wait: async () => undefined,
+					...options,
+				},
+			);
+			return { calls, result, signalOptions };
+		};
 
-	await reloadNginxInPlace(service, execFilePromise);
+		const success = await run();
+		assert.equal(success.result, true);
+		assert.deepEqual(success.calls.map((args) => args[0]), ['-t', '-T', '-s']);
+		assert.deepEqual(success.calls[2], [
+			'-s', 'reload',
+			'-c', path.join(runtimeService.configPath, 'nginx.conf'),
+			'-p', runtimeService.runPath,
+		]);
+		assert.equal(success.signalOptions.env.LOCAL_NGINX_TEST_ENV, 'authoritative');
 
-	const configFile = path.join(service.configPath, 'nginx.conf');
-	assert.deepEqual(calls, [
-		[
-			service.bin.nginx,
-			['-t', '-c', configFile, '-p', service.runPath],
-			{ timeout: 10_000, windowsHide: true },
-		],
-		[
-			service.bin.nginx,
-			['-s', 'reload', '-c', configFile, '-p', service.runPath],
-			{ timeout: 10_000, windowsHide: true },
-		],
-	]);
+		pidContents = null;
+		const stopped = await run({
+			isSiteRunning: () => false,
+			isServiceRunning: () => false,
+		});
+		assert.equal(stopped.result, false);
+		assert.deepEqual(stopped.calls.map((args) => args[0]), ['-t', '-T']);
+		await assert.rejects(run({
+			isSiteRunning: () => false,
+			isServiceRunning: () => true,
+		}), /site as stopped while its Nginx service is still running/);
+
+		for (const invalidPid of [null, 'not-a-pid\n', '1\n']) {
+			pidContents = invalidPid;
+			await assert.rejects(run(), /master PID is unavailable for this site/);
+		}
+		pidContents = '4242\n';
+
+		await assert.rejects(
+			run({ options: { masterProcessExists: () => false } }),
+			/master PID is stale for this site/,
+		);
+		await assert.rejects(
+			run({ options: { masterProcessMatches: async () => false } }),
+			/master PID does not belong to this site's expected Nginx service/,
+		);
+		await assert.rejects(
+			run({ onReload: async () => { throw new Error('reload failed'); } }),
+			/could not gracefully reload this site's validated configuration/,
+		);
+
+		await assert.rejects(
+			run({
+				onReload: async () => fsPromises.writeFile(
+					path.join(runtimeService.runPath, 'logs', 'nginx.pid'),
+					'5252\n',
+				),
+			}),
+			/master process changed unexpectedly during the graceful reload/,
+		);
+
+		let serviceChecks = 0;
+		await assert.rejects(
+			run({
+				isServiceRunning: () => {
+					serviceChecks += 1;
+					return serviceChecks <= 2;
+				},
+			}),
+			/did not keep this site's Nginx master running/,
+		);
+
+		let identityChecks = 0;
+		await assert.rejects(run({
+			options: {
+				attempts: 4,
+				masterProcessMatches: async () => {
+					identityChecks += 1;
+					return identityChecks < 5;
+				},
+				stableSamples: 4,
+			},
+		}), /did not keep this site's Nginx master running/);
+
+		let current = true;
+		const assertCurrent = () => { if (!current) throw new Error('lifecycle changed'); };
+		await assert.rejects(run({
+			onCommand: async (commandName) => {
+				if (commandName === '-T') current = false;
+			},
+			options: { assertCurrent },
+		}), /lifecycle changed/);
+		current = true;
+		await assert.rejects(run({
+			onReload: async () => { current = false; },
+			options: { assertCurrent },
+		}), /lifecycle changed/);
+		current = true;
+		await assert.rejects(run({
+			options: {
+				assertCurrent,
+				wait: async () => { current = false; },
+			},
+		}), /lifecycle changed/);
+		current = true;
+
+		let defaultIdentityChecks = 0;
+		const sustained = await run({
+			options: {
+				attempts: 20,
+				masterProcessMatches: async () => {
+					defaultIdentityChecks += 1;
+					return true;
+				},
+				stableSamples: undefined,
+			},
+		});
+		assert.equal(sustained.result, true);
+		assert.equal(defaultIdentityChecks, 13);
+
+		pidFixture = 'parent-symlink';
+		await assert.rejects(run(), /unsafe Nginx PID path/);
+		pidFixture = 'file-symlink';
+		await assert.rejects(run(), /unsafe Nginx PID file/);
+		pidFixture = 'regular';
+
+		explicitPidPath = path.join(runtimeService.runPath, 'logs', 'nginx.pid');
+		assert.equal((await run()).result, true);
+		explicitPidPath = path.join(root, 'outside', 'nginx.pid');
+		await assert.rejects(run(), /unsafe Nginx PID path/);
+		explicitPidPath = null;
+		rawMainPrefix = 'pid\n logs/nginx.pid;\n';
+		await assert.rejects(run(), /unsupported Nginx PID directive/);
+		rawMainPrefix = '# a comment containing ; pid ignored.pid;\n';
+		assert.equal((await run()).result, true);
+	} finally {
+		await fsPromises.rm(root, { force: true, recursive: true });
+	}
 });
 
-test('does not reload when Nginx rejects the compiled config', async () => {
-	let callCount = 0;
-	const configError = new Error('nginx: configuration file test failed');
-
-	await assert.rejects(
-		reloadNginxInPlace(service, async () => {
-			callCount += 1;
-			throw configError;
-		}),
-		configError,
-	);
-	assert.equal(callCount, 1);
-});
-
-test('propagates a reload failure after successful validation', async () => {
-	let callCount = 0;
-	const reloadError = new Error('nginx: invalid PID number');
-
-	await assert.rejects(
-		reloadNginxInPlace(service, async () => {
-			callCount += 1;
-			if (callCount === 2) {
-				throw reloadError;
-			}
-			return '';
-		}),
-		reloadError,
-	);
-	assert.equal(callCount, 2);
-});
-
-test('restarts only the Nginx service when its validated reload finds a stale master PID', async () => {
-	const calls = [];
-	let restartCount = 0;
-	const result = await reloadNginxWithFallback(
+test('Nginx master identity matching requires the expected binary, config, and prefix', async () => {
+	const commands = [];
+	assert.equal(await nginxMasterProcessMatches(
 		service,
-		async (_command, args) => {
-			calls.push(args);
-			if (args[0] === '-s') {
-				const error = new Error('nginx: [alert] kill(83412, 1) failed (3: No such process)');
-				error.stderr = 'nginx: [alert] kill(83412, 1) failed (3: No such process)';
-				throw error;
-			}
-			return '';
+		4242,
+		async (...args) => {
+			commands.push(args);
+			return `${service.bin.nginx} -c ${service.configPath}/nginx.conf -p ${service.runPath}`;
 		},
-		async () => {
-			restartCount += 1;
-			return true;
-		},
-	);
-
-	assert.equal(result, 'restarted');
-	assert.equal(restartCount, 1);
-	assert.deepEqual(calls.map((args) => args[0]), ['-t', '-s']);
-});
-
-test('does not restart the Nginx service for configuration or unrelated reload failures', async () => {
-	let restartCount = 0;
-	const restartService = async () => {
-		restartCount += 1;
-		return true;
-	};
-
-	await assert.rejects(
-		reloadNginxWithFallback(
-			service,
-			async () => {
-				throw new Error('nginx: configuration file test failed');
-			},
-			restartService,
-		),
-		/configuration file test failed/,
-	);
-	await assert.rejects(
-		reloadNginxWithFallback(
-			service,
-			async (_command, args) => {
-				if (args[0] === '-s') {
-					throw new Error('nginx: permission denied');
-				}
-				return '';
-			},
-			restartService,
-		),
-		/permission denied/,
-	);
-
-	assert.equal(restartCount, 0);
-});
-
-test('never restarts when validation reports stale-PID text', async () => {
-	let restartCount = 0;
-
-	await assert.rejects(
-		reloadNginxWithFallback(
-			service,
-			async () => {
-				throw new Error('nginx: [alert] kill(83412, 1) failed (3: No such process)');
-			},
-			async () => {
-				restartCount += 1;
-				return true;
-			},
-		),
-		/No such process/,
-	);
-	assert.equal(restartCount, 0);
-});
-
-test('propagates a targeted restart failure after a stale master PID', async () => {
-	const restartError = new Error('Local could not restart Nginx');
-
-	await assert.rejects(
-		reloadNginxWithFallback(
-			service,
-			async (_command, args) => {
-				if (args[0] === '-s') {
-					throw new Error('nginx: [alert] kill(83412, 1) failed (3: No such process)');
-				}
-				return '';
-			},
-			async () => {
-				throw restartError;
-			},
-		),
-		restartError,
-	);
-});
-
-test('fails when Local reports success without starting the targeted Nginx process', async () => {
-	await assert.rejects(
-		reloadNginxWithFallback(
-			service,
-			async (_command, args) => {
-				if (args[0] === '-s') {
-					throw new Error('nginx: [alert] kill(83412, 1) failed (3: No such process)');
-				}
-				return '';
-			},
-			async () => false,
-		),
-		/Local did not start the Nginx service/,
-	);
-});
-
-test('does not restart Nginx when the Local site stops after reload validation', async () => {
-	let restartCount = 0;
-	await assert.rejects(
-		reloadNginxWithFallback(
-			service,
-			async (_command, args) => {
-				if (args[0] === '-s') {
-					throw new Error('nginx: [alert] kill(83412, 1) failed (3: No such process)');
-				}
-				return '';
-			},
-			async () => {
-				restartCount += 1;
-				return true;
-			},
-			() => false,
-		),
-		/site is no longer running/,
-	);
-	assert.equal(restartCount, 0);
-});
-
-test('recognizes a stale Nginx master PID in command stderr', () => {
-	const error = new Error('Command failed');
-	error.stderr = 'nginx: [alert] kill(123, 1) failed (3: No such process)';
-
-	assert.equal(isMissingNginxMasterProcess(error), true);
-	assert.equal(isMissingNginxMasterProcess(new Error('nginx: invalid PID number')), false);
-});
-
-test('supports consecutive validation and reload operations', async () => {
-	const calls = [];
-	const execFilePromise = async (_command, args) => {
-		calls.push(args);
-		return '';
-	};
-
-	await reloadNginxInPlace(service, execFilePromise);
-	await reloadNginxInPlace(service, execFilePromise);
-
-	assert.deepEqual(calls.map((args) => args.slice(0, 2)), [
-		['-t', '-c'],
-		['-s', 'reload'],
-		['-t', '-c'],
-		['-s', 'reload'],
+		'darwin',
+	), true);
+	assert.deepEqual(commands[0], [
+		'/bin/ps',
+		['-ww', '-p', '4242', '-o', 'command='],
+		{ timeout: 10_000, windowsHide: true },
 	]);
+	assert.equal(await nginxMasterProcessMatches(
+		service,
+		4242,
+		async () => `/tmp/reused -c ${service.configPath}/nginx.conf -p ${service.runPath}`,
+		'darwin',
+	), false);
+	assert.equal(await nginxMasterProcessMatches(
+		service,
+		4242,
+		async () => `"${service.bin.nginx}" -c "${service.configPath}/nginx.conf" -p "${service.runPath}"`,
+		'darwin',
+	), true);
+	assert.equal(await nginxMasterProcessMatches(
+		service,
+		4242,
+		async () => `${service.bin.nginx}-evil -c ${service.configPath}/nginx.conf -p ${service.runPath}`,
+		'darwin',
+	), false);
+	let windowsExecCalls = 0;
+	assert.equal(await nginxMasterProcessMatches(
+		service,
+		4242,
+		async () => { windowsExecCalls += 1; return ''; },
+		'win32',
+	), true, 'Nginx for Windows safely rejects unrelated PIDs through its PID-scoped named reload event');
+	assert.equal(windowsExecCalls, 0);
+	assert.equal(await nginxMasterProcessMatches(service, 1, async () => '', 'darwin'), false);
 });
 
-test('fails closed when Local does not expose an Nginx binary', async () => {
-	await assert.rejects(
-		reloadNginxInPlace({ ...service, bin: undefined }, async () => ''),
-		/Local did not provide an Nginx binary/,
-	);
+test('Nginx master liveness treats EPERM as live and ESRCH as stale', () => {
+	assert.equal(nginxMasterProcessExists(4242, () => true), true);
+	assert.equal(nginxMasterProcessExists(4242, () => {
+		const error = new Error('not permitted');
+		error.code = 'EPERM';
+		throw error;
+	}), true);
+	assert.equal(nginxMasterProcessExists(4242, () => {
+		const error = new Error('missing');
+		error.code = 'ESRCH';
+		throw error;
+	}), false);
 });
 
-test('main compiles, validates, and restarts only the targeted running Nginx service', () => {
+test('main compiles, validates, and gracefully reloads only the targeted running Nginx service', () => {
 	const mainSource = fs.readFileSync(path.resolve(__dirname, '../src/main.ts'), 'utf8');
 	const compileAndReload = mainSource.slice(
 		mainSource.indexOf('const compileAndReload = async'),
 		mainSource.indexOf('const runtimeCleanupUnavailableReason'),
 	);
-	assert.match(compileAndReload, /compileAndValidateNginxConfig\(/);
+	assert.match(compileAndReload, /refreshNginxService\(/);
 	assert.match(
 		compileAndReload,
-		/const targetServiceRunning = \(\): boolean => \{[\s\S]{0,180}hasRunningProcess\(site, serviceName\)[\s\S]{0,180}const targetWasRunning = targetServiceRunning\(\)[\s\S]{0,160}siteStatus === 'running' && !targetWasRunning[\s\S]{0,260}if \(shouldRefreshRuntime\(siteStatus, targetWasRunning\)\)/,
+		/const targetSiteRunning = \(\): boolean => \{[\s\S]{0,180}getSiteStatus\(site\) === 'running'[\s\S]{0,180}const targetServiceRunning = \(\): boolean => \{[\s\S]{0,180}hasRunningProcess\(site, serviceName\)/,
 	);
 	assert.equal(
-		(compileAndReload.match(/restartSiteService\(site, serviceName\)/g) ?? []).length,
+		(compileAndReload.match(/refreshNginxService\(/g) ?? []).length,
 		1,
 	);
-	assert.match(compileAndReload, /assertCurrent\(\);[\s\S]{0,100}restartSiteService\(site, serviceName\)[\s\S]{0,100}assertCurrent\(\)/);
-	assert.doesNotMatch(compileAndReload, /reloadNginxWithFallback|reloadNginxInPlace|compileServiceConfigs/);
+	assert.match(compileAndReload, /targetSiteRunning,[\s\S]{0,80}targetServiceRunning,[\s\S]{0,80}\{ assertCurrent \}/);
+	assert.doesNotMatch(compileAndReload, /restartSiteService|reloadNginxWithFallback|reloadNginxInPlace|compileServiceConfigs/);
 });
 
 test('main binds separate WP Engine TLS identities to the selected Local site', () => {

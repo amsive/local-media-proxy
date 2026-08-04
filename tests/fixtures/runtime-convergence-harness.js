@@ -200,6 +200,7 @@ let compiledMatches = new Set([
 	'startup-pristine-disabled-apache',
 ]).has(scenario);
 let sourceMatches = true;
+let refreshCalls = 0;
 let restartCalls = 0;
 let cleanCompileFailuresRemaining = scenario === 'corrupt-cleanup-retry' ? 1 : 0;
 let serviceLookupCalls = 0;
@@ -337,6 +338,45 @@ Object.assign(nginx, {
 	nginxCompiledConfigMatches: async () => {
 		compiledMatchChecks += 1;
 		return compiledMatches;
+	},
+	refreshNginxService: async (
+		_site,
+		_service,
+		_compiler,
+		_exec,
+		expected,
+		isSiteRunning,
+		isServiceRunning,
+		options,
+	) => {
+		calls.push(`compileNginx:${expected === null ? 'clean' : 'managed'}`);
+		if (expected === null && cleanCompileFailuresRemaining > 0) {
+			cleanCompileFailuresRemaining -= 1;
+			throw new Error('simulated clean compilation failure');
+		}
+		compiledMatches = true;
+		if (scenario === 'service-input-change') {
+			service.configVariables.revision = 2;
+		}
+		if (reconciliationInterruptionsRemaining > 0) {
+			reconciliationInterruptionsRemaining -= 1;
+			service.configVariables.revision = 2;
+		}
+		options?.assertCurrent?.();
+		if (!isSiteRunning()) {
+			return false;
+		}
+		if (!isServiceRunning()) {
+			throw new Error(
+				"Local no longer reports this site's Nginx service as running. Stop and start the site in Local, then retry.",
+			);
+		}
+		calls.push('reloadNginx');
+		refreshCalls += 1;
+		if (rollbackScenarios.has(scenario) && refreshCalls === 1) {
+			throw new Error('targeted reload failed');
+		}
+		return true;
 	},
 });
 
@@ -571,6 +611,7 @@ async function flushAsyncWork() {
 			preflightTimersAfterFailure,
 			preflightTimersAfterOneRecoverySample,
 			projectedSiteUrl,
+			refreshCalls,
 			restartCalls,
 			retryTimersAfterFailure,
 			stateCanEnable: state?.canEnable,

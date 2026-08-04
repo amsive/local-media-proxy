@@ -204,6 +204,32 @@ nginx.compileAndValidateNginxConfig = async (
 	calls.push(`compile:${site.id}`);
 	assertCurrent?.();
 };
+nginx.refreshNginxService = async (
+	site,
+	_runtimeService,
+	_configTemplates,
+	_execFilePromise,
+	expectedManagedInclude,
+	isSiteRunning,
+	isServiceRunning,
+	options,
+) => {
+	options?.assertCurrent?.();
+	if (expectedManagedInclude === null) {
+		compiledManaged.delete(site.id);
+	} else {
+		compiledManaged.add(site.id);
+	}
+	calls.push(`compile:${site.id}`);
+	options?.assertCurrent?.();
+	if (!isSiteRunning()) {
+		return false;
+	}
+	if (!isServiceRunning()) {
+		throw new Error('targeted Nginx service is unavailable');
+	}
+	return true;
+};
 
 const serverModule = require(path.join(libRoot, 'server.js'));
 serverModule.detectSiteServer = () => ({

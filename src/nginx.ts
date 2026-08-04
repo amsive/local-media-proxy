@@ -28,6 +28,9 @@ import type { NormalizedOrigin } from './types';
 
 const NGINX_COMMAND_TIMEOUT_MS = 10_000;
 const NGINX_DUMP_MAX_BUFFER_BYTES = 4 * 1024 * 1024;
+const NGINX_READINESS_ATTEMPTS = 20;
+const NGINX_READINESS_INTERVAL_MS = 100;
+const NGINX_READINESS_STABLE_SAMPLES = 11;
 
 export interface NginxRuntimeService {
 	bin: { [binaryName: string]: string } | undefined;
@@ -47,6 +50,16 @@ export interface NginxConfigTemplates {
 	) => Promise<void>;
 }
 
+export interface NginxServiceRefreshOptions {
+	assertCurrent?: () => void;
+	attempts?: number;
+	intervalMs?: number;
+	masterProcessExists?: (pid: number) => boolean;
+	masterProcessMatches?: (pid: number) => boolean | Promise<boolean>;
+	stableSamples?: number;
+	wait?: (milliseconds: number) => Promise<void>;
+}
+
 export interface NginxCompiledPaths {
 	include: string;
 	main: string;
@@ -58,8 +71,6 @@ export type ExecFilePromise = (
 	args: string[],
 	options?: ExecFileOptions,
 ) => Promise<string>;
-
-export type NginxReloadResult = 'reloaded' | 'restarted';
 
 interface NginxCommandContext {
 	commonArgs: string[];
@@ -205,6 +216,10 @@ function nginxCommandContext(service: NginxRuntimeService): NginxCommandContext 
 	const configFile = path.join(service.configPath, 'nginx.conf');
 	const commonArgs = ['-c', configFile, '-p', service.runPath];
 	const options: ExecFileOptions = {
+		env: {
+			...process.env,
+			...service.env,
+		},
 		timeout: NGINX_COMMAND_TIMEOUT_MS,
 		windowsHide: true,
 	};
@@ -256,17 +271,6 @@ export function nginxCompiledPaths(service: NginxRuntimeService): NginxCompiledP
 	};
 }
 
-async function validateNginxConfig(
-	context: NginxCommandContext,
-	execFilePromise: ExecFilePromise,
-): Promise<void> {
-	await execFilePromise(
-		context.nginxBinary,
-		['-t', ...context.commonArgs],
-		context.options,
-	);
-}
-
 async function signalNginxReload(
 	context: NginxCommandContext,
 	execFilePromise: ExecFilePromise,
@@ -278,57 +282,389 @@ async function signalNginxReload(
 	);
 }
 
-export async function reloadNginxInPlace(
-	service: NginxRuntimeService,
-	execFilePromise: ExecFilePromise,
-): Promise<void> {
-	const context = nginxCommandContext(service);
-	await validateNginxConfig(context, execFilePromise);
-	await signalNginxReload(context, execFilePromise);
+function decodeNginxPath(value: string): string {
+	return value.replace(/\\(.)/g, '$1');
 }
 
-function errorOutput(error: unknown): string {
-	if (!(error instanceof Error)) {
-		return String(error);
+function configuredNginxPidPath(mainConfig: string): string {
+	const directives = [...mainConfig.matchAll(
+		/^[\t ]*pid[\t ]+(?:"((?:\\.|[^"\\\r\n])*)"|'((?:\\.|[^'\\\r\n])*)'|([^;\s#]+))[\t ]*;[\t ]*(?:#[^\r\n]*)?$/gm,
+	)];
+	if (directives.length > 1) {
+		throw new Error('Local returned an unsafe Nginx PID path.');
 	}
-
-	const commandError = error as Error & { stderr?: unknown };
-	return [
-		error.message,
-		typeof commandError.stderr === 'string' ? commandError.stderr : '',
-	].join('\n');
+	const pidDirectiveLines = mainConfig.match(/^[\t ]*pid\b[^\r\n]*$/gm) ?? [];
+	if (pidDirectiveLines.length !== directives.length) {
+		throw new Error('Local returned an unsupported Nginx PID directive.');
+	}
+	if (directives.length === 0) {
+		return path.join('logs', 'nginx.pid');
+	}
+	const configured = decodeNginxPath(
+		directives[0][1] ?? directives[0][2] ?? directives[0][3],
+	);
+	if (!configured || /[\r\n\0$]/.test(configured)) {
+		throw new Error('Local returned an unsafe Nginx PID path.');
+	}
+	const segments = configured.split(/[\\/]/);
+	if (segments.some((segment) => segment === '.' || segment === '..')) {
+		throw new Error('Local returned an unsafe Nginx PID path.');
+	}
+	return configured;
 }
 
-export function isMissingNginxMasterProcess(error: unknown): boolean {
-	return /kill\(\d+,\s*1\) failed \(3:\s*No such process\)/i.test(errorOutput(error));
-}
-
-export async function reloadNginxWithFallback(
+async function readNginxMasterPid(
 	service: NginxRuntimeService,
-	execFilePromise: ExecFilePromise,
-	restartService: () => Promise<boolean>,
-	canRestartService: () => boolean = () => true,
-): Promise<NginxReloadResult> {
-	const context = nginxCommandContext(service);
-	await validateNginxConfig(context, execFilePromise);
+	assertCurrent: () => void = (): void => undefined,
+): Promise<number> {
+	if (!service.runPath || !path.isAbsolute(service.runPath)) {
+		throw new Error('Local returned a relative Nginx runtime root.');
+	}
+	const runRoot = await assertRealDirectoryPath(
+		service.runPath,
+		'Nginx runtime root',
+		assertCurrent,
+	);
+	const compiled = nginxCompiledPaths(service);
+	const mainConfig = await readOptionalCompiledFile(
+		service.configPath,
+		compiled.main,
+		assertCurrent,
+	);
+	if (mainConfig === null) {
+		throw new Error('Local did not compile the Nginx main configuration.');
+	}
+	const configuredPath = configuredNginxPidPath(mainConfig);
+	const pidFile = path.isAbsolute(configuredPath)
+		? path.resolve(configuredPath)
+		: path.resolve(runRoot, configuredPath);
+	const relative = path.relative(runRoot, pidFile);
+	if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+		throw new Error('Local returned an unsafe Nginx PID path.');
+	}
+	let current = runRoot;
+	const segments = relative.split(path.sep);
+	for (let index = 0; index < segments.length - 1; index += 1) {
+		assertCurrent();
+		current = path.join(current, segments[index]);
+		const metadata = await fs.lstat(current);
+		assertCurrent();
+		if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+			throw new Error('Local returned an unsafe Nginx PID path.');
+		}
+	}
+	assertCurrent();
+	const pidMetadata = await fs.lstat(pidFile);
+	assertCurrent();
+	if (!pidMetadata.isFile() || pidMetadata.isSymbolicLink()) {
+		throw new Error('Local returned an unsafe Nginx PID file.');
+	}
+	const pidText = await fs.readFile(pidFile, 'utf8');
+	assertCurrent();
+	if (!/^[1-9][0-9]*\s*$/.test(pidText)) {
+		throw new Error('invalid PID file contents');
+	}
+	const pid = Number(pidText.trim());
+	if (!Number.isSafeInteger(pid) || pid <= 1) {
+		throw new Error('invalid PID value');
+	}
+	return pid;
+}
 
+export function nginxMasterProcessExists(
+	pid: number,
+	signalProcess: (targetPid: number, signal: 0) => boolean = (targetPid, signal) => process.kill(targetPid, signal),
+): boolean {
 	try {
-		await signalNginxReload(context, execFilePromise);
-		return 'reloaded';
+		signalProcess(pid, 0);
+		return true;
 	} catch (error) {
-		if (!isMissingNginxMasterProcess(error)) {
-			throw error;
+		const code = error instanceof Error
+			? (error as NodeJS.ErrnoException).code
+			: undefined;
+		if (code === 'EPERM') {
+			return true;
 		}
-		if (!canRestartService()) {
-			throw new Error('The Local site is no longer running; stale Nginx recovery was cancelled.');
+		if (code === 'ESRCH') {
+			return false;
 		}
-
-		const restarted = await restartService();
-		if (!restarted) {
-			throw new Error('Local did not start the Nginx service after stale-master recovery.');
-		}
-		return 'restarted';
+		throw error;
 	}
+}
+
+function nginxCommandLineMatchesService(
+	commandLine: string,
+	service: NginxRuntimeService,
+): boolean {
+	const nginxBinary = service.bin?.nginx;
+	if (!nginxBinary) {
+		throw new Error('Local did not provide an Nginx binary for this site.');
+	}
+	const configFile = path.join(service.configPath, 'nginx.conf');
+	const normalized = commandLine.replace(/\s+/g, ' ').trim();
+	const unquote = (value: string): string => {
+		const trimmed = value.trim();
+		return (
+			(trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+			(trimmed.startsWith("'") && trimmed.endsWith("'"))
+		) ? trimmed.slice(1, -1) : trimmed;
+	};
+	const executableForms = [nginxBinary, `"${nginxBinary}"`, `'${nginxBinary}'`];
+	const executableMatches = executableForms.some((executable) => (
+		normalized === executable ||
+		normalized.startsWith(`${executable} `) ||
+		normalized.includes(`master process ${executable} `)
+	));
+	const optionValue = (flag: string): string | null => {
+		const escapedFlag = escapeRegularExpression(flag);
+		const match = new RegExp(
+			`(?:^|\\s)${escapedFlag}\\s+(.+?)(?=\\s+-[A-Za-z](?:\\s|$)|$)`,
+		).exec(normalized);
+		return match ? unquote(match[1]) : null;
+	};
+	const configArgument = optionValue('-c');
+	const prefixArgument = optionValue('-p');
+	return executableMatches &&
+		configArgument !== null && path.resolve(configArgument) === path.resolve(configFile) &&
+		prefixArgument !== null && path.resolve(prefixArgument) === path.resolve(service.runPath);
+}
+
+export async function nginxMasterProcessMatches(
+	service: NginxRuntimeService,
+	pid: number,
+	execFilePromise: ExecFilePromise,
+	platform: NodeJS.Platform = process.platform,
+): Promise<boolean> {
+	if (!Number.isSafeInteger(pid) || pid <= 1) {
+		return false;
+	}
+	if (platform === 'darwin') {
+		const commandLine = await execFilePromise(
+			'/bin/ps',
+			['-ww', '-p', String(pid), '-o', 'command='],
+			{ timeout: NGINX_COMMAND_TIMEOUT_MS, windowsHide: true },
+		);
+		return nginxCommandLineMatchesService(commandLine, service);
+	}
+	if (platform === 'linux') {
+		const commandLine = (await fs.readFile(`/proc/${pid}/cmdline`))
+			.toString('utf8')
+			.split('\0')
+			.filter(Boolean)
+			.join(' ');
+		return nginxCommandLineMatchesService(commandLine, service);
+	}
+	if (platform === 'win32') {
+		// Nginx for Windows sends control signals through its PID-scoped
+		// Global\\ngx_<signal>_<pid> named event. An unrelated PID reuse has no
+		// matching event, so `nginx -s reload` fails without signaling that process.
+		return true;
+	}
+	throw new Error('Nginx master-process identity verification is unavailable on this platform.');
+}
+
+function isNginxRuntimePathError(error: unknown): boolean {
+	return error instanceof Error &&
+		/^Local returned (?:(?:an unsafe|a relative) Nginx (?:PID|runtime)|an unsupported Nginx PID)/.test(error.message);
+}
+
+export async function refreshNginxService(
+	site: Local.Site,
+	service: NginxRuntimeService,
+	configTemplates: NginxConfigTemplates,
+	execFilePromise: ExecFilePromise,
+	expectedManagedInclude: string | null,
+	isSiteRunning: () => boolean,
+	isServiceRunning: () => boolean,
+	refreshOptions: NginxServiceRefreshOptions = {},
+): Promise<boolean> {
+	const assertCurrent = refreshOptions.assertCurrent ?? ((): void => undefined);
+	const attempts = refreshOptions.attempts ?? NGINX_READINESS_ATTEMPTS;
+	const intervalMs = refreshOptions.intervalMs ?? NGINX_READINESS_INTERVAL_MS;
+	const requiredStableSamples = refreshOptions.stableSamples ?? NGINX_READINESS_STABLE_SAMPLES;
+	const wait = refreshOptions.wait ?? ((milliseconds: number) => new Promise<void>((resolve) => {
+		setTimeout(resolve, milliseconds);
+	}));
+	if (
+		!Number.isSafeInteger(attempts) || attempts < 1 ||
+		!Number.isSafeInteger(intervalMs) || intervalMs < 0 ||
+		!Number.isSafeInteger(requiredStableSamples) ||
+		requiredStableSamples < 1 || requiredStableSamples > attempts
+	) {
+		throw new Error('Nginx readiness options are invalid.');
+	}
+	await compileAndValidateNginxConfig(
+		site,
+		service,
+		configTemplates,
+		execFilePromise,
+		expectedManagedInclude,
+		assertCurrent,
+	);
+	assertCurrent();
+	const siteRunning = isSiteRunning();
+	assertCurrent();
+	if (!siteRunning) {
+		const unexpectedService = isServiceRunning();
+		assertCurrent();
+		if (unexpectedService) {
+			throw new Error(
+				"Local reports this site as stopped while its Nginx service is still running. Stop the orphaned service in Local, then retry.",
+			);
+		}
+		return false;
+	}
+	const serviceRunning = isServiceRunning();
+	assertCurrent();
+	if (!serviceRunning) {
+		throw new Error(
+			"Local no longer reports this site's Nginx service as running. Stop and start the site in Local, then retry.",
+		);
+	}
+
+	let masterPid: number;
+	try {
+		masterPid = await readNginxMasterPid(service, assertCurrent);
+		assertCurrent();
+	} catch (cause) {
+		assertCurrent();
+		if (isNginxRuntimePathError(cause)) {
+			throw cause;
+		}
+		throw new Error(
+			"Local's Nginx master PID is unavailable for this site. Stop and start the site in Local, then retry.",
+			{ cause },
+		);
+	}
+
+	const masterProcessExists = refreshOptions.masterProcessExists ?? nginxMasterProcessExists;
+	const masterProcessMatches = refreshOptions.masterProcessMatches ?? (
+		(pid: number) => nginxMasterProcessMatches(service, pid, execFilePromise)
+	);
+	assertCurrent();
+	const masterIsRunning = masterProcessExists(masterPid);
+	assertCurrent();
+	if (!masterIsRunning) {
+		throw new Error(
+			"Local's Nginx master PID is stale for this site. Stop and start the site in Local, then retry.",
+		);
+	}
+	let masterMatchesService: boolean;
+	try {
+		masterMatchesService = await masterProcessMatches(masterPid);
+		assertCurrent();
+	} catch (cause) {
+		assertCurrent();
+		throw new Error(
+			"Local could not verify this site's Nginx master process. Stop and start the site in Local, then retry.",
+			{ cause },
+		);
+	}
+	if (!masterMatchesService) {
+		throw new Error(
+			"Local's Nginx master PID does not belong to this site's expected Nginx service. Stop and start the site in Local, then retry.",
+		);
+	}
+
+	const context = nginxCommandContext(service);
+	try {
+		assertCurrent();
+		await signalNginxReload(context, execFilePromise);
+		assertCurrent();
+	} catch (cause) {
+		assertCurrent();
+		throw new Error(
+			"Nginx could not gracefully reload this site's validated configuration. Stop and start the site in Local, then retry.",
+			{ cause },
+		);
+	}
+
+	let reloadedMasterPid: number;
+	try {
+		reloadedMasterPid = await readNginxMasterPid(service, assertCurrent);
+		assertCurrent();
+	} catch (cause) {
+		assertCurrent();
+		if (isNginxRuntimePathError(cause)) {
+			throw cause;
+		}
+		throw new Error(
+			"Local's Nginx master PID disappeared after the graceful reload. Stop and start the site in Local, then retry.",
+			{ cause },
+		);
+	}
+	if (reloadedMasterPid !== masterPid) {
+		throw new Error(
+			"Local's Nginx master process changed unexpectedly during the graceful reload. Stop and start the site in Local, then retry.",
+		);
+	}
+	try {
+		masterMatchesService = await masterProcessMatches(masterPid);
+		assertCurrent();
+	} catch (cause) {
+		assertCurrent();
+		throw new Error(
+			"Local could not verify this site's Nginx master process after the graceful reload. Stop and start the site in Local, then retry.",
+			{ cause },
+		);
+	}
+	if (!masterMatchesService) {
+		throw new Error(
+			"Local's Nginx master PID no longer belongs to this site's expected Nginx service. Stop and start the site in Local, then retry.",
+		);
+	}
+
+	let stableSamples = 0;
+	for (let attempt = 0; attempt < attempts; attempt += 1) {
+		assertCurrent();
+		const stillRunning = isSiteRunning();
+		assertCurrent();
+		const serviceStillRunning = isServiceRunning();
+		assertCurrent();
+		const masterStillRunning = masterProcessExists(masterPid);
+		assertCurrent();
+		let masterStillMatches = false;
+		if (masterStillRunning) {
+			try {
+				masterStillMatches = await masterProcessMatches(masterPid);
+				assertCurrent();
+			} catch {
+				assertCurrent();
+				masterStillMatches = false;
+			}
+		}
+		if (stillRunning && serviceStillRunning && masterStillRunning && masterStillMatches) {
+			let currentMasterPid: number;
+			try {
+				currentMasterPid = await readNginxMasterPid(service, assertCurrent);
+				assertCurrent();
+			} catch (cause) {
+				assertCurrent();
+				if (isNginxRuntimePathError(cause)) {
+					throw cause;
+				}
+				currentMasterPid = 0;
+			}
+			if (currentMasterPid !== masterPid) {
+				throw new Error(
+					"Local's Nginx master process changed unexpectedly after the graceful reload. Stop and start the site in Local, then retry.",
+				);
+			}
+			stableSamples += 1;
+			if (stableSamples >= requiredStableSamples) {
+				return true;
+			}
+		} else {
+			stableSamples = 0;
+		}
+		if (attempt < attempts - 1) {
+			await wait(intervalMs);
+			assertCurrent();
+		}
+	}
+	throw new Error(
+		"Local did not keep this site's Nginx master running after the graceful reload. Stop and start the site in Local, then retry.",
+	);
 }
 
 function markerLineCount(config: string, marker: string): number {

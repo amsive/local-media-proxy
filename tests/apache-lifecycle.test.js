@@ -663,7 +663,7 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 		'captureAllManagedFiles',
 		'removeAllManagedFiles',
 		'compileNginx:clean',
-		'restart:nginx-1.26.1+3',
+		'reloadNginx',
 	]);
 	assert.equal(configuredDisabledNginx.compiledMatchChecks, 1);
 	assert.equal(configuredDisabledNginx.pendingTimers, 0);
@@ -693,10 +693,11 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 		'captureAllManagedFiles',
 		'removeAllManagedFiles',
 		'compileNginx:clean',
-		'restart:nginx-1.26.1+3',
+		'reloadNginx',
 	]);
 	assert.equal(globalEnableRunningDisabled.pendingTimers, 0);
-	assert.equal(globalEnableRunningDisabled.restartCalls, 1);
+	assert.equal(globalEnableRunningDisabled.refreshCalls, 1);
+	assert.equal(globalEnableRunningDisabled.restartCalls, 0);
 
 	const siteStartedHaltedDisabled = runScenario('site-start-configured-disabled-halted');
 	assert.deepEqual(siteStartedHaltedDisabled.calls, [
@@ -721,9 +722,10 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 		'captureAllManagedFiles',
 		'applyServerManagedFiles',
 		'compileNginx:managed',
-		'restart:nginx-1.26.1+3',
+		'reloadNginx',
 	]);
-	assert.equal(startupRepair.restartCalls, 1);
+	assert.equal(startupRepair.refreshCalls, 1);
+	assert.equal(startupRepair.restartCalls, 0);
 
 	for (const scenario of ['preflight-status-retry', 'preflight-service-retry']) {
 		const retriedPreflight = runScenario(scenario);
@@ -735,9 +737,10 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 			'captureAllManagedFiles',
 			'applyServerManagedFiles',
 			'compileNginx:managed',
-			'restart:nginx-1.26.1+3',
+			'reloadNginx',
 		]);
-		assert.equal(retriedPreflight.restartCalls, 1);
+		assert.equal(retriedPreflight.refreshCalls, 1);
+		assert.equal(retriedPreflight.restartCalls, 0);
 	}
 
 	const interruptedReconciliation = runScenario('reconciliation-interruption-retry');
@@ -750,9 +753,10 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 		'captureAllManagedFiles',
 		'applyServerManagedFiles',
 		'compileNginx:managed',
-		'restart:nginx-1.26.1+3',
+		'reloadNginx',
 	]);
-	assert.equal(interruptedReconciliation.restartCalls, 1);
+	assert.equal(interruptedReconciliation.refreshCalls, 1);
+	assert.equal(interruptedReconciliation.restartCalls, 0);
 
 	for (const scenario of ['site-start-matching', 'global-enable-matching']) {
 		const forcedRefresh = runScenario(scenario);
@@ -760,13 +764,14 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 			'captureAllManagedFiles',
 			'applyServerManagedFiles',
 			'compileNginx:managed',
-			'restart:nginx-1.26.1+3',
+			'reloadNginx',
 		]);
 		assert.equal(
-			forcedRefresh.restartCalls,
+			forcedRefresh.refreshCalls,
 			1,
 			`${scenario} must converge an already matching active runtime`,
 		);
+		assert.equal(forcedRefresh.restartCalls, 0);
 	}
 
 	for (const scenario of ['corrupt-schema-version', 'corrupt-profile-envelope']) {
@@ -774,9 +779,10 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 		assert.deepEqual(corrupt.calls, [
 			'removeAllManagedFiles',
 			'compileNginx:clean',
-			'restart:nginx-1.26.1+3',
+			'reloadNginx',
 		]);
-		assert.equal(corrupt.restartCalls, 1);
+		assert.equal(corrupt.refreshCalls, 1);
+		assert.equal(corrupt.restartCalls, 0);
 		assert.deepEqual(corrupt.updates, []);
 		assert.deepEqual(
 			corrupt.finalStoredSettings,
@@ -791,11 +797,12 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 		'compileNginx:clean',
 		'removeAllManagedFiles',
 		'compileNginx:clean',
-		'restart:nginx-1.26.1+3',
+		'reloadNginx',
 	]);
 	assert.ok(retriedCorruptCleanup.retryTimersAfterFailure > 0);
 	assert.equal(retriedCorruptCleanup.pendingTimers, 0);
-	assert.equal(retriedCorruptCleanup.restartCalls, 1);
+	assert.equal(retriedCorruptCleanup.refreshCalls, 1);
+	assert.equal(retriedCorruptCleanup.restartCalls, 0);
 	assert.deepEqual(retriedCorruptCleanup.updates, []);
 	assert.deepEqual(
 		retriedCorruptCleanup.finalStoredSettings,
@@ -862,18 +869,19 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 		['rollback-malformed-snapshot', 'compileNginx:clean', true, true],
 	]) {
 		const rollback = runScenario(scenario);
-		assert.equal(rollback.operationError, 'targeted restart failed');
-		assert.equal(rollback.restartCalls, 2);
+		assert.equal(rollback.operationError, 'targeted reload failed');
+		assert.equal(rollback.refreshCalls, 2);
+		assert.equal(rollback.restartCalls, 0);
 		assert.deepEqual(rollback.calls, [
 			'probeOrigin',
 			'captureAllManagedFiles',
 			'applyServerManagedFiles',
 			'compileNginx:managed',
-			'restart:nginx-1.26.1+3',
+			'reloadNginx',
 			'restoreManagedFiles',
 			...(failClosedCleanup ? ['removeAllManagedFiles'] : []),
 			restoredCompile,
-			'restart:nginx-1.26.1+3',
+			'reloadNginx',
 			'updateSite',
 		]);
 		assert.equal(rollback.finalEnabled, restoredEnabled);
