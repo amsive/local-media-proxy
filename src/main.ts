@@ -36,6 +36,7 @@ import {
 import {
 	cleanupRequiresRefresh,
 	completeUnresolvedServiceCleanup,
+	fingerprintRuntimeInputs,
 	isServerTransactionChangedError,
 	lifecycleUnavailableReason,
 	runServerTransactionMutation,
@@ -258,7 +259,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				: server.service?.bin?.[executableName] ?? null,
 			runPath: server.service?.runPath ?? null,
 			runtimeInputsFingerprint: server.service
-				? JSON.stringify({
+				? fingerprintRuntimeInputs({
 					configVariables: server.service.configVariables,
 					declaredService,
 					env: server.service.env ?? {},

@@ -447,14 +447,14 @@ test('reconciliation rechecks current status and server identity immediately bef
 	);
 });
 
-test('server transactions use lightweight runtime inputs without the removed deep digest', () => {
+test('server transactions use deterministic lightweight runtime inputs without the removed deep digest', () => {
 	const fingerprint = sourceSection(
 		'const serverTransactionFingerprint',
 		'const currentServerTransactionFingerprint',
 	);
 	assert.match(
 		fingerprint,
-		/runtimeInputsFingerprint: server\.service[\s\S]{0,120}JSON\.stringify\(\{[\s\S]{0,160}configVariables: server\.service\.configVariables,[\s\S]{0,120}declaredService,[\s\S]{0,120}env: server\.service\.env \?\? \{\}/,
+		/runtimeInputsFingerprint: server\.service[\s\S]{0,120}fingerprintRuntimeInputs\(\{[\s\S]{0,160}configVariables: server\.service\.configVariables,[\s\S]{0,120}declaredService,[\s\S]{0,120}env: server\.service\.env \?\? \{\}/,
 	);
 	assert.doesNotMatch(mainSource, /serviceInputsDigest|stableRuntimeInput|createHash/);
 });
