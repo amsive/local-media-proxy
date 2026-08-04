@@ -121,6 +121,8 @@ Passive state reads compare persistent and compiled state and report drift witho
 
 Before activation, the add-on validates user input, builds the managed configuration, compiles the selected Local server templates, and runs server syntax checks. Apache verifies its exact compiled main, module, virtual-host, and include state before `httpd -t`. Nginx performs targeted compilation, exact include comparison, `nginx -t`, and a bounded `nginx -T` inspection of the configuration that would actually load.
 
+Local's generic template compiler can retain a compiled include after its source template is removed. Cleanup never deletes that Local-generated output directly: after proving the authoritative compiled core no longer references the include, the add-on invokes the same Local compiler with a private temporary source tree containing one exact inert comment-only tombstone. Passive and active validation accept only an absent include or that exact tombstone; stale proxy bytes, changed tombstones, symbolic links, and reference-bearing configurations remain drift and fail closed.
+
 After successful compilation and validation, a running Nginx site uses a bounded, site-scoped graceful reload. The add-on verifies the contained PID file, the live master and its command identity where the platform exposes it, the unchanged master PID, and sustained post-reload readiness without invoking Local's hard service restart. Nginx for Windows uses its PID-scoped named control event, so an unrelated reused PID cannot receive the reload signal. Apache performs its own bounded, site-scoped graceful reload using the selected site configuration. Stopped sites are compiled and validated without being started, and no other site's service is refreshed.
 
 Writes use validated snapshots and rollback. Settings are committed only after persistent files, compiled configuration, and the targeted runtime converge. If apply fails while the site remains lifecycle-ready, the add-on restores previous settings and managed files, recompiles, and attempts to return the service to its prior runtime configuration. A malformed or unsafe snapshot is never classified as restorable. If Local enters a transition, rollback stops rather than writing into or recreating Local-owned state; later lifecycle-ready cleanup or reconciliation handles the surviving intent.
@@ -149,6 +151,6 @@ The fallback is scoped to this add-on's detail queries. Other add-ons and GraphQ
 
 ## Release package
 
-The installable TGZ uses npm's single `package/` root and an exact 27-file allowlist. It contains compiled runtime JavaScript, package metadata, CSS, runtime artwork, the Cloudflare trust material, `LICENSE`, `NOTICE`, and the packaged README.
+The installable TGZ uses npm's single `package/` root and an exact 28-file allowlist. It contains compiled runtime JavaScript, package metadata, CSS, runtime artwork, the Cloudflare trust material, `LICENSE`, `NOTICE`, and the packaged README.
 
 Source TypeScript, tests, source maps, `node_modules`, development configuration, provenance documents, and repository process files are excluded. CI, release creation, and promotion independently verify the package structure, source equivalence, public-release safety, and third-party material contract.

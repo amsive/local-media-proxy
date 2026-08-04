@@ -86,7 +86,7 @@ npm run validate
 npm run package:addon
 ```
 
-The release installer uses npm's single `package/` root and contains exactly 27 reviewed runtime files. Source, tests, source maps, dependencies, and repository-only process documents are excluded.
+The release installer uses npm's single `package/` root and contains exactly 28 reviewed runtime files. Source, tests, source maps, dependencies, and repository-only process documents are excluded.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development and DCO requirements, [PUBLIC_RELEASE_SAFETY.md](PUBLIC_RELEASE_SAFETY.md) for the blocking public-content review, and [RELEASING.md](RELEASING.md) for the draft and promotion workflow.
 

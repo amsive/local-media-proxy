@@ -23,6 +23,11 @@ import {
 	PROXIED_CONTENT_SECURITY_POLICY,
 	PROXIED_RESPONSE_HEADERS_TO_STRIP,
 } from './constants';
+import {
+	assertSafeCompiledFilePath,
+	COMPILED_INCLUDE_TOMBSTONE,
+	compileCompiledIncludeTombstone,
+} from './compiled-config';
 import type { NormalizedOrigin } from './types';
 import type { ExecFilePromise } from './nginx';
 
@@ -737,6 +742,51 @@ function apacheMainLoadsCompiledFiles(
 		exactCount(compiled.include) === 0;
 }
 
+async function compileOrphanedApacheIncludeTombstone(
+	site: Local.Site,
+	service: ApacheRuntimeService,
+	configTemplates: ApacheConfigTemplates,
+	assertCurrent: () => void,
+): Promise<void> {
+	assertCurrent();
+	const compiled = apacheCompiledPaths(service);
+	const [mainConfig, modulesConfig, siteConfig, includeConfig] = await Promise.all([
+		readOptionalCompiledFile(service.configPath, compiled.main, assertCurrent),
+		readOptionalCompiledFile(service.configPath, compiled.modules, assertCurrent),
+		readOptionalCompiledFile(service.configPath, compiled.site, assertCurrent),
+		readOptionalCompiledFile(service.configPath, compiled.include, assertCurrent),
+	]);
+	assertCurrent();
+	if (includeConfig === null || includeConfig === COMPILED_INCLUDE_TOMBSTONE) {
+		return;
+	}
+	if (
+		mainConfig === null ||
+		modulesConfig === null ||
+		siteConfig === null ||
+		!apacheMainLoadsCompiledFiles(mainConfig, compiled) ||
+		hasExactManagedMarker(siteConfig) ||
+		apacheIncludeReferenceCount(siteConfig, compiled.include, compiled.site) > 0 ||
+		hasExactManagedMarker(modulesConfig) ||
+		apacheIncludeReferenceCount(modulesConfig, compiled.include, compiled.modules) > 0
+	) {
+		throw new Error('Local retained a managed Apache configuration after cleanup.');
+	}
+
+	await compileCompiledIncludeTombstone(
+		service.configPath,
+		compiled.include,
+		'compiled Apache managed include',
+		(templatesDirectory) => configTemplates.compileConfigTemplates(
+			site,
+			templatesDirectory,
+			service.configPath,
+			service.configVariables,
+		),
+		assertCurrent,
+	);
+}
+
 async function assertCompiledApacheState(
 	service: ApacheRuntimeService,
 	expectedManagedInclude: string | null,
@@ -792,7 +842,7 @@ async function assertCompiledApacheState(
 			compiled.include,
 			compiled.modules,
 		) > 0) ||
-		includeConfig !== null
+		(includeConfig !== null && includeConfig !== COMPILED_INCLUDE_TOMBSTONE)
 	) {
 		throw new Error('Local retained a managed Apache configuration after cleanup.');
 	}
@@ -929,6 +979,20 @@ export async function compileAndValidateApacheConfig(
 		'Apache compiled configuration root',
 		assertCurrent,
 	);
+	const compiled = apacheCompiledPaths(service);
+	for (const [filePath, description] of [
+		[compiled.main, 'compiled Apache main configuration'],
+		[compiled.modules, 'compiled Apache modules configuration'],
+		[compiled.site, 'compiled Apache site configuration'],
+		[compiled.include, 'compiled Apache managed include'],
+	] as const) {
+		await assertSafeCompiledFilePath(
+			service.configPath,
+			filePath,
+			description,
+			assertCurrent,
+		);
+	}
 	assertCurrent();
 	await configTemplates.compileConfigTemplates(
 		site,
@@ -938,11 +1002,18 @@ export async function compileAndValidateApacheConfig(
 	);
 	assertCurrent();
 
-	const compiled = apacheCompiledPaths(service);
 	const expectedInclude = expectManaged ? expectedManagedInclude ?? null : null;
 	const expectedModules = expectManaged ? expectedManagedModules ?? null : null;
 	if (expectManaged && (expectedInclude === null || expectedModules === null)) {
 		throw new Error('Local did not compile the expected managed Apache configuration.');
+	}
+	if (!expectManaged) {
+		await compileOrphanedApacheIncludeTombstone(
+			site,
+			service,
+			configTemplates,
+			assertCurrent,
+		);
 	}
 	await assertCompiledApacheState(
 		service,

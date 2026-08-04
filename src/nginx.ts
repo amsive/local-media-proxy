@@ -16,6 +16,11 @@ import {
 	PROXIED_RESPONSE_HEADERS_TO_STRIP,
 } from './constants';
 import {
+	assertSafeCompiledFilePath,
+	COMPILED_INCLUDE_TOMBSTONE,
+	compileCompiledIncludeTombstone,
+} from './compiled-config';
+import {
 	BLOCKED_BROWSER_FETCH_DESTINATION_PATTERN,
 	BLOCKED_UPLOAD_ASSET_PATH_PATTERN,
 	NGINX_HARD_BLOCKED_UPLOAD_ASSET_URI_PATTERN,
@@ -762,11 +767,9 @@ export function compiledNginxSiteHasCanonicalManagedInclude(
 		managedIncludeReferenceCount(siteConfig, compiledSitePath, compiledIncludePath) === 1;
 }
 
-async function assertCompiledNginxState(
+async function readCompiledNginxState(
 	service: NginxRuntimeService,
-	expectedManagedInclude: string | null,
 	assertCurrent: () => void = (): void => undefined,
-	requireRunnableConfig = false,
 ): Promise<CompiledNginxState> {
 	assertCurrent();
 	const compiled = nginxCompiledPaths(service);
@@ -776,6 +779,18 @@ async function assertCompiledNginxState(
 		readOptionalCompiledFile(service.configPath, compiled.include, assertCurrent),
 	]);
 	assertCurrent();
+	return { include: includeConfig, main: mainConfig, site: siteConfig };
+}
+
+async function assertCompiledNginxState(
+	service: NginxRuntimeService,
+	expectedManagedInclude: string | null,
+	assertCurrent: () => void = (): void => undefined,
+	requireRunnableConfig = false,
+): Promise<CompiledNginxState> {
+	const compiled = nginxCompiledPaths(service);
+	const state = await readCompiledNginxState(service, assertCurrent);
+	const { include: includeConfig, main: mainConfig, site: siteConfig } = state;
 	if (expectedManagedInclude !== null) {
 		if (
 			mainConfig === null ||
@@ -786,7 +801,7 @@ async function assertCompiledNginxState(
 		) {
 			throw new Error('Local did not compile the expected managed Nginx configuration.');
 		}
-		return { include: includeConfig, main: mainConfig, site: siteConfig };
+		return state;
 	}
 	if (
 		(requireRunnableConfig && (
@@ -799,11 +814,11 @@ async function assertCompiledNginxState(
 			compiled.site,
 			compiled.include,
 		)) ||
-		includeConfig !== null
+		(includeConfig !== null && includeConfig !== COMPILED_INCLUDE_TOMBSTONE)
 	) {
 		throw new Error('Local retained a managed Nginx configuration after cleanup.');
 	}
-	return { include: includeConfig, main: mainConfig, site: siteConfig };
+	return { ...state, include: null };
 }
 
 export async function nginxCompiledConfigMatches(
@@ -883,6 +898,40 @@ function nginxDumpExactlyMatchesCompiledState(
 		exactSection(compiled.include, state.include);
 }
 
+async function compileOrphanedNginxIncludeTombstone(
+	site: Local.Site,
+	service: NginxRuntimeService,
+	configTemplates: NginxConfigTemplates,
+	assertCurrent: () => void,
+): Promise<void> {
+	const compiled = nginxCompiledPaths(service);
+	const state = await readCompiledNginxState(service, assertCurrent);
+	if (state.include === null || state.include === COMPILED_INCLUDE_TOMBSTONE) {
+		return;
+	}
+	if (
+		state.main === null ||
+		state.site === null ||
+		!nginxMainLoadsCompiledSite(state.main, compiled.site, compiled.include) ||
+		compiledNginxSiteHasManagedArtifacts(state.site, compiled.site, compiled.include)
+	) {
+		throw new Error('Local retained a managed Nginx configuration after cleanup.');
+	}
+
+	await compileCompiledIncludeTombstone(
+		service.configPath,
+		compiled.include,
+		'compiled Nginx managed include',
+		(templatesDirectory) => configTemplates.compileConfigTemplates(
+			site,
+			templatesDirectory,
+			service.configPath,
+			service.configVariables,
+		),
+		assertCurrent,
+	);
+}
+
 export async function compileAndValidateNginxConfig(
 	site: Local.Site,
 	service: NginxRuntimeService,
@@ -900,6 +949,19 @@ export async function compileAndValidateNginxConfig(
 		'Nginx compiled configuration root',
 		assertCurrent,
 	);
+	const compiled = nginxCompiledPaths(service);
+	for (const [filePath, description] of [
+		[compiled.main, 'compiled Nginx main configuration'],
+		[compiled.site, 'compiled Nginx site configuration'],
+		[compiled.include, 'compiled Nginx managed include'],
+	] as const) {
+		await assertSafeCompiledFilePath(
+			service.configPath,
+			filePath,
+			description,
+			assertCurrent,
+		);
+	}
 	assertCurrent();
 	await configTemplates.compileConfigTemplates(
 		site,
@@ -909,7 +971,14 @@ export async function compileAndValidateNginxConfig(
 	);
 	assertCurrent();
 	await assertRealRuntimeRoot(service.runPath, 'Nginx runtime root', assertCurrent);
-	const compiled = nginxCompiledPaths(service);
+	if (expectedManagedInclude === null) {
+		await compileOrphanedNginxIncludeTombstone(
+			site,
+			service,
+			configTemplates,
+			assertCurrent,
+		);
+	}
 	const compiledState = await assertCompiledNginxState(
 		service,
 		expectedManagedInclude,

@@ -12,6 +12,7 @@ const path = require('node:path');
 const test = require('node:test');
 const {
 	apacheCompiledConfigMatches,
+	apacheCompiledPaths,
 	apacheMasterProcessExists,
 	apacheConfigReferencesInclude,
 	apacheMediaPathIsProxyEligible,
@@ -31,6 +32,7 @@ const {
 	MANAGED_MARKER_START,
 	ORIGIN_REQUEST_USER_AGENT,
 } = require('../lib/constants');
+const { COMPILED_INCLUDE_TOMBSTONE } = require('../lib/compiled-config');
 const { validateAndNormalizeOrigin } = require('../lib/validation');
 
 const httpd = '/opt/Local/lightning-services/apache-2.4.43+11/bin/darwin-arm64/bin/httpd';
@@ -427,6 +429,227 @@ test('targeted compilation verifies managed markers before httpd syntax validati
 		assert.equal(calls[1][3].env[inheritedKey], process.env[inheritedKey]);
 		assert.equal(hasApacheManagedBlock(await fs.readFile(path.join(service.configPath, 'site.conf'), 'utf8')), true);
 		assert.equal(await fs.readFile(path.join(service.configPath, 'apache2.conf'), 'utf8'), expected.main);
+	} finally {
+		await fs.rm(root, { force: true, recursive: true });
+	}
+});
+
+test('clean Apache compilation replaces only an unreferenced regular orphan with an inert tombstone', async () => {
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'local-media-proxy-apache-cleanup-')));
+	try {
+		const service = {
+			bin: { httpd },
+			configPath: path.join(root, 'compiled', 'apache'),
+			configVariables: {},
+			runPath: path.join(root, 'run'),
+			siteConfigTemplatePath: path.join(root, 'templates', 'apache'),
+		};
+		const managed = await writeCompiledApacheFixture(service, true);
+		const compileRoots = [];
+		const compileCalls = [];
+		const cleanCompiler = {
+			compileConfigTemplates: async (
+				site,
+				templatesDirectory,
+				destinationDirectory,
+				configVariables,
+			) => {
+				compileCalls.push([
+					site,
+					templatesDirectory,
+					destinationDirectory,
+					configVariables,
+				]);
+				compileRoots.push(templatesDirectory);
+				if (templatesDirectory !== service.siteConfigTemplatePath) {
+					const tombstoneTemplate = await fs.readFile(
+						path.join(templatesDirectory, 'includes', 'local-media-proxy.conf.hbs'),
+						'utf8',
+					);
+					await fs.writeFile(managed.includePath, tombstoneTemplate);
+					return;
+				}
+				await Promise.all([
+					fs.writeFile(path.join(service.configPath, 'apache2.conf'), managed.main),
+					fs.writeFile(path.join(service.configPath, 'modules.conf'), '# clean modules\n'),
+					fs.writeFile(path.join(service.configPath, 'site.conf'), managed.cleanSite),
+				]);
+			},
+		};
+		const targetSite = { id: 'site-a' };
+		const commands = [];
+		await compileAndValidateApacheConfig(
+			targetSite,
+			service,
+			cleanCompiler,
+			async (_command, args) => { commands.push(args); return ''; },
+			false,
+		);
+		assert.deepEqual(commands.map((args) => args[0]), ['-t']);
+		assert.equal(
+			await fs.readFile(managed.includePath, 'utf8'),
+			COMPILED_INCLUDE_TOMBSTONE,
+		);
+		assert.equal(compileRoots.length, 2);
+		assert.equal(compileRoots[0], service.siteConfigTemplatePath);
+		assert.equal(compileCalls[1][0], targetSite);
+		assert.equal(compileCalls[1][2], service.configPath);
+		assert.equal(compileCalls[1][3], service.configVariables);
+		await assert.rejects(fs.lstat(compileRoots[1]), { code: 'ENOENT' });
+		assert.equal(await apacheCompiledConfigMatches(service, null, null), true);
+		await fs.appendFile(managed.includePath, '# changed tombstone\n');
+		assert.equal(await apacheCompiledConfigMatches(service, null, null), false);
+
+		await fs.writeFile(managed.includePath, managed.managedInclude);
+		const referenceBearingCompiler = {
+			compileConfigTemplates: async () => {
+				await Promise.all([
+					fs.writeFile(path.join(service.configPath, 'apache2.conf'), managed.main),
+					fs.writeFile(path.join(service.configPath, 'modules.conf'), '# clean modules\n'),
+				]);
+				await fs.writeFile(
+					path.join(service.configPath, 'site.conf'),
+					`${managed.cleanSite}IncludeOptional "${managed.includePath}"\n`,
+				);
+			},
+		};
+		await assert.rejects(
+			compileAndValidateApacheConfig(
+				{ id: 'site-a' },
+				service,
+				referenceBearingCompiler,
+				async () => '',
+				false,
+			),
+			/retained a managed Apache configuration after cleanup/,
+		);
+		assert.equal(await fs.readFile(managed.includePath, 'utf8'), managed.managedInclude);
+
+		await Promise.all([
+			fs.writeFile(path.join(service.configPath, 'apache2.conf'), managed.main),
+			fs.writeFile(path.join(service.configPath, 'modules.conf'), '# clean modules\n'),
+			fs.writeFile(path.join(service.configPath, 'site.conf'), managed.cleanSite),
+		]);
+		let current = true;
+		let temporaryTemplatesDirectory;
+		await assert.rejects(
+			compileAndValidateApacheConfig(
+				{ id: 'site-a' },
+				service,
+				{
+					compileConfigTemplates: async (...args) => {
+						const templatesDirectory = args[1];
+						await cleanCompiler.compileConfigTemplates(...args);
+						if (templatesDirectory !== service.siteConfigTemplatePath) {
+							temporaryTemplatesDirectory = templatesDirectory;
+							current = false;
+						}
+					},
+				},
+				async () => '',
+				false,
+				undefined,
+				undefined,
+				() => {
+					if (!current) {
+						throw new Error('lifecycle changed before orphan cleanup');
+					}
+				},
+			),
+			/lifecycle changed before orphan cleanup/,
+		);
+		assert.equal(
+			await fs.readFile(managed.includePath, 'utf8'),
+			COMPILED_INCLUDE_TOMBSTONE,
+		);
+		await assert.rejects(fs.lstat(temporaryTemplatesDirectory), { code: 'ENOENT' });
+
+		const outside = path.join(root, 'outside-managed-include.conf');
+		await fs.writeFile(outside, managed.managedInclude);
+		await fs.rm(managed.includePath, { force: true });
+		await fs.symlink(outside, managed.includePath);
+		let unsafeCompilerCalls = 0;
+		await assert.rejects(
+			compileAndValidateApacheConfig(
+				{ id: 'site-a' },
+				service,
+				{
+					compileConfigTemplates: async () => { unsafeCompilerCalls += 1; },
+				},
+				async () => '',
+				false,
+			),
+			/unsafe compiled Apache managed include/,
+		);
+		assert.equal(unsafeCompilerCalls, 0);
+		assert.equal(await fs.readFile(outside, 'utf8'), managed.managedInclude);
+
+		await fs.rm(managed.includePath, { force: true });
+		await fs.rm(path.dirname(managed.includePath), { recursive: true });
+		const outsideIncludes = path.join(root, 'outside-includes');
+		await fs.mkdir(outsideIncludes);
+		await fs.writeFile(
+			path.join(outsideIncludes, path.basename(managed.includePath)),
+			managed.managedInclude,
+		);
+		await fs.symlink(outsideIncludes, path.dirname(managed.includePath));
+		await assert.rejects(
+			compileAndValidateApacheConfig(
+				{ id: 'site-a' },
+				service,
+				{ compileConfigTemplates: async () => { unsafeCompilerCalls += 1; } },
+				async () => '',
+				false,
+			),
+			/unsafe compiled Apache managed include/,
+		);
+		assert.equal(unsafeCompilerCalls, 0);
+	} finally {
+		await fs.rm(root, { force: true, recursive: true });
+	}
+});
+
+test('preflights every known Apache compiled output before the first compiler call', async () => {
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'local-media-proxy-apache-output-preflight-')));
+	try {
+		const service = {
+			bin: { httpd },
+			configPath: path.join(root, 'compiled', 'apache'),
+			configVariables: {},
+			runPath: path.join(root, 'run'),
+			siteConfigTemplatePath: path.join(root, 'templates', 'apache'),
+		};
+		const compiled = apacheCompiledPaths(service);
+		const expected = apacheManagedFixture(service);
+		for (const [name, target] of [
+			['main', compiled.main],
+			['modules', compiled.modules],
+			['site', compiled.site],
+			['include', compiled.include],
+		]) {
+			await fs.rm(service.configPath, { force: true, recursive: true });
+			await writeCompiledApacheFixture(service, true);
+			const outside = path.join(root, `outside-${name}.conf`);
+			const outsideBytes = `outside ${name}\n`;
+			await fs.writeFile(outside, outsideBytes);
+			await fs.rm(target, { force: true });
+			await fs.symlink(outside, target);
+			let compilerCalls = 0;
+			await assert.rejects(
+				compileAndValidateApacheConfig(
+					{ id: 'site-a' },
+					service,
+					{ compileConfigTemplates: async () => { compilerCalls += 1; } },
+					async () => '',
+					true,
+					expected.managedInclude,
+					expected.managedModules,
+				),
+				/unsafe compiled Apache (?:main configuration|modules configuration|site configuration|managed include)/,
+			);
+			assert.equal(compilerCalls, 0, `${name} must fail before compilation`);
+			assert.equal(await fs.readFile(outside, 'utf8'), outsideBytes);
+		}
 	} finally {
 		await fs.rm(root, { force: true, recursive: true });
 	}

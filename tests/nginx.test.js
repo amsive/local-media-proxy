@@ -29,6 +29,7 @@ const {
 	MANAGED_MARKER_START,
 	ORIGIN_REQUEST_USER_AGENT,
 } = require('../lib/constants');
+const { COMPILED_INCLUDE_TOMBSTONE } = require('../lib/compiled-config');
 const {
 	NGINX_HARD_BLOCKED_UPLOAD_ASSET_URI_PATTERN,
 	NGINX_UPLOAD_ASSET_URI_PATTERN,
@@ -331,6 +332,225 @@ test('targeted Nginx compilation verifies exact files, syntax, and loaded dump',
 			assert.equal(call[3].env.LOCAL_NGINX_TEST, '1');
 		}
 		assert.equal(compiledNginxSiteHasCanonicalManagedInclude(expected.site), true);
+	} finally {
+		await fsPromises.rm(root, { force: true, recursive: true });
+	}
+});
+
+test('clean Nginx compilation replaces only an unreferenced regular orphan with an inert tombstone', async () => {
+	const root = await fsPromises.realpath(await fsPromises.mkdtemp(path.join(os.tmpdir(), 'local-media-proxy-nginx-cleanup-')));
+	try {
+		const runtimeService = {
+			bin: { nginx: '/opt/Local/nginx' },
+			configPath: path.join(root, 'compiled', 'nginx'),
+			configVariables: {},
+			runPath: path.join(root, 'run', 'nginx'),
+			siteConfigTemplatePath: path.join(root, 'templates', 'nginx'),
+		};
+		await fsPromises.mkdir(runtimeService.configPath, { recursive: true });
+		await fsPromises.mkdir(runtimeService.runPath, { recursive: true });
+		const managed = await writeCompiledNginxFixture(runtimeService, true);
+		const clean = nginxManagedFixture(runtimeService, false);
+		const compileRoots = [];
+		const compileCalls = [];
+		const writeCleanCoreFilesWithoutPruningIncludes = async (
+			site,
+			templatesDirectory,
+			destinationDirectory,
+			configVariables,
+		) => {
+			compileCalls.push([
+				site,
+				templatesDirectory,
+				destinationDirectory,
+				configVariables,
+			]);
+			compileRoots.push(templatesDirectory);
+			if (templatesDirectory === runtimeService.siteConfigTemplatePath) {
+				await Promise.all([
+					fsPromises.writeFile(clean.compiled.main, clean.main),
+					fsPromises.writeFile(clean.compiled.site, clean.site),
+				]);
+				return;
+			}
+			const tombstoneTemplate = await fsPromises.readFile(
+				path.join(templatesDirectory, 'includes', 'local-media-proxy.conf.hbs'),
+				'utf8',
+			);
+			await fsPromises.writeFile(clean.compiled.include, tombstoneTemplate);
+		};
+		const targetSite = { id: 'site-a' };
+		const compiler = {
+			compileConfigTemplates: writeCleanCoreFilesWithoutPruningIncludes,
+		};
+		const commands = [];
+		await compileAndValidateNginxConfig(
+			targetSite,
+			runtimeService,
+			compiler,
+			async (_command, args) => {
+				commands.push(args[0]);
+				return args[0] === '-T' ? clean.dump : '';
+			},
+			null,
+		);
+		assert.deepEqual(commands, ['-t', '-T']);
+		assert.equal(
+			await fsPromises.readFile(managed.compiled.include, 'utf8'),
+			COMPILED_INCLUDE_TOMBSTONE,
+		);
+		assert.equal(compileRoots.length, 2);
+		assert.equal(compileRoots[0], runtimeService.siteConfigTemplatePath);
+		assert.equal(compileCalls[1][0], targetSite);
+		assert.equal(compileCalls[1][2], runtimeService.configPath);
+		assert.equal(compileCalls[1][3], runtimeService.configVariables);
+		await assert.rejects(fsPromises.lstat(compileRoots[1]), { code: 'ENOENT' });
+		assert.equal(await nginxCompiledConfigMatches(runtimeService, null), true);
+		await fsPromises.appendFile(managed.compiled.include, '# changed tombstone\n');
+		assert.equal(await nginxCompiledConfigMatches(runtimeService, null), false);
+
+		await fsPromises.writeFile(managed.compiled.include, managed.include);
+		let referenceCompilerCalls = 0;
+		await assert.rejects(
+			compileAndValidateNginxConfig(
+				{ id: 'site-a' },
+				runtimeService,
+				{
+					compileConfigTemplates: async () => {
+						referenceCompilerCalls += 1;
+						await Promise.all([
+							fsPromises.writeFile(clean.compiled.main, clean.main),
+							fsPromises.writeFile(
+								clean.compiled.site,
+								`${clean.site}include includes/local-media-proxy.conf;\n`,
+							),
+						]);
+					},
+				},
+				async () => '',
+				null,
+			),
+			/retained a managed Nginx configuration after cleanup/,
+		);
+		assert.equal(referenceCompilerCalls, 1);
+		assert.equal(await fsPromises.readFile(managed.compiled.include, 'utf8'), managed.include);
+
+		await fsPromises.writeFile(managed.compiled.include, managed.include);
+		let current = true;
+		let temporaryTemplatesDirectory;
+		await assert.rejects(
+			compileAndValidateNginxConfig(
+				{ id: 'site-a' },
+				runtimeService,
+				{
+					compileConfigTemplates: async (...args) => {
+						const templatesDirectory = args[1];
+						await writeCleanCoreFilesWithoutPruningIncludes(...args);
+						if (templatesDirectory !== runtimeService.siteConfigTemplatePath) {
+							temporaryTemplatesDirectory = templatesDirectory;
+							current = false;
+						}
+					},
+				},
+				async () => '',
+				null,
+				() => {
+					if (!current) {
+						throw new Error('lifecycle changed before orphan cleanup');
+					}
+				},
+			),
+			/lifecycle changed before orphan cleanup/,
+		);
+		assert.equal(
+			await fsPromises.readFile(managed.compiled.include, 'utf8'),
+			COMPILED_INCLUDE_TOMBSTONE,
+		);
+		await assert.rejects(fsPromises.lstat(temporaryTemplatesDirectory), { code: 'ENOENT' });
+
+		const outside = path.join(root, 'outside-managed-include.conf');
+		await fsPromises.writeFile(outside, managed.include);
+		await fsPromises.rm(managed.compiled.include, { force: true });
+		await fsPromises.symlink(outside, managed.compiled.include);
+		let unsafeCompilerCalls = 0;
+		await assert.rejects(
+			compileAndValidateNginxConfig(
+				{ id: 'site-a' },
+				runtimeService,
+				{
+					compileConfigTemplates: async () => { unsafeCompilerCalls += 1; },
+				},
+				async () => '',
+				null,
+			),
+			/unsafe compiled Nginx managed include/,
+		);
+		assert.equal(unsafeCompilerCalls, 0);
+		assert.equal(await fsPromises.readFile(outside, 'utf8'), managed.include);
+
+		await fsPromises.rm(managed.compiled.include, { force: true });
+		await fsPromises.rm(path.dirname(managed.compiled.include), { recursive: true });
+		const outsideIncludes = path.join(root, 'outside-includes');
+		await fsPromises.mkdir(outsideIncludes);
+		await fsPromises.writeFile(
+			path.join(outsideIncludes, path.basename(managed.compiled.include)),
+			managed.include,
+		);
+		await fsPromises.symlink(outsideIncludes, path.dirname(managed.compiled.include));
+		await assert.rejects(
+			compileAndValidateNginxConfig(
+				{ id: 'site-a' },
+				runtimeService,
+				{ compileConfigTemplates: async () => { unsafeCompilerCalls += 1; } },
+				async () => '',
+				null,
+			),
+			/unsafe compiled Nginx managed include/,
+		);
+		assert.equal(unsafeCompilerCalls, 0);
+	} finally {
+		await fsPromises.rm(root, { force: true, recursive: true });
+	}
+});
+
+test('preflights every known Nginx compiled output before the first compiler call', async () => {
+	const root = await fsPromises.realpath(await fsPromises.mkdtemp(path.join(os.tmpdir(), 'local-media-proxy-nginx-output-preflight-')));
+	try {
+		const runtimeService = {
+			bin: { nginx: '/opt/Local/nginx' },
+			configPath: path.join(root, 'compiled', 'nginx'),
+			configVariables: {},
+			runPath: path.join(root, 'run', 'nginx'),
+			siteConfigTemplatePath: path.join(root, 'templates', 'nginx'),
+		};
+		await fsPromises.mkdir(runtimeService.runPath, { recursive: true });
+		const expected = nginxManagedFixture(runtimeService, true);
+		for (const [name, target] of [
+			['main', expected.compiled.main],
+			['site', expected.compiled.site],
+			['include', expected.compiled.include],
+		]) {
+			await fsPromises.rm(runtimeService.configPath, { force: true, recursive: true });
+			await writeCompiledNginxFixture(runtimeService, true);
+			const outside = path.join(root, `outside-${name}.conf`);
+			const outsideBytes = `outside ${name}\n`;
+			await fsPromises.writeFile(outside, outsideBytes);
+			await fsPromises.rm(target, { force: true });
+			await fsPromises.symlink(outside, target);
+			let compilerCalls = 0;
+			await assert.rejects(
+				compileAndValidateNginxConfig(
+					{ id: 'site-a' },
+					runtimeService,
+					{ compileConfigTemplates: async () => { compilerCalls += 1; } },
+					async () => '',
+					expected.include,
+				),
+				/unsafe compiled Nginx (?:main configuration|site configuration|managed include)/,
+			);
+			assert.equal(compilerCalls, 0, `${name} must fail before compilation`);
+			assert.equal(await fsPromises.readFile(outside, 'utf8'), outsideBytes);
+		}
 	} finally {
 		await fsPromises.rm(root, { force: true, recursive: true });
 	}
