@@ -116,6 +116,18 @@
       "reviewedForPublicRelease": "Rendered at 1200x700 from the packaged v0.3.0 light artwork and public add-on metadata only; the Installed Add-ons card and detail framing are shown over the approved #6E187A background, with detail artwork occupying 193 of 258 pixels (74.8%) in the focused proof; no sites, hostnames, addresses, overlays, or timestamps; full-resolution visual and local OCR review completed with only essential PNG chunks."
     },
     {
+      "path": "docs/screenshots/v0.4.0-tools-safe-assets-dark.png",
+      "sha256": "93859cc4dd4a3637f9bc069530a2a09a9ecc98f4dce9d343a67ff7e825891aa6",
+      "kind": "png",
+      "reviewedForPublicRelease": "Rendered at 1400x1200 from the current v0.4.0 dark scoped Tools DOM and CSS with one fictional Example Site, media.example.com, RFC 5737 address 203.0.113.10, and a successful Nginx safe-missing-asset state; no client data, logos, overlays, or timestamps; full-resolution visual and local OCR review completed with only essential PNG chunks."
+    },
+    {
+      "path": "docs/screenshots/v0.4.0-tools-safe-assets-light.png",
+      "sha256": "096b5bd6830c930c6a6953a3f855fc81f78023c9b1a2862b7263736cadef4cbb",
+      "kind": "png",
+      "reviewedForPublicRelease": "Rendered at 1400x1200 from the current v0.4.0 light scoped Tools DOM and CSS with one fictional Example Site, media.example.com, RFC 5737 address 203.0.113.10, and a successful Nginx safe-missing-asset state; no client data, logos, overlays, or timestamps; full-resolution visual and local OCR review completed with only essential PNG chunks."
+    },
+    {
       "path": "icon.svg",
       "sha256": "f23e41be29e7fb6613a7343d2589486d5887edeb47950ad374b633a190552fdb",
       "kind": "svg",
