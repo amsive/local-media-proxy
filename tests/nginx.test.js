@@ -16,11 +16,10 @@ const {
 	compileAndValidateNginxConfig,
 	compiledNginxSiteHasCanonicalManagedInclude,
 	hasManagedInclude,
+	isMissingNginxMasterProcess,
 	removeManagedInclude,
 	nginxCompiledConfigMatches,
 	nginxCompiledPaths,
-	nginxMasterProcessExists,
-	nginxMasterProcessMatches,
 	refreshNginxService,
 	upsertManagedInclude,
 } = require('../lib/nginx');
@@ -759,7 +758,7 @@ test('Nginx validation fences compilation and syntax and rejects inexact compile
 	}
 });
 
-test('Nginx refresh checks the master once and performs one graceful reload without polling', async () => {
+test('Nginx refresh uses one native reload and one exact stale-master recovery without polling', async () => {
 	const root = await fsPromises.realpath(await fsPromises.mkdtemp(path.join(os.tmpdir(), 'local-media-proxy-nginx-refresh-')));
 	try {
 		const runtimeService = {
@@ -774,40 +773,13 @@ test('Nginx refresh checks the master once and performs one graceful reload with
 		await fsPromises.mkdir(runtimeService.runPath, { recursive: true });
 		const expected = nginxManagedFixture(runtimeService, true);
 		let pidContents = '4242\n';
-		let pidFixture = 'regular';
-		let explicitPidPath = null;
-		let rawMainPrefix = '';
 		const compiler = {
 			compileConfigTemplates: async () => {
 				await writeCompiledNginxFixture(runtimeService, true);
-				if (rawMainPrefix) {
-					await fsPromises.writeFile(
-						expected.compiled.main,
-						`${rawMainPrefix}${expected.main}`,
-					);
-				} else if (explicitPidPath !== null) {
-					await fsPromises.writeFile(
-						expected.compiled.main,
-						`pid "${explicitPidPath}";\n${expected.main}`,
-					);
-				}
 				const logsPath = path.join(runtimeService.runPath, 'logs');
-				const outsidePath = path.join(root, 'outside-pid-fixture');
 				await fsPromises.rm(logsPath, { force: true, recursive: true });
-				await fsPromises.rm(outsidePath, { force: true, recursive: true });
-				if (pidFixture === 'parent-symlink') {
-					await fsPromises.mkdir(outsidePath, { recursive: true });
-					await fsPromises.writeFile(path.join(outsidePath, 'nginx.pid'), '4242\n');
-					await fsPromises.symlink(outsidePath, logsPath);
-					return;
-				}
 				await fsPromises.mkdir(logsPath, { recursive: true });
 				const pidFile = path.join(logsPath, 'nginx.pid');
-				if (pidFixture === 'file-symlink') {
-					await fsPromises.writeFile(outsidePath, '4242\n');
-					await fsPromises.symlink(outsidePath, pidFile);
-					return;
-				}
 				if (pidContents === null) {
 					await fsPromises.rm(pidFile, { force: true });
 				} else {
@@ -823,8 +795,6 @@ test('Nginx refresh checks the master once and performs one graceful reload with
 		} = {}) => {
 			const calls = [];
 			let signalOptions;
-			let existenceChecks = 0;
-			let identityChecks = 0;
 			const result = await refreshNginxService(
 				{ id: 'site-a' },
 				runtimeService,
@@ -840,19 +810,9 @@ test('Nginx refresh checks the master once and performs one graceful reload with
 				},
 				expected.include,
 				isSiteRunning,
-				{
-					masterProcessExists: () => {
-						existenceChecks += 1;
-						return true;
-					},
-					masterProcessMatches: async () => {
-						identityChecks += 1;
-						return true;
-					},
-					...options,
-				},
+				options,
 			);
-			return { calls, existenceChecks, identityChecks, result, signalOptions };
+			return { calls, result, signalOptions };
 		};
 
 		const success = await run();
@@ -864,8 +824,6 @@ test('Nginx refresh checks the master once and performs one graceful reload with
 			'-p', runtimeService.runPath,
 		]);
 		assert.equal(success.signalOptions.env.LOCAL_NGINX_TEST_ENV, 'authoritative');
-		assert.equal(success.existenceChecks, 1);
-		assert.equal(success.identityChecks, 1);
 
 		pidContents = null;
 		const stopped = await run({
@@ -873,27 +831,82 @@ test('Nginx refresh checks the master once and performs one graceful reload with
 		});
 		assert.equal(stopped.result, false);
 		assert.deepEqual(stopped.calls.map((args) => args[0]), ['-t']);
-		assert.equal(stopped.existenceChecks, 0);
-		assert.equal(stopped.identityChecks, 0);
 
 		for (const invalidPid of [null, 'not-a-pid\n', '1\n']) {
 			pidContents = invalidPid;
-			await assert.rejects(run(), /master PID is unavailable for this site/);
+			assert.equal((await run()).result, true);
 		}
 		pidContents = '4242\n';
 
+		const staleMasterError = Object.assign(new Error('reload failed'), {
+			stderr: 'nginx: [error] kill(4242, 1) failed (3: No such process)',
+		});
+		let validationRestartCalls = 0;
 		await assert.rejects(
-			run({ options: { masterProcessExists: () => false } }),
-			/master PID is stale for this site/,
+			run({
+				onCommand: async (commandName) => {
+					if (commandName === '-t') throw staleMasterError;
+				},
+				options: {
+					restartService: async () => { validationRestartCalls += 1; },
+				},
+			}),
+			/reload failed/,
 		);
+		assert.equal(validationRestartCalls, 0);
+
+		let restartCalls = 0;
+		const recovered = await run({
+			onReload: async () => { throw staleMasterError; },
+			options: {
+				restartService: async () => { restartCalls += 1; },
+			},
+		});
+		assert.equal(recovered.result, true);
+		assert.deepEqual(recovered.calls.map((args) => args[0]), ['-t', '-s']);
+		assert.equal(restartCalls, 1);
+
+		let nonStaleRestartCalls = 0;
 		await assert.rejects(
-			run({ options: { masterProcessMatches: async () => false } }),
-			/master PID does not belong to this site's expected Nginx service/,
-		);
-		await assert.rejects(
-			run({ onReload: async () => { throw new Error('reload failed'); } }),
+			run({
+				onReload: async () => { throw new Error('reload failed'); },
+				options: {
+					restartService: async () => { nonStaleRestartCalls += 1; },
+				},
+			}),
 			/could not gracefully reload this site's validated configuration/,
 		);
+		assert.equal(nonStaleRestartCalls, 0);
+
+		let runningChecks = 0;
+		await assert.rejects(
+			run({
+				isSiteRunning: () => {
+					runningChecks += 1;
+					return runningChecks === 1;
+				},
+				onReload: async () => { throw staleMasterError; },
+				options: {
+					restartService: async () => { restartCalls += 1; },
+				},
+			}),
+			/site stopped before recovery/,
+		);
+		assert.equal(restartCalls, 1);
+
+		await assert.rejects(
+			run({
+				onReload: async () => { throw staleMasterError; },
+				options: {
+					restartService: async () => {
+						restartCalls += 1;
+						throw new Error('restart failed');
+					},
+				},
+			}),
+			/share Local's main log and the site's Nginx error log/,
+		);
+		assert.equal(restartCalls, 2);
 
 		const changedPidAfterReload = await run({
 			onReload: async () => fsPromises.writeFile(
@@ -902,8 +915,6 @@ test('Nginx refresh checks the master once and performs one graceful reload with
 			),
 		});
 		assert.equal(changedPidAfterReload.result, true);
-		assert.equal(changedPidAfterReload.existenceChecks, 1);
-		assert.equal(changedPidAfterReload.identityChecks, 1);
 		assert.deepEqual(
 			changedPidAfterReload.calls.map((args) => args[0]),
 			['-t', '-s'],
@@ -921,12 +932,10 @@ test('Nginx refresh checks the master once and performs one graceful reload with
 		}), /lifecycle changed/);
 		current = true;
 		await assert.rejects(run({
+			onReload: async () => { throw staleMasterError; },
 			options: {
 				assertCurrent,
-				masterProcessMatches: async () => {
-					current = false;
-					return true;
-				},
+				restartService: async () => { current = false; },
 			},
 		}), /lifecycle changed/);
 		current = true;
@@ -934,84 +943,18 @@ test('Nginx refresh checks the master once and performs one graceful reload with
 			onReload: async () => { current = false; },
 			options: { assertCurrent },
 		}), /lifecycle changed/);
-
-		pidFixture = 'parent-symlink';
-		await assert.rejects(run(), /unsafe Nginx PID path/);
-		pidFixture = 'file-symlink';
-		await assert.rejects(run(), /unsafe Nginx PID file/);
-		pidFixture = 'regular';
-
-		explicitPidPath = path.join(runtimeService.runPath, 'logs', 'nginx.pid');
-		assert.equal((await run()).result, true);
-		explicitPidPath = path.join(root, 'outside', 'nginx.pid');
-		await assert.rejects(run(), /unsafe Nginx PID path/);
-		explicitPidPath = null;
-		rawMainPrefix = 'pid\n logs/nginx.pid;\n';
-		await assert.rejects(run(), /unsupported Nginx PID directive/);
-		rawMainPrefix = '# a comment containing ; pid ignored.pid;\n';
-		assert.equal((await run()).result, true);
 	} finally {
 		await fsPromises.rm(root, { force: true, recursive: true });
 	}
 });
 
-test('Nginx master identity matching requires the expected binary, config, and prefix', async () => {
-	const commands = [];
-	assert.equal(await nginxMasterProcessMatches(
-		service,
-		4242,
-		async (...args) => {
-			commands.push(args);
-			return `${service.bin.nginx} -c ${service.configPath}/nginx.conf -p ${service.runPath}`;
-		},
-		'darwin',
-	), true);
-	assert.deepEqual(commands[0], [
-		'/bin/ps',
-		['-ww', '-p', '4242', '-o', 'command='],
-		{ timeout: 10_000, windowsHide: true },
-	]);
-	assert.equal(await nginxMasterProcessMatches(
-		service,
-		4242,
-		async () => `/tmp/reused -c ${service.configPath}/nginx.conf -p ${service.runPath}`,
-		'darwin',
-	), false);
-	assert.equal(await nginxMasterProcessMatches(
-		service,
-		4242,
-		async () => `"${service.bin.nginx}" -c "${service.configPath}/nginx.conf" -p "${service.runPath}"`,
-		'darwin',
-	), true);
-	assert.equal(await nginxMasterProcessMatches(
-		service,
-		4242,
-		async () => `${service.bin.nginx}-evil -c ${service.configPath}/nginx.conf -p ${service.runPath}`,
-		'darwin',
-	), false);
-	let windowsExecCalls = 0;
-	assert.equal(await nginxMasterProcessMatches(
-		service,
-		4242,
-		async () => { windowsExecCalls += 1; return ''; },
-		'win32',
-	), true, 'Nginx for Windows safely rejects unrelated PIDs through its PID-scoped named reload event');
-	assert.equal(windowsExecCalls, 0);
-	assert.equal(await nginxMasterProcessMatches(service, 1, async () => '', 'darwin'), false);
-});
-
-test('Nginx master liveness treats EPERM as live and ESRCH as stale', () => {
-	assert.equal(nginxMasterProcessExists(4242, () => true), true);
-	assert.equal(nginxMasterProcessExists(4242, () => {
-		const error = new Error('not permitted');
-		error.code = 'EPERM';
-		throw error;
-	}), true);
-	assert.equal(nginxMasterProcessExists(4242, () => {
-		const error = new Error('missing');
-		error.code = 'ESRCH';
-		throw error;
-	}), false);
+test('Nginx stale-master recovery matches only the native reload error', () => {
+	assert.equal(isMissingNginxMasterProcess(Object.assign(new Error('reload failed'), {
+		stderr: 'nginx: [error] kill(4242, 1) failed (3: No such process)',
+	})), true);
+	assert.equal(isMissingNginxMasterProcess(Object.assign(new Error('reload failed'), {
+		stderr: 'nginx: [emerg] invalid configuration',
+	})), false);
 });
 
 test('main compiles, validates, and reloads Nginx using only the targeted site status', () => {
@@ -1028,21 +971,58 @@ test('main compiles, validates, and reloads Nginx using only the targeted site s
 		nginxPath,
 		/const targetSiteRunning = \(\): boolean => \{[\s\S]{0,180}getSiteStatus\(site\) === 'running'/,
 	);
-	assert.doesNotMatch(nginxPath, /hasRunningProcess|serviceName|targetServiceRunning/);
+	assert.doesNotMatch(nginxPath, /targetServiceRunning/);
 	assert.equal(
 		(compileAndReload.match(/refreshNginxService\(/g) ?? []).length,
 		1,
 	);
-	assert.match(nginxPath, /expectedManagedInclude,[\s\S]{0,80}targetSiteRunning,[\s\S]{0,80}\{ assertCurrent \}/);
-	assert.doesNotMatch(compileAndReload, /restartSiteService|reloadNginxWithFallback|reloadNginxInPlace|compileServiceConfigs/);
+	assert.match(nginxPath, /expectedManagedInclude,[\s\S]{0,80}targetSiteRunning,[\s\S]{0,200}restartService/);
+	assert.match(compileAndReload, /recoverStaleNginxMaster = false/);
+	assert.match(nginxPath, /restartService: recoverStaleNginxMaster \? async \(\) =>/);
+	assert.match(nginxPath, /const processName = 'nginx'/);
+	assert.match(nginxPath, /restartSiteService\(site, processName\)/);
+	assert.match(nginxPath, /hasRunningProcess\(site, processName\)/);
+	assert.equal((nginxPath.match(/restartSiteService\(/g) ?? []).length, 1);
+	assert.doesNotMatch(compileAndReload, /reloadNginxWithFallback|reloadNginxInPlace|compileServiceConfigs/);
+});
+
+test('main limits stale-master service restart recovery to interactive settings changes', () => {
+	const mainSource = fs.readFileSync(path.resolve(__dirname, '../src/main.ts'), 'utf8');
+	const interactiveRecoveryCalls = mainSource.match(
+		/compileAndReload\(\s*site,\s*server,\s*(?:true|false),\s*\(\) => assertServerTransactionCurrent\(siteId, transaction\),\s*true,\s*\)/g,
+	) ?? [];
+	assert.equal(interactiveRecoveryCalls.length, 3);
+
+	const reconciliation = mainSource.slice(
+		mainSource.indexOf('const reconcileSite = async'),
+		mainSource.indexOf('const cancelDeferredReconciliation'),
+	);
+	assert.doesNotMatch(
+		reconciliation,
+		/compileAndReload\(\s*site,\s*server,\s*(?:true|false),\s*assertReconciliationTransactionCurrent,\s*true,/,
+	);
+	const rollback = mainSource.slice(
+		mainSource.indexOf('const rollbackTransaction = async'),
+		mainSource.indexOf('const abortForGlobalLifecycle'),
+	);
+	assert.notEqual(rollback, '');
+	assert.doesNotMatch(
+		rollback,
+		/compileAndReload\([\s\S]{0,180}assertRollbackTransactionCurrent,\s*true,/,
+	);
 });
 
 test('main binds separate WP Engine TLS identities to the selected Local site', () => {
 	const mainSource = fs.readFileSync(path.resolve(__dirname, '../src/main.ts'), 'utf8');
+	const reconciliation = mainSource.slice(
+		mainSource.indexOf('const reconcileSite = async'),
+		mainSource.indexOf('const cancelDeferredReconciliation'),
+	);
 	assert.match(mainSource, /testOrigin = async \([\s\S]{0,160}siteId: string,[\s\S]{0,160}signal: AbortSignal/);
 	assert.match(mainSource, /if \(server\.kind === 'nginx'\) \{\s*await assertAuthoritativeWpEngineIdentity\(site, normalizedInput\)/);
 	assert.match(mainSource, /authoritative = await getAuthoritativeWpEngineOrigin\(\s*site,/);
-	assert.match(mainSource, /await assertStoredWpEngineConnection\(site, settings\)/);
+	assert.match(reconciliation, /wpEngineStoredProvenanceMatches\([\s\S]{0,160}settings\.originWpEngineInstallId,[\s\S]{0,80}settings\.originWpEngineSiteId/);
+	assert.doesNotMatch(reconciliation, /assertAuthoritativeWpEngineIdentity|assertStoredWpEngineConnection|getAuthoritativeWpEngineOrigin|wpEngineCapi/);
 	assert.match(mainSource, /shouldRetainWpEngineSettingsAfterVerificationError\(error\)/);
 });
 

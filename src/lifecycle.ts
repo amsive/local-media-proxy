@@ -3,29 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { inspect } from 'node:util';
 import type { ServerKind } from './types';
 
 const SERVER_TRANSACTION_CHANGED_ERROR_NAME = 'LocalMediaProxyServerTransactionChangedError';
-
-export function fingerprintRuntimeInputs(value: unknown): string {
-	return inspect(value, {
-		breakLength: Infinity,
-		compact: true,
-		customInspect: false,
-		depth: null,
-		getters: false,
-		maxArrayLength: null,
-		maxStringLength: null,
-		sorted: true,
-	});
-}
 
 export interface ServerTransactionFingerprint {
 	configPath: string | null;
 	executablePath: string | null;
 	runPath: string | null;
-	runtimeInputsFingerprint: string | null;
 	serverKind: ServerKind;
 	serviceName: string | null;
 	siteConfigTemplatePath: string | null;
@@ -50,7 +35,6 @@ export function serverTransactionFingerprintsMatch(
 	return expected.configPath === current.configPath &&
 		expected.executablePath === current.executablePath &&
 		expected.runPath === current.runPath &&
-		expected.runtimeInputsFingerprint === current.runtimeInputsFingerprint &&
 		expected.serverKind === current.serverKind &&
 		expected.serviceName === current.serviceName &&
 		expected.siteConfigTemplatePath === current.siteConfigTemplatePath &&

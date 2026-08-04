@@ -36,7 +36,6 @@ import {
 import {
 	cleanupRequiresRefresh,
 	completeUnresolvedServiceCleanup,
-	fingerprintRuntimeInputs,
 	isServerTransactionChangedError,
 	lifecycleUnavailableReason,
 	runServerTransactionMutation,
@@ -249,22 +248,12 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		const templatesPath = (site as Local.Site & {
 			paths?: { confTemplates?: unknown };
 		}).paths?.confTemplates;
-		const declaredService = server.serviceName
-			? (site.services as Record<string, unknown> | undefined)?.[server.serviceName]
-			: null;
 		return {
 			configPath: server.service?.configPath ?? null,
 			executablePath: server.kind === 'unsupported'
 				? null
 				: server.service?.bin?.[executableName] ?? null,
 			runPath: server.service?.runPath ?? null,
-			runtimeInputsFingerprint: server.service
-				? fingerprintRuntimeInputs({
-					configVariables: server.service.configVariables,
-					declaredService,
-					env: server.service.env ?? {},
-				})
-				: null,
 			serverKind: server.kind,
 			serviceName: server.serviceName,
 			siteConfigTemplatePath: server.service?.siteConfigTemplatePath ?? null,
@@ -536,35 +525,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		return authoritative;
 	};
 
-	const assertStoredWpEngineConnection = async (
-		site: Local.Site,
-		settings: StoredSettings,
-	): Promise<void> => {
-		if (settings.originSource !== 'wpengine') {
-			return;
-		}
-		if (!wpEngineStoredProvenanceMatches(
-			site,
-			settings.originWpEngineInstallId,
-			settings.originWpEngineSiteId,
-		)) {
-			throw new Error('The saved WP Engine origin no longer matches this Local site connection. Run auto-population again.');
-		}
-
-		const authoritative = await assertAuthoritativeWpEngineIdentity(site, settings);
-		if (
-			!authoritative ||
-			!wpEngineStoredProvenanceMatches(
-				site,
-				settings.originWpEngineInstallId,
-				settings.originWpEngineSiteId,
-				authoritative,
-			)
-		) {
-			throw new Error('The saved WP Engine install identity changed. Run auto-population again.');
-		}
-	};
-
 	const persistSettings = (siteId: string, envelope: StoredSettingsEnvelope): void => {
 		siteData.updateSite(siteId, {
 			id: siteId,
@@ -623,6 +583,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		server: RuntimeServer,
 		expectManaged: boolean,
 		assertCurrent: () => void = (): void => undefined,
+		recoverStaleNginxMaster = false,
 	): Promise<boolean> => {
 		assertCurrent();
 		if (!server.serviceName || server.kind === 'unsupported' || !server.service) {
@@ -682,6 +643,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			assertCurrent();
 			return siteProcessManager.getSiteStatus(site) === 'running';
 		};
+		const processName = 'nginx';
 		const refreshed = await refreshNginxService(
 			site,
 			server.service,
@@ -689,7 +651,21 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			LocalMain.execFilePromise,
 			expectedManagedInclude,
 			targetSiteRunning,
-			{ assertCurrent },
+			{
+				assertCurrent,
+				restartService: recoverStaleNginxMaster ? async () => {
+					assertCurrent();
+					await siteProcessManager.restartSiteService(site, processName);
+					assertCurrent();
+					if (!siteProcessManager.hasRunningProcess(site, processName)) {
+						throw new Error("Local did not report this site's restarted Nginx process as running.");
+					}
+					logger.log(
+						'warn',
+						`Restarted the selected Nginx service for site ${site.id} after native reload reported a stale master PID.`,
+					);
+				} : undefined,
+			},
 		);
 		assertCurrent();
 		return refreshed;
@@ -1282,6 +1258,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					server,
 					true,
 					() => assertServerTransactionCurrent(siteId, transaction),
+					true,
 				);
 				commitInteractiveSettings(siteId, transaction, nextEnvelope);
 				logger.log('info', `Enabled media proxy for site ${siteId}${restarted ? ` and refreshed ${server.kind}` : ''}.`);
@@ -1400,6 +1377,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 						server,
 						false,
 						() => assertServerTransactionCurrent(siteId, transaction),
+						true,
 					);
 				}
 				commitInteractiveSettings(siteId, transaction, nextEnvelope);
@@ -1497,6 +1475,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					server,
 					false,
 					() => assertServerTransactionCurrent(siteId, transaction),
+					true,
 				);
 			}
 			commitInteractiveSettings(siteId, transaction, disabledEnvelope);
@@ -1785,8 +1764,16 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					}
 				} else {
 					try {
-						if (server.kind === 'nginx') {
-							await assertStoredWpEngineConnection(site, settings);
+						if (
+							server.kind === 'nginx' &&
+							settings.originSource === 'wpengine' &&
+							!wpEngineStoredProvenanceMatches(
+								site,
+								settings.originWpEngineInstallId,
+								settings.originWpEngineSiteId,
+							)
+						) {
+							throw new Error('The saved WP Engine origin no longer matches this Local site connection. Run auto-population again.');
 						}
 						normalizedOrigin = validateAndNormalizeOrigin(settings, {
 							requiresOriginIp: server.requiresOriginIp,

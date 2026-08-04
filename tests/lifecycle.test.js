@@ -10,7 +10,6 @@ const test = require('node:test');
 const {
 	cleanupRequiresRefresh,
 	completeUnresolvedServiceCleanup,
-	fingerprintRuntimeInputs,
 	isServerTransactionChangedError,
 	lifecycleUnavailableReason,
 	runServerTransactionMutation,
@@ -23,38 +22,11 @@ const {
 	synchronousCleanupRequiresRefresh,
 } = require('../lib/lifecycle');
 
-test('runtime input fingerprints are stable for key order, BigInt, and cycles', () => {
-	const firstConfig = { enabled: true, revision: 1n };
-	firstConfig.self = firstConfig;
-	const secondConfig = { revision: 1n, enabled: true };
-	secondConfig.self = secondConfig;
-
-	const first = fingerprintRuntimeInputs({
-		configVariables: firstConfig,
-		declaredService: { version: '1.26.1', name: 'nginx' },
-		env: { B: 'two', A: 'one' },
-	});
-	const second = fingerprintRuntimeInputs({
-		env: { A: 'one', B: 'two' },
-		declaredService: { name: 'nginx', version: '1.26.1' },
-		configVariables: secondConfig,
-	});
-
-	assert.equal(first, second);
-	secondConfig.revision = 2n;
-	assert.notEqual(first, fingerprintRuntimeInputs({
-		configVariables: secondConfig,
-		declaredService: { name: 'nginx', version: '1.26.1' },
-		env: { A: 'one', B: 'two' },
-	}));
-});
-
 function serverTransaction(overrides = {}) {
 	return {
 		configPath: '/example/site/conf/nginx',
 		executablePath: '/example/services/nginx',
 		runPath: '/example/site/run/nginx',
-		runtimeInputsFingerprint: '{"configVariables":{},"declaredService":{},"env":{}}',
 		serverKind: 'nginx',
 		serviceName: 'nginx-1.26.1',
 		siteConfigTemplatePath: '/example/site/conf/nginx/site.conf.hbs',
@@ -73,7 +45,6 @@ test('server transactions close when server identity, paths, or lifecycle status
 		['configPath', '/example/site/conf/apache'],
 		['executablePath', '/example/services/httpd'],
 		['runPath', '/example/site/run/apache'],
-		['runtimeInputsFingerprint', '{"configVariables":{"revision":2},"declaredService":{},"env":{}}'],
 		['serverKind', 'apache'],
 		['serviceName', 'apache-2.4.63+1'],
 		['siteConfigTemplatePath', '/example/site/conf/apache/site.conf.hbs'],

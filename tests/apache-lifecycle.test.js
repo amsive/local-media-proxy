@@ -75,7 +75,7 @@ test('Apache refresh observes httpd while Nginx reload avoids Local process-mana
 	);
 	const refreshBranch = compileAndReload.slice(
 		compileAndReload.indexOf("if (server.kind === 'apache')"),
-		compileAndReload.indexOf('await compileAndValidateNginxConfig'),
+		compileAndReload.indexOf('const targetSiteRunning'),
 	);
 	assert.match(refreshBranch, /const processName = 'httpd'/);
 	assert.match(refreshBranch, /hasRunningProcess\(site, processName\)/);
@@ -85,7 +85,9 @@ test('Apache refresh observes httpd while Nginx reload avoids Local process-mana
 		compileAndReload.indexOf('const targetSiteRunning'),
 	);
 	assert.match(nginxBranch, /refreshNginxService\(/);
-	assert.doesNotMatch(nginxBranch, /hasRunningProcess/);
+	assert.match(nginxBranch, /const processName = 'nginx'/);
+	assert.match(nginxBranch, /restartSiteService\(site, processName\)/);
+	assert.match(nginxBranch, /hasRunningProcess\(site, processName\)/);
 });
 
 test('global disable and uninstall clean runtime without changing per-site enabled intent', () => {
@@ -447,16 +449,15 @@ test('reconciliation rechecks current status and server identity immediately bef
 	);
 });
 
-test('server transactions use deterministic lightweight runtime inputs without the removed deep digest', () => {
+test('server transactions use primitive runtime identity without traversing Local service metadata', () => {
 	const fingerprint = sourceSection(
 		'const serverTransactionFingerprint',
 		'const currentServerTransactionFingerprint',
 	);
-	assert.match(
-		fingerprint,
-		/runtimeInputsFingerprint: server\.service[\s\S]{0,120}fingerprintRuntimeInputs\(\{[\s\S]{0,160}configVariables: server\.service\.configVariables,[\s\S]{0,120}declaredService,[\s\S]{0,120}env: server\.service\.env \?\? \{\}/,
-	);
-	assert.doesNotMatch(mainSource, /serviceInputsDigest|stableRuntimeInput|createHash/);
+	assert.match(fingerprint, /configPath: server\.service\?\.configPath \?\? null/);
+	assert.match(fingerprint, /serviceName: server\.serviceName/);
+	assert.match(fingerprint, /siteStatus: siteProcessManager\.getSiteStatus\(site\)/);
+	assert.doesNotMatch(mainSource, /fingerprintRuntimeInputs|runtimeInputsFingerprint|serviceInputsDigest|stableRuntimeInput|createHash|inspect\(/);
 });
 
 test('interactive apply, save-disable, and toggle commit settings only after files and runtime are current', () => {
@@ -819,7 +820,7 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 		assert.equal(retriedPreflight.restartCalls, 0);
 	}
 
-	const interruptedReconciliation = runScenario('reconciliation-runtime-input-change-recovery');
+	const interruptedReconciliation = runScenario('reconciliation-service-path-change-recovery');
 	assert.equal(interruptedReconciliation.retryTimersAfterFailure, 1);
 	assert.equal(interruptedReconciliation.retryTimersAfterOneRecoverySample, 1);
 	assert.equal(interruptedReconciliation.retryCallsAfterOneRecoverySample, 3);
@@ -951,6 +952,20 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 		siteStatus: 'halted',
 	});
 
+	const staleMasterRecovery = runScenario('versioned-nginx-stale-master-recovery');
+	assert.deepEqual(staleMasterRecovery.calls, [
+		'probeOrigin',
+		'captureAllManagedFiles',
+		'applyServerManagedFiles',
+		'compileNginx:managed',
+		'reloadNginx',
+		'restart:nginx',
+		'updateSite',
+	]);
+	assert.equal(staleMasterRecovery.operationError, undefined);
+	assert.equal(staleMasterRecovery.restartCalls, 1);
+	assert.equal(staleMasterRecovery.updates.length, 1);
+
 	for (const [scenario, restoredCompile, restoredEnabled, failClosedCleanup] of [
 		['rollback-valid-managed', 'compileNginx:managed', true, false],
 		['rollback-snapshot-enabled', 'compileNginx:clean', false, true],
@@ -984,17 +999,17 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 	assert.equal(missingTarget.restartCalls, 0);
 	assert.equal(missingTarget.updates.length, 1);
 
-	const changedInputs = runScenario('service-input-change');
-	assert.match(changedInputs.operationError, /web-server identity or lifecycle status/);
-	assert.deepEqual(changedInputs.calls, [
+	const changedPath = runScenario('service-path-change');
+	assert.match(changedPath.operationError, /web-server identity or lifecycle status/);
+	assert.deepEqual(changedPath.calls, [
 		'probeOrigin',
 		'captureAllManagedFiles',
 		'applyServerManagedFiles',
 		'compileNginx:managed',
 	]);
-	assert.equal(changedInputs.refreshCalls, 0);
-	assert.equal(changedInputs.restartCalls, 0);
-	assert.equal(changedInputs.updates.length, 0);
+	assert.equal(changedPath.refreshCalls, 0);
+	assert.equal(changedPath.restartCalls, 0);
+	assert.equal(changedPath.updates.length, 0);
 });
 
 test('unsupported site state preserves dedicated renderer guidance without masking service failures', () => {

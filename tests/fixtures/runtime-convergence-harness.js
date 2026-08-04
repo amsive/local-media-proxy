@@ -24,13 +24,13 @@ const supportedScenarios = new Set([
 	'passive-switch-projection',
 	'preflight-service-retry',
 	'preflight-status-retry',
-	'reconciliation-runtime-input-change-recovery',
+	'reconciliation-service-path-change-recovery',
 	'rollback-snapshot-disabled',
 	'rollback-snapshot-enabled',
 	'rollback-malformed-snapshot',
 	'rollback-valid-managed',
 	'same-value-halted-repair',
-	'service-input-change',
+	'service-path-change',
 	'global-enable-matching',
 	'global-enable-configured-disabled-halted',
 	'global-enable-configured-disabled-running',
@@ -49,6 +49,7 @@ const supportedScenarios = new Set([
 	'startup-pristine-disabled-nginx',
 	'supported-service-unavailable-disabled',
 	'target-service-missing',
+	'versioned-nginx-stale-master-recovery',
 ]);
 assert.ok(supportedScenarios.has(scenario), `unsupported scenario: ${scenario}`);
 
@@ -217,7 +218,8 @@ let compiledMatchChecks = 0;
 let filesystemReadyChecks = 0;
 let managedArtifactChecks = 0;
 let publishedSiteStartedEvents = 0;
-let reconciliationInterruptionsRemaining = scenario === 'reconciliation-runtime-input-change-recovery' ? 1 : 0;
+let nginxRuntimeRunning = scenario !== 'versioned-nginx-stale-master-recovery';
+let reconciliationInterruptionsRemaining = scenario === 'reconciliation-service-path-change-recovery' ? 1 : 0;
 const rollbackSourceMatches = scenario === 'rollback-valid-managed';
 const rollbackScenarios = new Set([
 	'rollback-malformed-snapshot',
@@ -269,12 +271,23 @@ const cradle = {
 			}
 			return siteStatus;
 		},
-		hasRunningProcess: () => (
-			siteStatus === 'running' && scenario !== 'target-service-missing'
+		hasRunningProcess: (_site, processName) => (
+			siteStatus === 'running' &&
+			scenario !== 'target-service-missing' &&
+			(
+				scenario !== 'versioned-nginx-stale-master-recovery' ||
+				(processName === 'nginx' && nginxRuntimeRunning)
+			)
 		),
 		restartSiteService: async (_site, serviceName) => {
 			calls.push(`restart:${serviceName}`);
 			restartCalls += 1;
+			if (scenario === 'versioned-nginx-stale-master-recovery') {
+				if (serviceName === 'nginx') {
+					nginxRuntimeRunning = true;
+				}
+				return;
+			}
 			if (rollbackScenarios.has(scenario) && restartCalls === 1) {
 				throw new Error('targeted restart failed');
 			}
@@ -331,7 +344,7 @@ const nginx = require(path.join(libRoot, 'nginx.js'));
 function publishNewerSiteStartedEvent() {
 	if (!new Set([
 		'corrupt-cleanup-failure-newer-event',
-		'reconciliation-runtime-input-change-recovery',
+		'reconciliation-service-path-change-recovery',
 	]).has(scenario)) {
 		return;
 	}
@@ -349,12 +362,12 @@ Object.assign(nginx, {
 			throw new Error('simulated clean compilation failure');
 		}
 		compiledMatches = true;
-		if (scenario === 'service-input-change') {
-			service.configVariables.revision = 2;
+		if (scenario === 'service-path-change') {
+			service.configPath = '/example/runtime/conf/nginx-replaced';
 		}
 		if (reconciliationInterruptionsRemaining > 0) {
 			reconciliationInterruptionsRemaining -= 1;
-			service.configVariables.revision = 2;
+			service.configPath = '/example/runtime/conf/nginx-replaced';
 			publishNewerSiteStartedEvent();
 		}
 	},
@@ -378,12 +391,12 @@ Object.assign(nginx, {
 			throw new Error('simulated clean compilation failure');
 		}
 		compiledMatches = true;
-		if (scenario === 'service-input-change') {
-			service.configVariables.revision = 2;
+		if (scenario === 'service-path-change') {
+			service.configPath = '/example/runtime/conf/nginx-replaced';
 		}
 		if (reconciliationInterruptionsRemaining > 0) {
 			reconciliationInterruptionsRemaining -= 1;
-			service.configVariables.revision = 2;
+			service.configPath = '/example/runtime/conf/nginx-replaced';
 			publishNewerSiteStartedEvent();
 		}
 		options?.assertCurrent?.();
@@ -392,6 +405,10 @@ Object.assign(nginx, {
 		}
 		calls.push('reloadNginx');
 		refreshCalls += 1;
+		if (scenario === 'versioned-nginx-stale-master-recovery') {
+			await options?.restartService?.();
+			return true;
+		}
 		if (rollbackScenarios.has(scenario) && refreshCalls === 1) {
 			throw new Error('targeted reload failed');
 		}
@@ -537,7 +554,7 @@ async function flushAsyncWork() {
 			scenario === 'startup-pristine-disabled-apache' ||
 			scenario === 'startup-compiled-drift' ||
 			scenario === 'startup-enabled-halted-drift' ||
-			scenario === 'reconciliation-runtime-input-change-recovery' ||
+			scenario === 'reconciliation-service-path-change-recovery' ||
 			scenario === 'corrupt-service-unavailable' ||
 			scenario === 'corrupt-cleanup-failure-cancels' ||
 			scenario === 'corrupt-cleanup-failure-newer-event' ||
@@ -554,7 +571,7 @@ async function flushAsyncWork() {
 			}
 			if (new Set([
 				'corrupt-cleanup-failure-newer-event',
-				'reconciliation-runtime-input-change-recovery',
+				'reconciliation-service-path-change-recovery',
 			]).has(scenario)) {
 				retryTimersAfterFailure = timers.size;
 				await runNextTimer();
