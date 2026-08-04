@@ -5,7 +5,6 @@
 
 import type * as Local from '@getflywheel/local';
 import * as LocalMain from '@getflywheel/local/main';
-import { createHash } from 'node:crypto';
 import {
 	apacheCompiledConfigMatches,
 	inspectApacheRuntimeCapabilities,
@@ -103,12 +102,13 @@ type SiteWithSettings = Local.Site & {
 
 interface ReconcileOptions {
 	configuredOnly?: boolean;
-	refreshMatchingEnabledRuntime?: boolean;
+	forceRuntimeRefresh?: boolean;
 	skipHaltedDisabledProfile?: boolean;
 }
 
 interface DeferredReconciliation {
 	attempts: number;
+	forceRuntimeRefresh: boolean;
 	options: ReconcileOptions;
 	revision: number;
 	stableSamples: number;
@@ -209,51 +209,6 @@ async function withSiteLock<T>(siteId: string, operation: () => Promise<T>): Pro
 	}
 }
 
-function stableRuntimeInput(value: unknown, ancestors = new Set<object>()): string {
-	if (value === null) {
-		return 'null';
-	}
-	if (typeof value === 'string') {
-		return `string:${JSON.stringify(value)}`;
-	}
-	if (typeof value === 'number') {
-		return `number:${Number.isNaN(value) ? 'NaN' : String(value)}`;
-	}
-	if (typeof value === 'boolean' || typeof value === 'bigint' || typeof value === 'undefined') {
-		return `${typeof value}:${String(value)}`;
-	}
-	if (typeof value === 'function' || typeof value === 'symbol') {
-		throw new Error('Local returned unsupported web-server compiler inputs.');
-	}
-	if (ancestors.has(value)) {
-		throw new Error('Local returned circular web-server compiler inputs.');
-	}
-	ancestors.add(value);
-	try {
-		if (Array.isArray(value)) {
-			return `array:[${value.map((entry) => stableRuntimeInput(entry, ancestors)).join(',')}]`;
-		}
-		const entries = Object.keys(value).sort().map((key) => (
-			`${JSON.stringify(key)}:${stableRuntimeInput((value as Record<string, unknown>)[key], ancestors)}`
-		));
-		return `object:{${entries.join(',')}}`;
-	} finally {
-		ancestors.delete(value);
-	}
-}
-
-function serviceInputsDigest(service: ApacheRuntimeService | null): string | null {
-	if (!service) {
-		return null;
-	}
-	return createHash('sha256')
-		.update(stableRuntimeInput({
-			configVariables: service.configVariables,
-			env: service.env,
-		}))
-		.digest('hex');
-}
-
 export default function main(context: LocalMain.AddonMainContext): void {
 	const { ipcMain } = context.electron;
 	const {
@@ -293,13 +248,22 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		const templatesPath = (site as Local.Site & {
 			paths?: { confTemplates?: unknown };
 		}).paths?.confTemplates;
+		const declaredService = server.serviceName
+			? (site.services as Record<string, unknown> | undefined)?.[server.serviceName]
+			: null;
 		return {
 			configPath: server.service?.configPath ?? null,
 			executablePath: server.kind === 'unsupported'
 				? null
 				: server.service?.bin?.[executableName] ?? null,
 			runPath: server.service?.runPath ?? null,
-			serviceInputsDigest: serviceInputsDigest(server.service),
+			runtimeInputsFingerprint: server.service
+				? JSON.stringify({
+					configVariables: server.service.configVariables,
+					declaredService,
+					env: server.service.env ?? {},
+				})
+				: null,
 			serverKind: server.kind,
 			serviceName: server.serviceName,
 			siteConfigTemplatePath: server.service?.siteConfigTemplatePath ?? null,
@@ -678,7 +642,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		) {
 			throw new Error(`The managed ${server.kind} include template is unavailable.`);
 		}
-		const serviceName = server.serviceName;
 		if (server.kind === 'apache') {
 			const processName = 'httpd';
 			const targetServiceRunning = (): boolean => {
@@ -718,10 +681,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			assertCurrent();
 			return siteProcessManager.getSiteStatus(site) === 'running';
 		};
-		const targetServiceRunning = (): boolean => {
-			assertCurrent();
-			return siteProcessManager.hasRunningProcess(site, serviceName);
-		};
 		const refreshed = await refreshNginxService(
 			site,
 			server.service,
@@ -729,7 +688,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			LocalMain.execFilePromise,
 			expectedManagedInclude,
 			targetSiteRunning,
-			targetServiceRunning,
 			{ assertCurrent },
 		);
 		assertCurrent();
@@ -792,7 +750,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			}
 			scheduleDeferredReconciliation(site.id, {
 				configuredOnly: false,
-				refreshMatchingEnabledRuntime: true,
 			});
 		};
 		const currentRollbackTarget = (): {
@@ -1815,7 +1772,11 @@ export default function main(context: LocalMain.AddonMainContext): void {
 						false,
 						assertReconciliationTransactionCurrent,
 					);
-					if (!managedArtifactsPresent && compiledConfigMatches) {
+					if (
+						!managedArtifactsPresent &&
+						compiledConfigMatches &&
+						!options.forceRuntimeRefresh
+					) {
 						if (rawStoredSettings !== undefined) {
 							return persistReconciledEnvelope();
 						}
@@ -1949,10 +1910,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 							true,
 							assertReconciliationTransactionCurrent,
 						);
-						if (
-							compiledConfigMatches &&
-							!options.refreshMatchingEnabledRuntime
-						) {
+						if (compiledConfigMatches && !options.forceRuntimeRefresh) {
 							return persistReconciledEnvelope();
 						}
 					}
@@ -2001,7 +1959,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					if (
 						changed ||
 						!compiledConfigMatches ||
-						Boolean(settings.enabled && options.refreshMatchingEnabledRuntime)
+						Boolean(options.forceRuntimeRefresh)
 					) {
 						await compileAndReload(
 							site,
@@ -2090,10 +2048,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		if (existing) {
 			existing.options = {
 				configuredOnly: existing.options.configuredOnly && options.configuredOnly,
-				refreshMatchingEnabledRuntime: Boolean(
-					existing.options.refreshMatchingEnabledRuntime ||
-					options.refreshMatchingEnabledRuntime,
-				),
 				skipHaltedDisabledProfile: Boolean(
 					existing.options.skipHaltedDisabledProfile &&
 					options.skipHaltedDisabledProfile,
@@ -2105,6 +2059,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 
 		const pending: DeferredReconciliation = {
 			attempts: 0,
+			forceRuntimeRefresh: false,
 			options: { ...options },
 			revision: 0,
 			stableSamples: 0,
@@ -2207,20 +2162,22 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					return;
 				}
 				if (pending.stableSamples >= DEFERRED_RECONCILIATION_STABLE_SAMPLES) {
-					const reconcileOptions = { ...pending.options };
+					const reconcileOptions = {
+						...pending.options,
+						forceRuntimeRefresh: pending.forceRuntimeRefresh,
+					};
+					pending.forceRuntimeRefresh = false;
 					const reconcileRevision = pending.revision;
 					pending.stableSamples = 0;
 					void reconcileSite(siteId, reconcileOptions).then((converged) => {
 						if (deferredReconciliations.get(siteId) !== pending) {
 							return;
 						}
-						if (!converged) {
-							pending.options.refreshMatchingEnabledRuntime = true;
+						if (pending.revision !== reconcileRevision) {
+							pending.forceRuntimeRefresh = !converged;
 							scheduleNextPoll();
-						} else if (pending.revision === reconcileRevision) {
-							cancelDeferredReconciliation(siteId);
 						} else {
-							scheduleNextPoll();
+							cancelDeferredReconciliation(siteId);
 						}
 					}).catch((error) => {
 						if (deferredReconciliations.get(siteId) !== pending) {
@@ -2234,8 +2191,12 @@ export default function main(context: LocalMain.AddonMainContext): void {
 						} else {
 							logger.log('warn', `Unable to reconcile site ${siteId}: ${errorMessage(error)}`);
 						}
-						pending.options.refreshMatchingEnabledRuntime = true;
-						scheduleNextPoll();
+						if (pending.revision !== reconcileRevision) {
+							pending.forceRuntimeRefresh = true;
+							scheduleNextPoll();
+						} else {
+							cancelDeferredReconciliation(siteId);
+						}
 					});
 					return;
 				}
@@ -2646,12 +2607,26 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				}
 
 				if (pending.stableSamples >= DEFERRED_GLOBAL_CLEANUP_STABLE_SAMPLES) {
-					await cleanupSiteForGlobalChange(
-						siteId,
-						pending.mode,
-						pending.generation,
-						pending.forceRefresh,
-					);
+					try {
+						await cleanupSiteForGlobalChange(
+							siteId,
+							pending.mode,
+							pending.generation,
+							pending.forceRefresh,
+						);
+					} catch (error) {
+						if (isExpectedLifecycleInterruption(siteId, error)) {
+							pending.stableSamples = 0;
+							scheduleNext();
+							return;
+						}
+						cancelDeferredGlobalCleanup(siteId);
+						logger.log(
+							'error',
+							`Unable to complete deferred Media Proxy global ${mode === 'uninstalling' ? 'uninstall' : 'disable'} cleanup for site ${siteId}: ${errorMessage(error)}`,
+						);
+						return;
+					}
 					if (deferredGlobalCleanups.get(siteId) === pending) {
 						deferredGlobalCleanups.delete(siteId);
 					}
@@ -2740,7 +2715,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		for (const site of Object.values(siteData.getSites()) as Local.Site[]) {
 			scheduleDeferredReconciliation(site.id, {
 				configuredOnly: true,
-				refreshMatchingEnabledRuntime: true,
 				skipHaltedDisabledProfile: true,
 			});
 		}
@@ -2977,7 +2951,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		}
 		scheduleDeferredReconciliation(siteId, {
 			configuredOnly: true,
-			refreshMatchingEnabledRuntime: true,
 		});
 	});
 
@@ -2997,7 +2970,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		}
 		scheduleDeferredReconciliation(siteId, {
 			configuredOnly: true,
-			refreshMatchingEnabledRuntime: true,
 		});
 	});
 
@@ -3015,7 +2987,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 	for (const site of Object.values(siteData.getSites()) as Local.Site[]) {
 		scheduleDeferredReconciliation(site.id, {
 			configuredOnly: true,
-			refreshMatchingEnabledRuntime: false,
 			skipHaltedDisabledProfile: true,
 		});
 	}

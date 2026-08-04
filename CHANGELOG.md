@@ -6,7 +6,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-08-03
+## [0.4.0] - 2026-08-04
 
 This release expands the local-first fallback to safe missing upload assets and makes saved site state converge reliably across add-on and web-server changes.
 
@@ -23,7 +23,10 @@ This release expands the local-first fallback to safe missing upload assets and 
 ### Fixed
 
 - Per-site enabled intent now survives global add-on disable and uninstall. Re-enabling or reinstalling v0.4.0 reapplies valid profiles while invalid profiles remain fail-closed without losing the user's saved intent. Replacing an earlier release may require enabling a site once because the earlier uninstaller runs before v0.4.0 is installed. ([#31](https://github.com/amsive/local-media-proxy/issues/31))
-- Server switches, same-value repair requests, startup reconciliation, and settings changes now verify that managed source, compiled configuration, and the targeted runtime converge before settings are committed. Confirmed drift is repaired without waking stopped sites, and failures restore the prior files, settings, and runtime state. ([#34](https://github.com/amsive/local-media-proxy/issues/34))
+- Server switches, same-value repair requests, settings changes, and confirmed startup drift now verify that managed source and compiled configuration converge before settings are committed. Running services receive one validated, site-scoped refresh; stopped sites remain stopped, and failures restore the prior files and settings. ([#34](https://github.com/amsive/local-media-proxy/issues/34))
+- Clean disabled profiles and already-converged enabled profiles no longer trigger routine background Nginx reloads. If Local interrupts an in-flight compile, one newer lifecycle event may perform one recovery refresh; otherwise a failed background refresh is reported once and stops instead of entering a one-second retry storm. ([#38](https://github.com/amsive/local-media-proxy/issues/38))
+- Nginx activation no longer depends on Local's service identifier matching the runtime process name. Versioned or aliased service records use the site's verified Nginx master directly, preventing a valid running site from being disabled and then failing the same check during rollback. ([#39](https://github.com/amsive/local-media-proxy/issues/39))
+- Nginx apply now performs one targeted compilation, one syntax check, and one graceful reload. It no longer runs a full configuration dump or repeatedly polls the process table after reload, keeping apply time independent of site size and within the UI's bounded wait. ([#39](https://github.com/amsive/local-media-proxy/issues/39))
 - Untouched disabled Nginx profiles remain unchanged during passive startup and lifecycle checks; only sites with meaningful saved Media Proxy state enter background reconciliation. ([#34](https://github.com/amsive/local-media-proxy/issues/34))
 - Legacy settings from v0.1.0 through v0.3.1 now migrate into the current managed routes without inventing unsupported historical marker formats. ([#34](https://github.com/amsive/local-media-proxy/issues/34))
 

@@ -211,7 +211,6 @@ nginx.refreshNginxService = async (
 	_execFilePromise,
 	expectedManagedInclude,
 	isSiteRunning,
-	isServiceRunning,
 	options,
 ) => {
 	options?.assertCurrent?.();
@@ -224,9 +223,6 @@ nginx.refreshNginxService = async (
 	options?.assertCurrent?.();
 	if (!isSiteRunning()) {
 		return false;
-	}
-	if (!isServiceRunning()) {
-		throw new Error('targeted Nginx service is unavailable');
 	}
 	return true;
 };
@@ -304,7 +300,7 @@ async function settleTimers() {
 		const deferredGlobalCleanups = calls.filter(
 			(call) => call.startsWith('remove-async'),
 		).length;
-		assert.equal(deferredGlobalCleanups, Object.keys(sites).length + 1);
+		assert.equal(deferredGlobalCleanups, Object.keys(sites).length);
 
 		ipcMain.emit('addonInstallerService:enable', {}, {
 			name: 'local-media-proxy',

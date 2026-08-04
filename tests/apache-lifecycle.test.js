@@ -68,7 +68,7 @@ test('Apache apply snapshots both servers and rollback restores runtime before c
 	);
 });
 
-test('Apache refresh observes Local runtime process name httpd without using its non-settling hard restart', () => {
+test('Apache refresh observes httpd while Nginx reload avoids Local process-manager gating', () => {
 	const compileAndReload = sourceSection(
 		'const compileAndReload = async',
 		'const runtimeCleanupUnavailableReason',
@@ -81,6 +81,11 @@ test('Apache refresh observes Local runtime process name httpd without using its
 	assert.match(refreshBranch, /hasRunningProcess\(site, processName\)/);
 	assert.match(refreshBranch, /shouldRefreshRuntime\(/);
 	assert.doesNotMatch(refreshBranch, /restartSiteService/);
+	const nginxBranch = compileAndReload.slice(
+		compileAndReload.indexOf('const targetSiteRunning'),
+	);
+	assert.match(nginxBranch, /refreshNginxService\(/);
+	assert.doesNotMatch(nginxBranch, /hasRunningProcess/);
 });
 
 test('global disable and uninstall clean runtime without changing per-site enabled intent', () => {
@@ -184,8 +189,9 @@ test('startup and Local lifecycle reconciliation wait for stable ready sites wit
 	assert.match(mainSource, /HooksMain\.addAction\('siteStarted'/);
 	assert.match(
 		mainSource,
-		/HooksMain\.addAction\('siteStarted'[\s\S]{0,350}scheduleDeferredReconciliation\(siteId, \{[\s\S]{0,120}configuredOnly: true,[\s\S]{0,120}refreshMatchingEnabledRuntime: true/,
+		/HooksMain\.addAction\('siteStarted'[\s\S]{0,350}scheduleDeferredReconciliation\(siteId, \{[\s\S]{0,120}configuredOnly: true/,
 	);
+	assert.doesNotMatch(mainSource, /refreshMatchingEnabledRuntime/);
 	assert.doesNotMatch(
 		mainSource.slice(
 			mainSource.indexOf("HooksMain.addAction('siteStarted'"),
@@ -219,6 +225,51 @@ test('startup and Local lifecycle reconciliation wait for stable ready sites wit
 		],
 		'passive reconciliation must skip stopped disabled profiles before resolving server paths',
 	);
+	assert.equal(
+		(scheduler.match(/pending\.revision !== reconcileRevision/g) ?? []).length,
+		2,
+		'both resolved and rejected reconciliation work must preserve one newer lifecycle revision',
+	);
+	assertInOrder(
+		scheduler,
+		[
+			'forceRuntimeRefresh: false',
+			'forceRuntimeRefresh: pending.forceRuntimeRefresh',
+			'pending.forceRuntimeRefresh = false',
+			'const reconcileRevision = pending.revision',
+			'void reconcileSite(siteId, reconcileOptions)',
+		],
+		'a recovery refresh must be consumed once before the guarded reconciliation begins',
+	);
+	assert.equal(
+		(scheduler.match(/pending\.forceRuntimeRefresh =/g) ?? []).length,
+		3,
+		'the one-shot flag may only be consumed or armed by a newer lifecycle revision',
+	);
+	assert.match(
+		scheduler,
+		/pending\.revision !== reconcileRevision[\s\S]{0,100}pending\.forceRuntimeRefresh = !converged[\s\S]{0,80}scheduleNextPoll\(\)[\s\S]{0,80}else \{[\s\S]{0,80}cancelDeferredReconciliation\(siteId\)/,
+	);
+	assert.match(
+		scheduler,
+		/pending\.revision !== reconcileRevision[\s\S]{0,100}pending\.forceRuntimeRefresh = true[\s\S]{0,80}scheduleNextPoll\(\)[\s\S]{0,80}else \{[\s\S]{0,80}cancelDeferredReconciliation\(siteId\)/,
+	);
+	assert.doesNotMatch(
+		scheduler,
+		/if \(!converged\)[\s\S]{0,120}scheduleNextPoll\(\)/,
+		'a failed reconciliation without a newer lifecycle event must not retry autonomously',
+	);
+	const externalSchedulingCalls = [...mainSource.matchAll(/\bscheduleDeferredReconciliation\(/g)].map(
+		(match) => mainSource.slice(match.index, mainSource.indexOf(');', match.index) + 2),
+	);
+	assert.ok(externalSchedulingCalls.length > 0);
+	for (const schedulingCall of externalSchedulingCalls) {
+		assert.doesNotMatch(
+			schedulingCall,
+			/forceRuntimeRefresh/,
+			'lifecycle hooks must not expose the internal recovery refresh as a scheduling option',
+		);
+	}
 	const siteStartedHook = sourceSection(
 		"HooksMain.addAction('siteStarted'",
 		"HooksMain.addAction('siteAdded'",
@@ -233,7 +284,11 @@ test('startup and Local lifecycle reconciliation wait for stable ready sites wit
 	assert.match(reconcile, /compiledConfigMatches = await serverCompiledConfigMatches\(/);
 	assert.match(
 		reconcile,
-		/compiledConfigMatches &&[\s\S]{0,100}!options\.refreshMatchingEnabledRuntime[\s\S]{0,120}return persistReconciledEnvelope\(\)/,
+		/if \(!settings\.enabled\) \{[\s\S]{0,320}allManagedArtifactsExist\([\s\S]{0,420}serverCompiledConfigMatches\([\s\S]{0,320}!managedArtifactsPresent &&[\s\S]{0,80}compiledConfigMatches &&[\s\S]{0,80}!options\.forceRuntimeRefresh[\s\S]{0,180}persistReconciledEnvelope\(\)/,
+	);
+	assert.match(
+		reconcile,
+		/if \(compiledConfigMatches && !options\.forceRuntimeRefresh\) \{[\s\S]{0,120}return persistReconciledEnvelope\(\)/,
 	);
 	assert.match(
 		mainSource,
@@ -274,12 +329,12 @@ test('server reconciliation carries Site URL inside the site lock and commits it
 	);
 	assert.match(
 		reconcile,
-		/if \(managedFilesMatch\) \{[\s\S]{0,260}serverCompiledConfigMatches\([\s\S]{0,240}compiledConfigMatches &&[\s\S]{0,160}persistReconciledEnvelope\(\)/,
+		/if \(managedFilesMatch\) \{[\s\S]{0,320}serverCompiledConfigMatches\([\s\S]{0,320}if \(compiledConfigMatches && !options\.forceRuntimeRefresh\) \{[\s\S]{0,160}persistReconciledEnvelope\(\)/,
 		'a complete carried profile may be persisted without mutation only after exact compiled convergence',
 	);
 	assert.match(
 		reconcile,
-		/changed \|\|[\s\S]{0,80}!compiledConfigMatches \|\|[\s\S]{0,140}refreshMatchingEnabledRuntime[\s\S]{0,320}compileAndReload\([\s\S]{0,220}persistReconciledEnvelope\(\)/,
+		/changed \|\|[\s\S]{0,80}!compiledConfigMatches \|\|[\s\S]{0,100}Boolean\(options\.forceRuntimeRefresh\)[\s\S]{0,320}compileAndReload\([\s\S]{0,220}persistReconciledEnvelope\(\)/,
 		'a carried profile must establish runtime convergence whenever source or compiled state is stale',
 	);
 
@@ -390,6 +445,18 @@ test('reconciliation rechecks current status and server identity immediately bef
 		driftRepair,
 		/return rollbackTransaction\([\s\S]{0,180}previousEnvelope,[\s\S]{0,100}snapshots/,
 	);
+});
+
+test('server transactions use lightweight runtime inputs without the removed deep digest', () => {
+	const fingerprint = sourceSection(
+		'const serverTransactionFingerprint',
+		'const currentServerTransactionFingerprint',
+	);
+	assert.match(
+		fingerprint,
+		/runtimeInputsFingerprint: server\.service[\s\S]{0,120}JSON\.stringify\(\{[\s\S]{0,160}configVariables: server\.service\.configVariables,[\s\S]{0,120}declaredService,[\s\S]{0,120}env: server\.service\.env \?\? \{\}/,
+	);
+	assert.doesNotMatch(mainSource, /serviceInputsDigest|stableRuntimeInput|createHash/);
 });
 
 test('interactive apply, save-disable, and toggle commit settings only after files and runtime are current', () => {
@@ -617,6 +684,7 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 
 	const startupNoop = runScenario('startup-noop');
 	assert.deepEqual(startupNoop.calls, []);
+	assert.equal(startupNoop.refreshCalls, 0);
 	assert.equal(startupNoop.restartCalls, 0);
 
 	for (const scenario of [
@@ -668,6 +736,14 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 	assert.equal(configuredDisabledNginx.compiledMatchChecks, 1);
 	assert.equal(configuredDisabledNginx.pendingTimers, 0);
 	assert.deepEqual(configuredDisabledNginx.updates, []);
+	assert.equal(configuredDisabledNginx.refreshCalls, 1);
+
+	const configuredDisabledCleanNginx = runScenario('startup-configured-disabled-clean-nginx');
+	assert.deepEqual(configuredDisabledCleanNginx.calls, []);
+	assert.equal(configuredDisabledCleanNginx.compiledMatchChecks, 1);
+	assert.equal(configuredDisabledCleanNginx.pendingTimers, 0);
+	assert.deepEqual(configuredDisabledCleanNginx.updates, []);
+	assert.equal(configuredDisabledCleanNginx.refreshCalls, 0);
 
 	for (const scenario of [
 		'startup-configured-disabled-halted',
@@ -743,9 +819,12 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 		assert.equal(retriedPreflight.restartCalls, 0);
 	}
 
-	const interruptedReconciliation = runScenario('reconciliation-interruption-retry');
-	assert.ok(interruptedReconciliation.retryTimersAfterFailure > 0);
+	const interruptedReconciliation = runScenario('reconciliation-runtime-input-change-recovery');
+	assert.equal(interruptedReconciliation.retryTimersAfterFailure, 1);
+	assert.equal(interruptedReconciliation.retryTimersAfterOneRecoverySample, 1);
+	assert.equal(interruptedReconciliation.retryCallsAfterOneRecoverySample, 3);
 	assert.equal(interruptedReconciliation.pendingTimers, 0);
+	assert.equal(interruptedReconciliation.publishedSiteStartedEvents, 1);
 	assert.deepEqual(interruptedReconciliation.calls, [
 		'captureAllManagedFiles',
 		'applyServerManagedFiles',
@@ -755,23 +834,19 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 		'compileNginx:managed',
 		'reloadNginx',
 	]);
+	assert.equal(interruptedReconciliation.compiledMatchChecks, 2);
 	assert.equal(interruptedReconciliation.refreshCalls, 1);
 	assert.equal(interruptedReconciliation.restartCalls, 0);
 
 	for (const scenario of ['site-start-matching', 'global-enable-matching']) {
-		const forcedRefresh = runScenario(scenario);
-		assert.deepEqual(forcedRefresh.calls, [
-			'captureAllManagedFiles',
-			'applyServerManagedFiles',
-			'compileNginx:managed',
-			'reloadNginx',
-		]);
+		const matchingRuntime = runScenario(scenario);
+		assert.deepEqual(matchingRuntime.calls, []);
 		assert.equal(
-			forcedRefresh.refreshCalls,
-			1,
-			`${scenario} must converge an already matching active runtime`,
+			matchingRuntime.refreshCalls,
+			0,
+			`${scenario} must leave an already matching active runtime alone`,
 		);
-		assert.equal(forcedRefresh.restartCalls, 0);
+		assert.equal(matchingRuntime.restartCalls, 0);
 	}
 
 	for (const scenario of ['corrupt-schema-version', 'corrupt-profile-envelope']) {
@@ -791,24 +866,38 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 		);
 	}
 
-	const retriedCorruptCleanup = runScenario('corrupt-cleanup-retry');
-	assert.deepEqual(retriedCorruptCleanup.calls, [
+	const failedCorruptCleanup = runScenario('corrupt-cleanup-failure-cancels');
+	assert.deepEqual(failedCorruptCleanup.calls, [
+		'removeAllManagedFiles',
+		'compileNginx:clean',
+	]);
+	assert.equal(failedCorruptCleanup.retryTimersAfterFailure, 0);
+	assert.equal(failedCorruptCleanup.pendingTimers, 0);
+	assert.equal(failedCorruptCleanup.publishedSiteStartedEvents, 0);
+	assert.equal(failedCorruptCleanup.refreshCalls, 0);
+	assert.equal(failedCorruptCleanup.restartCalls, 0);
+	assert.deepEqual(failedCorruptCleanup.updates, []);
+	assert.deepEqual(
+		failedCorruptCleanup.finalStoredSettings,
+		failedCorruptCleanup.storedSettingsBeforeReconciliation,
+		'a failed corrupt cleanup must retain the unsupported stored value without retrying',
+	);
+
+	const newerEventCleanup = runScenario('corrupt-cleanup-failure-newer-event');
+	assert.equal(newerEventCleanup.retryTimersAfterFailure, 1);
+	assert.equal(newerEventCleanup.retryTimersAfterOneRecoverySample, 1);
+	assert.equal(newerEventCleanup.retryCallsAfterOneRecoverySample, 2);
+	assert.equal(newerEventCleanup.pendingTimers, 0);
+	assert.equal(newerEventCleanup.publishedSiteStartedEvents, 1);
+	assert.deepEqual(newerEventCleanup.calls, [
 		'removeAllManagedFiles',
 		'compileNginx:clean',
 		'removeAllManagedFiles',
 		'compileNginx:clean',
 		'reloadNginx',
 	]);
-	assert.ok(retriedCorruptCleanup.retryTimersAfterFailure > 0);
-	assert.equal(retriedCorruptCleanup.pendingTimers, 0);
-	assert.equal(retriedCorruptCleanup.refreshCalls, 1);
-	assert.equal(retriedCorruptCleanup.restartCalls, 0);
-	assert.deepEqual(retriedCorruptCleanup.updates, []);
-	assert.deepEqual(
-		retriedCorruptCleanup.finalStoredSettings,
-		retriedCorruptCleanup.storedSettingsBeforeReconciliation,
-		'corrupt cleanup retries must retain the unsupported stored value',
-	);
+	assert.equal(newerEventCleanup.refreshCalls, 1);
+	assert.deepEqual(newerEventCleanup.updates, []);
 
 	const passiveCorruptState = runScenario('corrupt-passive-state');
 	assert.deepEqual(passiveCorruptState.calls, []);
@@ -890,12 +979,20 @@ test('runtime convergence behavior is passive, drift-aware, halted-safe, and sna
 	}
 
 	const missingTarget = runScenario('target-service-missing');
-	assert.match(missingTarget.operationError, /Nginx service as running/);
+	assert.equal(missingTarget.operationError, undefined);
+	assert.equal(missingTarget.refreshCalls, 1);
 	assert.equal(missingTarget.restartCalls, 0);
-	assert.equal(missingTarget.updates.length, 0);
+	assert.equal(missingTarget.updates.length, 1);
 
 	const changedInputs = runScenario('service-input-change');
 	assert.match(changedInputs.operationError, /web-server identity or lifecycle status/);
+	assert.deepEqual(changedInputs.calls, [
+		'probeOrigin',
+		'captureAllManagedFiles',
+		'applyServerManagedFiles',
+		'compileNginx:managed',
+	]);
+	assert.equal(changedInputs.refreshCalls, 0);
 	assert.equal(changedInputs.restartCalls, 0);
 	assert.equal(changedInputs.updates.length, 0);
 });
@@ -939,7 +1036,7 @@ test('enabled-only toggle cleanup preserves both saved connection profiles trans
 	assert.doesNotMatch(toggle, /replaceStoredSettingsForServer/);
 });
 
-test('global cleanup retries each site independently after two stable ready samples', () => {
+test('global cleanup polls readiness but cancels an operational failure after one attempt', () => {
 	assert.match(mainSource, /const deferredGlobalCleanups = new Map<string, DeferredGlobalCleanup>\(\)/);
 	assert.match(mainSource, /let globalLifecycleGeneration = 0/);
 	assert.match(mainSource, /DEFERRED_GLOBAL_CLEANUP_STABLE_SAMPLES = 2/);
@@ -970,6 +1067,10 @@ test('global cleanup retries each site independently after two stable ready samp
 	assert.match(
 		scheduler,
 		/pending\.stableSamples >= DEFERRED_GLOBAL_CLEANUP_STABLE_SAMPLES[\s\S]{0,160}cleanupSiteForGlobalChange\([\s\S]{0,160}pending\.generation,[\s\S]{0,100}pending\.forceRefresh/,
+	);
+	assert.match(
+		scheduler,
+		/catch \(error\) \{[\s\S]{0,180}isExpectedLifecycleInterruption\(siteId, error\)[\s\S]{0,260}cancelDeferredGlobalCleanup\(siteId\)[\s\S]{0,180}Unable to complete deferred Media Proxy global/,
 	);
 	const statusPolling = scheduler.slice(
 		scheduler.indexOf('const siteStatus = siteProcessManager.getSiteStatus(site)'),
@@ -1031,7 +1132,7 @@ test('global disable and uninstall preserve enabled intent through deferred clea
 			disabledApplied: false,
 			enabledApplied: true,
 			failClosedReconciliations: 1,
-			globalAsyncCleanups: 6,
+			globalAsyncCleanups: 5,
 			invalidApplied: false,
 			mode,
 			settingsWrites: 0,

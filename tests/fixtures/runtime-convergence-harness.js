@@ -12,7 +12,8 @@ const path = require('node:path');
 
 const scenario = process.argv[2];
 const supportedScenarios = new Set([
-	'corrupt-cleanup-retry',
+	'corrupt-cleanup-failure-cancels',
+	'corrupt-cleanup-failure-newer-event',
 	'corrupt-passive-state',
 	'corrupt-passive-transitioning',
 	'corrupt-profile-envelope',
@@ -23,7 +24,7 @@ const supportedScenarios = new Set([
 	'passive-switch-projection',
 	'preflight-service-retry',
 	'preflight-status-retry',
-	'reconciliation-interruption-retry',
+	'reconciliation-runtime-input-change-recovery',
 	'rollback-snapshot-disabled',
 	'rollback-snapshot-enabled',
 	'rollback-malformed-snapshot',
@@ -39,6 +40,7 @@ const supportedScenarios = new Set([
 	'site-added-pristine-disabled-nginx',
 	'site-start-pristine-disabled-nginx',
 	'startup-configured-disabled-halted',
+	'startup-configured-disabled-clean-nginx',
 	'startup-configured-disabled-nginx',
 	'startup-compiled-drift',
 	'startup-enabled-halted-drift',
@@ -75,6 +77,7 @@ const initiallyEnabled = !pristineDisabledScenarios.has(scenario) && !new Set([
 	'rollback-snapshot-enabled',
 	'site-start-configured-disabled-halted',
 	'startup-configured-disabled-halted',
+	'startup-configured-disabled-clean-nginx',
 	'startup-configured-disabled-nginx',
 	'startup-pristine-disabled-apache',
 	'supported-service-unavailable-disabled',
@@ -115,7 +118,8 @@ const site = {
 	webServer: isApacheRuntime ? 'apache' : 'nginx',
 };
 if (new Set([
-	'corrupt-cleanup-retry',
+	'corrupt-cleanup-failure-cancels',
+	'corrupt-cleanup-failure-newer-event',
 	'corrupt-passive-state',
 	'corrupt-passive-transitioning',
 	'corrupt-schema-version',
@@ -196,19 +200,24 @@ let compiledMatches = new Set([
 	'global-enable-matching',
 	'passive-switch-projection',
 	'site-start-matching',
+	'startup-configured-disabled-clean-nginx',
 	'startup-noop',
 	'startup-pristine-disabled-apache',
 ]).has(scenario);
 let sourceMatches = true;
 let refreshCalls = 0;
 let restartCalls = 0;
-let cleanCompileFailuresRemaining = scenario === 'corrupt-cleanup-retry' ? 1 : 0;
+let cleanCompileFailuresRemaining = new Set([
+	'corrupt-cleanup-failure-cancels',
+	'corrupt-cleanup-failure-newer-event',
+]).has(scenario) ? 1 : 0;
 let serviceLookupCalls = 0;
 let siteStatusCalls = 0;
 let compiledMatchChecks = 0;
 let filesystemReadyChecks = 0;
 let managedArtifactChecks = 0;
-let reconciliationInterruptionsRemaining = scenario === 'reconciliation-interruption-retry' ? 1 : 0;
+let publishedSiteStartedEvents = 0;
+let reconciliationInterruptionsRemaining = scenario === 'reconciliation-runtime-input-change-recovery' ? 1 : 0;
 const rollbackSourceMatches = scenario === 'rollback-valid-managed';
 const rollbackScenarios = new Set([
 	'rollback-malformed-snapshot',
@@ -319,11 +328,24 @@ Object.assign(siteConfig, {
 });
 
 const nginx = require(path.join(libRoot, 'nginx.js'));
+function publishNewerSiteStartedEvent() {
+	if (!new Set([
+		'corrupt-cleanup-failure-newer-event',
+		'reconciliation-runtime-input-change-recovery',
+	]).has(scenario)) {
+		return;
+	}
+	const [siteStarted] = hooks.get('siteStarted') || [];
+	assert.equal(typeof siteStarted, 'function');
+	publishedSiteStartedEvents += 1;
+	siteStarted(site.id);
+}
 Object.assign(nginx, {
 	compileAndValidateNginxConfig: async (_site, _service, _compiler, _exec, expected) => {
 		calls.push(`compileNginx:${expected === null ? 'clean' : 'managed'}`);
 		if (expected === null && cleanCompileFailuresRemaining > 0) {
 			cleanCompileFailuresRemaining -= 1;
+			publishNewerSiteStartedEvent();
 			throw new Error('simulated clean compilation failure');
 		}
 		compiledMatches = true;
@@ -333,6 +355,7 @@ Object.assign(nginx, {
 		if (reconciliationInterruptionsRemaining > 0) {
 			reconciliationInterruptionsRemaining -= 1;
 			service.configVariables.revision = 2;
+			publishNewerSiteStartedEvent();
 		}
 	},
 	nginxCompiledConfigMatches: async () => {
@@ -346,12 +369,12 @@ Object.assign(nginx, {
 		_exec,
 		expected,
 		isSiteRunning,
-		isServiceRunning,
 		options,
 	) => {
 		calls.push(`compileNginx:${expected === null ? 'clean' : 'managed'}`);
 		if (expected === null && cleanCompileFailuresRemaining > 0) {
 			cleanCompileFailuresRemaining -= 1;
+			publishNewerSiteStartedEvent();
 			throw new Error('simulated clean compilation failure');
 		}
 		compiledMatches = true;
@@ -361,15 +384,11 @@ Object.assign(nginx, {
 		if (reconciliationInterruptionsRemaining > 0) {
 			reconciliationInterruptionsRemaining -= 1;
 			service.configVariables.revision = 2;
+			publishNewerSiteStartedEvent();
 		}
 		options?.assertCurrent?.();
 		if (!isSiteRunning()) {
 			return false;
-		}
-		if (!isServiceRunning()) {
-			throw new Error(
-				"Local no longer reports this site's Nginx service as running. Stop and start the site in Local, then retry.",
-			);
 		}
 		calls.push('reloadNginx');
 		refreshCalls += 1;
@@ -468,7 +487,9 @@ async function flushAsyncWork() {
 		let projectedSiteUrl;
 		let preflightTimersAfterFailure;
 		let preflightTimersAfterOneRecoverySample;
+		let retryCallsAfterOneRecoverySample;
 		let retryTimersAfterFailure;
+		let retryTimersAfterOneRecoverySample;
 		if (
 			scenario === 'corrupt-passive-state' ||
 			scenario === 'corrupt-passive-transitioning' ||
@@ -511,13 +532,15 @@ async function flushAsyncWork() {
 		} else if (
 			scenario === 'startup-noop' ||
 			scenario === 'startup-configured-disabled-halted' ||
+			scenario === 'startup-configured-disabled-clean-nginx' ||
 			scenario === 'startup-configured-disabled-nginx' ||
 			scenario === 'startup-pristine-disabled-apache' ||
 			scenario === 'startup-compiled-drift' ||
 			scenario === 'startup-enabled-halted-drift' ||
-			scenario === 'reconciliation-interruption-retry' ||
+			scenario === 'reconciliation-runtime-input-change-recovery' ||
 			scenario === 'corrupt-service-unavailable' ||
-			scenario === 'corrupt-cleanup-retry' ||
+			scenario === 'corrupt-cleanup-failure-cancels' ||
+			scenario === 'corrupt-cleanup-failure-newer-event' ||
 			scenario === 'corrupt-schema-version' ||
 			scenario === 'corrupt-profile-envelope'
 		) {
@@ -526,15 +549,18 @@ async function flushAsyncWork() {
 				await runNextTimer();
 			}
 			await flushAsyncWork();
-			if (scenario === 'corrupt-cleanup-retry') {
+			if (scenario === 'corrupt-cleanup-failure-cancels') {
 				retryTimersAfterFailure = timers.size;
-				await runNextTimer();
+			}
+			if (new Set([
+				'corrupt-cleanup-failure-newer-event',
+				'reconciliation-runtime-input-change-recovery',
+			]).has(scenario)) {
+				retryTimersAfterFailure = timers.size;
 				await runNextTimer();
 				await flushAsyncWork();
-			}
-			if (scenario === 'reconciliation-interruption-retry') {
-				retryTimersAfterFailure = timers.size;
-				await runNextTimer();
+				retryTimersAfterOneRecoverySample = timers.size;
+				retryCallsAfterOneRecoverySample = calls.length;
 				await runNextTimer();
 				await flushAsyncWork();
 			}
@@ -611,9 +637,12 @@ async function flushAsyncWork() {
 			preflightTimersAfterFailure,
 			preflightTimersAfterOneRecoverySample,
 			projectedSiteUrl,
+			publishedSiteStartedEvents,
 			refreshCalls,
 			restartCalls,
+			retryCallsAfterOneRecoverySample,
 			retryTimersAfterFailure,
+			retryTimersAfterOneRecoverySample,
 			stateCanEnable: state?.canEnable,
 			stateCleanupSupported: state?.cleanupSupported,
 			stateEnabledIntent: state?.settings.enabled,

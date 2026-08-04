@@ -11,7 +11,7 @@ export interface ServerTransactionFingerprint {
 	configPath: string | null;
 	executablePath: string | null;
 	runPath: string | null;
-	serviceInputsDigest: string | null;
+	runtimeInputsFingerprint: string | null;
 	serverKind: ServerKind;
 	serviceName: string | null;
 	siteConfigTemplatePath: string | null;
@@ -36,7 +36,7 @@ export function serverTransactionFingerprintsMatch(
 	return expected.configPath === current.configPath &&
 		expected.executablePath === current.executablePath &&
 		expected.runPath === current.runPath &&
-		expected.serviceInputsDigest === current.serviceInputsDigest &&
+		expected.runtimeInputsFingerprint === current.runtimeInputsFingerprint &&
 		expected.serverKind === current.serverKind &&
 		expected.serviceName === current.serviceName &&
 		expected.siteConfigTemplatePath === current.siteConfigTemplatePath &&

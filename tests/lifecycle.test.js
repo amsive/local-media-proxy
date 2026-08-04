@@ -27,7 +27,7 @@ function serverTransaction(overrides = {}) {
 		configPath: '/example/site/conf/nginx',
 		executablePath: '/example/services/nginx',
 		runPath: '/example/site/run/nginx',
-		serviceInputsDigest: 'compiler-inputs-a',
+		runtimeInputsFingerprint: '{"configVariables":{},"declaredService":{},"env":{}}',
 		serverKind: 'nginx',
 		serviceName: 'nginx-1.26.1',
 		siteConfigTemplatePath: '/example/site/conf/nginx/site.conf.hbs',
@@ -46,7 +46,7 @@ test('server transactions close when server identity, paths, or lifecycle status
 		['configPath', '/example/site/conf/apache'],
 		['executablePath', '/example/services/httpd'],
 		['runPath', '/example/site/run/apache'],
-		['serviceInputsDigest', 'compiler-inputs-b'],
+		['runtimeInputsFingerprint', '{"configVariables":{"revision":2},"declaredService":{},"env":{}}'],
 		['serverKind', 'apache'],
 		['serviceName', 'apache-2.4.63+1'],
 		['siteConfigTemplatePath', '/example/site/conf/apache/site.conf.hbs'],
@@ -160,7 +160,7 @@ test('enabled reconciliation intent forces cleanup refresh when persistent files
 	assert.equal(cleanupRequiresRefresh(false, false), false);
 });
 
-test('runtime refresh requires both a running site and its targeted service', () => {
+test('Apache runtime refresh requires both a running site and its targeted service', () => {
 	assert.equal(shouldRefreshRuntime('running', false), false);
 	assert.equal(shouldRefreshRuntime('running', true), true);
 	assert.equal(shouldRefreshRuntime('provisioning', true), false);
