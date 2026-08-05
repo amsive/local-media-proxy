@@ -73,7 +73,7 @@ For any provider on Nginx, the Site URL supplies HTTP Host and TLS identity whil
 ## Install and configure
 
 1. Download \`local-media-proxy-v<version>.tgz\` from the matching [GitHub release](https://github.com/amsive/local-media-proxy/releases). Select the TGZ directly in Local; do not extract it first.
-2. When replacing an existing installation, disable and remove its Installed Add-ons entry first; Local does not overwrite the same add-on slug. A release before v0.4.0 may clear a site's enabled state during that one-time replacement, so enable the site once after installing v0.4.0. Later v0.4.0 disable and reinstall cycles preserve enabled intent.
+2. When replacing an existing installation, disable and remove its Installed Add-ons entry first; Local does not overwrite the same add-on slug. A release before v0.4.1 may clear a site's enabled state during that one-time replacement, so enable the site once after installing v0.4.1. Later v0.4.1 disable and reinstall cycles preserve enabled intent.
 3. In Local, open **Add-ons → Installed** and choose **Install from disk**.
 4. Enable **Local Media Proxy** and relaunch Local if prompted.
 5. Start a site that uses Nginx or Apache, then open **Tools → Media Proxy**.
@@ -117,11 +117,11 @@ ${ADDON_NAME} is maintained by Amsive LLC and developed by Mark Davoli and Boris
 }
 
 function createCurrentReleaseNotes(): string {
-	return `Version 0.4.0 expands the local-first fallback to safe WordPress upload assets and makes saved site state converge reliably across add-on and web-server changes.
+	return `Version 0.4.1 expands the local-first fallback to safe WordPress upload assets and makes saved site state converge reliably across add-on and web-server changes.
 
 - Missing video, audio, captions, PDFs, documents, fonts, archives, generated CSS, data, streaming manifests, and future asset formats can stream from the configured origin while existing eligible uploads remain local. Unsafe executable, browser-active, hidden, configuration, secret, database, backup, malformed, and browser-execution requests fail closed; upstream redirect targets are not exposed to the local browser. ([#32](https://github.com/amsive/local-media-proxy/issues/32))
 - Media and document range requests support seeking and partial downloads on Nginx and Apache. ([#32](https://github.com/amsive/local-media-proxy/issues/32))
-- Per-site enabled intent survives v0.4.0 add-on disable and reinstall, and a first-time server change carries only the Site URL into a pristine destination profile. Replacing an earlier release may require enabling a site once because its older uninstaller runs first. ([#31](https://github.com/amsive/local-media-proxy/issues/31), [#33](https://github.com/amsive/local-media-proxy/issues/33))
+- Per-site enabled intent survives v0.4.1 add-on disable and reinstall, and a first-time server change carries only the Site URL into a pristine destination profile. Replacing an earlier release may require enabling a site once because its older uninstaller runs first. ([#31](https://github.com/amsive/local-media-proxy/issues/31), [#33](https://github.com/amsive/local-media-proxy/issues/33))
 - Managed source and compiled server configuration converge after settings changes, same-value repair requests, server changes, and confirmed startup drift; passive reads, clean disabled profiles, and already-converged enabled profiles do not reload Nginx. Unchanged previously verified profiles reuse saved connection verification, while changed settings and explicit connection tests still probe the origin. Background checks use local provenance and primitive service identity without waiting on provider APIs or traversing complete service metadata. ([#34](https://github.com/amsive/local-media-proxy/issues/34), [#38](https://github.com/amsive/local-media-proxy/issues/38))
 - Versioned or aliased Local service records now confirm the selected Nginx or Apache process actually started before a running-site refresh. On macOS, if Local loses track of a site web server, Media Proxy can stop a verified orphan process tree on that exact internal port and restart only Local's existing selected-service process, including after a server switch. Enabled profiles receive the same repair after startup settles, while stopped sites remain stopped. A verified orphaned standard-domain router can likewise be recovered by restarting only its existing Nginx process after checking ports 80 and 443; routes, certificates, hosts, routing mode, and unrelated sites are not rebuilt or changed. Unrelated processes remain untouched, and Media Proxy does not manage PHP-FPM or supervise Local generally. Healthy Nginx applies still use one targeted compile, syntax check, and graceful reload; Apache retains its validated graceful reload and accepts benign future browser-header names while stripping known sensitive headers. ([#32](https://github.com/amsive/local-media-proxy/issues/32), [#39](https://github.com/amsive/local-media-proxy/issues/39))
 
@@ -173,7 +173,7 @@ function createPackagedReleaseHistory(): PackagedRelease[] {
 	return [
 		{
 			changelog: createCurrentReleaseNotes(),
-			date: '2026-08-03T00:00:00.000Z',
+			date: '2026-08-05T00:00:00.000Z',
 			id: `${ADDON_ID}-${ADDON_VERSION}`,
 			version: ADDON_VERSION,
 		},

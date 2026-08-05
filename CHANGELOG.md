@@ -6,7 +6,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-08-04
+## [0.4.1] - 2026-08-05
 
 This release expands the local-first fallback to safe missing upload assets and makes saved site state converge reliably across add-on and web-server changes.
 
@@ -23,7 +23,7 @@ This release expands the local-first fallback to safe missing upload assets and 
 
 ### Fixed
 
-- Per-site enabled intent now survives global add-on disable and uninstall. Re-enabling or reinstalling v0.4.0 reapplies valid profiles while invalid profiles remain fail-closed without losing the user's saved intent. Replacing an earlier release may require enabling a site once because the earlier uninstaller runs before v0.4.0 is installed. ([#31](https://github.com/amsive/local-media-proxy/issues/31))
+- Per-site enabled intent now survives global add-on disable and uninstall. Re-enabling or reinstalling v0.4.1 reapplies valid profiles while invalid profiles remain fail-closed without losing the user's saved intent. Replacing an earlier release may require enabling a site once because the earlier uninstaller runs before v0.4.1 is installed. ([#31](https://github.com/amsive/local-media-proxy/issues/31))
 - Server switches, same-value repair requests, settings changes, and confirmed startup drift now verify that managed source and compiled configuration converge before settings are committed. An unchanged previously verified profile reuses its saved connection verification instead of waiting on the remote provider; changed profiles and explicit connection tests still probe the origin. Running services receive one validated, site-scoped refresh; stopped sites remain stopped, and failures restore the prior files and settings. ([#34](https://github.com/amsive/local-media-proxy/issues/34))
 - Clean disabled profiles and already-converged enabled profiles no longer trigger routine background Nginx reloads. If Local interrupts an in-flight compile, one newer lifecycle event may perform one recovery refresh; otherwise a failed background refresh is reported once and stops instead of entering a one-second retry storm. ([#38](https://github.com/amsive/local-media-proxy/issues/38))
 - Web-server activation no longer depends on Local's service identifier matching the runtime process name. On macOS, if Local loses track of a running site's Nginx or Apache process, Media Proxy checks only that site's exact internal port. A verified current-user orphan process tree from Local's web-server bundle is stopped with one bounded request—including a stale sibling server left after switching—and only Local's existing selected-service process is restarted before any proxy files or settings change. The restartable Local process must exist before any orphan is signaled. An unowned port can receive the same targeted restart, while unrelated or mixed owners remain untouched and fail with a focused error. Enabled profiles receive the repair after site startup settles; stopped sites remain stopped. If Local's standard domain router is likewise untracked, only verified orphan ownership on ports 80 and 443 is recovered before restarting its existing Nginx process, and only while every Local site is running or stopped; Local's routes, certificates, hosts, routing mode, lifecycle operations, and unrelated sites are not rebuilt or changed. The add-on does not manage PHP-FPM or become a general Local process supervisor. ([#39](https://github.com/amsive/local-media-proxy/issues/39))
@@ -164,8 +164,8 @@ This release keeps Local Media Proxy out of Local's way during site creation, fi
 - Prevented slow or cancelled connection probes from hanging the UI and replaced low-level timeout errors with actionable messages.
 - Preserved correct TLS verification when switching between direct WP Engine origins and compatible proxy, CDN, or load-balancer endpoints.
 
-[Unreleased]: https://github.com/amsive/local-media-proxy/compare/v0.4.0...HEAD
-[0.4.0]: https://github.com/amsive/local-media-proxy/compare/v0.3.1...v0.4.0
+[Unreleased]: https://github.com/amsive/local-media-proxy/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/amsive/local-media-proxy/compare/v0.3.1...v0.4.1
 [0.3.1]: https://github.com/amsive/local-media-proxy/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/amsive/local-media-proxy/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/amsive/local-media-proxy/compare/v0.2.3...v0.2.4
