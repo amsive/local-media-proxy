@@ -4,9 +4,7 @@ All notable changes to this project are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-## [0.4.0] - 2026-08-04
+## [0.4.1]
 
 This release expands the local-first fallback to safe missing upload assets and makes saved site state converge reliably across add-on and web-server changes.
 
@@ -23,7 +21,7 @@ This release expands the local-first fallback to safe missing upload assets and 
 
 ### Fixed
 
-- Per-site enabled intent now survives global add-on disable and uninstall. Re-enabling or reinstalling v0.4.0 reapplies valid profiles while invalid profiles remain fail-closed without losing the user's saved intent. Replacing an earlier release may require enabling a site once because the earlier uninstaller runs before v0.4.0 is installed. ([#31](https://github.com/amsive/local-media-proxy/issues/31))
+- Per-site enabled intent now survives global add-on disable and uninstall. Re-enabling or reinstalling v0.4.1 reapplies valid profiles while invalid profiles remain fail-closed without losing the user's saved intent. Replacing an earlier release may require enabling a site once because the earlier uninstaller runs before v0.4.1 is installed. ([#31](https://github.com/amsive/local-media-proxy/issues/31))
 - Server switches, same-value repair requests, settings changes, and confirmed startup drift now verify that managed source and compiled configuration converge before settings are committed. An unchanged previously verified profile reuses its saved connection verification instead of waiting on the remote provider; changed profiles and explicit connection tests still probe the origin. Running services receive one validated, site-scoped refresh; stopped sites remain stopped, and failures restore the prior files and settings. ([#34](https://github.com/amsive/local-media-proxy/issues/34))
 - Clean disabled profiles and already-converged enabled profiles no longer trigger routine background Nginx reloads. If Local interrupts an in-flight compile, one newer lifecycle event may perform one recovery refresh; otherwise a failed background refresh is reported once and stops instead of entering a one-second retry storm. ([#38](https://github.com/amsive/local-media-proxy/issues/38))
 - Web-server activation no longer depends on Local's service identifier matching the runtime process name. On macOS, if Local loses track of a running site's Nginx or Apache process, Media Proxy checks only that site's exact internal port. A verified current-user orphan process tree from Local's web-server bundle is stopped with one bounded request—including a stale sibling server left after switching—and only Local's existing selected-service process is restarted before any proxy files or settings change. The restartable Local process must exist before any orphan is signaled. An unowned port can receive the same targeted restart, while unrelated or mixed owners remain untouched and fail with a focused error. Enabled profiles receive the repair after site startup settles; stopped sites remain stopped. If Local's standard domain router is likewise untracked, only verified orphan ownership on ports 80 and 443 is recovered before restarting its existing Nginx process, and only while every Local site is running or stopped; Local's routes, certificates, hosts, routing mode, lifecycle operations, and unrelated sites are not rebuilt or changed. The add-on does not manage PHP-FPM or become a general Local process supervisor. ([#39](https://github.com/amsive/local-media-proxy/issues/39))
@@ -33,7 +31,7 @@ This release expands the local-first fallback to safe missing upload assets and 
 - Untouched disabled Nginx profiles remain unchanged during passive startup and lifecycle checks; only sites with meaningful saved Media Proxy state enter background reconciliation. ([#34](https://github.com/amsive/local-media-proxy/issues/34))
 - Legacy settings from v0.1.0 through v0.3.1 now migrate into the current managed routes without inventing unsupported historical marker formats. ([#34](https://github.com/amsive/local-media-proxy/issues/34))
 
-## [0.3.1] - 2026-07-30
+## [0.3.1]
 
 This patch restores Media Proxy setup for running Apache sites while preserving Local site-lifecycle protections.
 
@@ -42,7 +40,7 @@ This patch restores Media Proxy setup for running Apache sites while preserving 
 - Running Apache sites no longer remain on the web-server preparation screen when Local's core Apache templates are ready but the add-on's own `includes` directory has not been created yet. ([#29](https://github.com/amsive/local-media-proxy/issues/29))
 - Apache setup now creates only its add-on-owned managed-file directory, while continuing to block access during site creation, replacement, and deletion. Nginx readiness and managed-file behavior are unchanged.
 
-## [0.3.0] - 2026-07-27
+## [0.3.0]
 
 This release keeps Local Media Proxy out of Local's way during site creation, first WP Engine pulls, and deletion, while refreshing the add-on artwork shown throughout Local.
 
@@ -58,7 +56,7 @@ This release keeps Local Media Proxy out of Local's way during site creation, fi
 - Settings are saved only after managed-file changes and runtime refreshes succeed, and transitional sites remain quiet in the UI instead of displaying missing-path errors or an indefinite loading indicator.
 - Corrected the packaged README so its installer inventory matches the exact 26-entry release package.
 
-## [0.2.4] - 2026-07-24
+## [0.2.4]
 
 ### Changed
 
@@ -68,7 +66,7 @@ This release keeps Local Media Proxy out of Local's way during site creation, fi
 
 - Restored the reviewed origin-discovery screenshot in the public and packaged README without linking to the removed commit history.
 
-## [0.2.3] - 2026-07-23
+## [0.2.3]
 
 ### Added
 
@@ -88,14 +86,14 @@ This release keeps Local Media Proxy out of Local's way during site creation, fi
 - Blocked individually assigned email addresses from source, package contents, commit metadata and trailers, annotated tags, and release automation; contributors now use GitHub `noreply` identities or exact approved organization role addresses.
 - Preserved strict human author/sign-off matching while recognizing GitHub-generated Dependabot squash metadata only when every additional sign-off matches a recorded coauthor.
 
-## [0.2.2] - 2026-07-22
+## [0.2.2]
 
 ### Fixed
 
 - Made apply, disable, toggle, rollback, and background reconciliation transactions fail safely when Local changes a site's web server, service identity, configuration paths, or lifecycle status mid-operation. Settings and managed files are restored, and only the currently selected service is eligible for recovery refresh. ([#16](https://github.com/amsive/local-media-proxy/issues/16))
 - Limited user-triggered origin discovery to 30 seconds so a stalled hosting-provider request cannot leave the Tools panel locked. Controls recover in place with retry and manual-entry guidance, and late results are ignored. ([#17](https://github.com/amsive/local-media-proxy/issues/17))
 
-## [0.2.1] - 2026-07-22
+## [0.2.1]
 
 ### Added
 
@@ -115,7 +113,7 @@ This release keeps Local Media Proxy out of Local's way during site creation, fi
 - Matched the Overview proxy toggle, information icon, and tooltip to Local's native typography, spacing, motion, and colors in both light and dark themes.
 - Bounded status and apply operations, including their recovery checks, so a stalled Local response cannot leave a loading indicator running indefinitely or later show an unverified state.
 
-## [0.2.0] - 2026-07-21
+## [0.2.0]
 
 ### Added
 
@@ -132,14 +130,14 @@ This release keeps Local Media Proxy out of Local's way during site creation, fi
 - Kept success and error feedback beside the action controls so results remain visible after testing or saving settings. ([#8](https://github.com/amsive/local-media-proxy/issues/8))
 - Replaced raw socket and TLS failures with concise, actionable connection messages while preserving detailed causes in Local's log. ([#9](https://github.com/amsive/local-media-proxy/issues/9))
 
-## [0.1.1] - 2026-07-21
+## [0.1.1]
 
 ### Security
 
 - Kept build-job output out of the write-capable release job's shell source, revalidated exact SemVer from the tag, and bound the packaged version to that trusted release identity.
 - Restricted public-release credential placeholders to explicit whole-value forms so embedded placeholder words cannot suppress source or installer findings.
 
-## [0.1.0] - 2026-07-21
+## [0.1.0]
 
 ### Added
 
@@ -164,8 +162,7 @@ This release keeps Local Media Proxy out of Local's way during site creation, fi
 - Prevented slow or cancelled connection probes from hanging the UI and replaced low-level timeout errors with actionable messages.
 - Preserved correct TLS verification when switching between direct WP Engine origins and compatible proxy, CDN, or load-balancer endpoints.
 
-[Unreleased]: https://github.com/amsive/local-media-proxy/compare/v0.4.0...HEAD
-[0.4.0]: https://github.com/amsive/local-media-proxy/compare/v0.3.1...v0.4.0
+[0.4.1]: https://github.com/amsive/local-media-proxy/compare/v0.3.1...v0.4.1
 [0.3.1]: https://github.com/amsive/local-media-proxy/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/amsive/local-media-proxy/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/amsive/local-media-proxy/compare/v0.2.3...v0.2.4

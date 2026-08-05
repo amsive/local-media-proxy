@@ -96,8 +96,8 @@ function verifyReleasePackage(tag, archiveArgument) {
 	);
 	assert(fs.existsSync(archivePath), `Archive does not exist: ${archivePath}`);
 	assert(
-		new RegExp(`^## \\[${escapeRegularExpression(packageJson.version)}\\] - \\d{4}-\\d{2}-\\d{2}$`, 'm').test(changelog),
-		`CHANGELOG.md must contain a dated ${packageJson.version} release heading.`,
+		new RegExp(`^## \\[${escapeRegularExpression(packageJson.version)}\\]$`, 'm').test(changelog),
+		`CHANGELOG.md must contain the version-only ${packageJson.version} release heading.`,
 	);
 
 	const archiveStat = fs.statSync(archivePath);

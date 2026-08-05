@@ -4,7 +4,7 @@ Releases are built by GitHub Actions from an exact `v<SemVer>` tag. A read-only 
 
 ## Prepare the release
 
-1. Use AI to review the commits and tree diff from the previous exact SemVer tag to the proposed release commit, then move the relevant `Unreleased` entries into a dated SemVer heading. Begin with one concise, version-neutral summary paragraph, followed by only populated, end-user-facing sections and bullets. Omit empty sections and `Validation`, do not use a generated commit or pull-request list as release copy, and use `New Features` only for actual Local application capabilities.
+1. Use AI to review the commits and tree diff from the previous exact SemVer tag to the proposed release commit, then write only the complete release entry under the version-only heading `## [<version>]`. Do not include dates, status labels, an `Unreleased` placeholder, or an `Unreleased` comparison link in the changelog. Begin with one concise, version-neutral summary paragraph, followed by only populated, end-user-facing sections and bullets. Omit empty sections and `Validation`, do not use a generated commit or pull-request list as release copy, and use `New Features` only for actual Local application capabilities.
 2. Set the same version in `package.json`, `package-lock.json`, and `src/constants.ts`, then refresh the changelog comparison links.
 3. Add the new entry first in the packaged history in `src/marketplace.ts`. Keep only the five newest versions and preserve prior entries until they age out.
 4. Follow `PUBLIC_RELEASE_SAFETY.md`: run `npm run verify:public-release`, review all exact policy exceptions, visually inspect and locally OCR each screenshot, and confirm every binary hash and review reason in `public-release-assets.json`.

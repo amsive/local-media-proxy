@@ -62,12 +62,12 @@ test('builds complete Amsive detail and release metadata', () => {
 		addon.details.homepage,
 		'https://www.amsive.com/?utm_source=localwp&utm_medium=referral&utm_campaign=local_media_proxy&utm_content=addon_details',
 	);
-	assert.equal(release.version, '0.4.0');
+	assert.equal(release.version, '0.4.1');
 	assert.equal(release.testedUpTo, '10.1.1');
 	assert.equal(release.localRequirement, '>=10.1.1');
 	assert.equal(
 		release.downloadUrl,
-		'https://github.com/amsive/local-media-proxy/releases/download/v0.4.0/local-media-proxy-v0.4.0.tgz',
+		'https://github.com/amsive/local-media-proxy/releases/download/v0.4.1/local-media-proxy-v0.4.1.tgz',
 	);
 	assert.match(
 		addon.avatar.original,
@@ -92,7 +92,7 @@ test('builds complete Amsive detail and release metadata', () => {
 	assert.match(addon.details.overview, /video, audio, captions, PDFs, documents, fonts, archives/);
 	assert.match(addon.details.overview, /rejects executable, browser-active, hidden, configuration, secret, database, and backup paths/i);
 	assert.match(addon.details.overview, /does not overwrite the same add-on slug/);
-	assert.match(addon.details.overview, /release before v0\.4\.0 may clear a site's enabled state/);
+	assert.match(addon.details.overview, /release before v0\.4\.1 may clear a site's enabled state/);
 	assert.match(addon.details.overview, /only the validated Site URL is carried across/);
 	assert.match(addon.details.overview, /Nginx still requires its own remote IP/);
 	assert.match(addon.details.overview, /Select the TGZ directly in Local; do not extract it first/);
@@ -104,12 +104,12 @@ test('builds complete Amsive detail and release metadata', () => {
 	assert.equal(releases.length, 5);
 	assert.deepEqual(
 		releases.map(({ version }) => version),
-		['0.4.0', '0.3.1', '0.3.0', '0.2.4', '0.2.3'],
+		['0.4.1', '0.3.1', '0.3.0', '0.2.4', '0.2.3'],
 	);
-	assert.match(releases[0].changelog, /Version 0\.4\.0 expands the local-first fallback/);
+	assert.match(releases[0].changelog, /Version 0\.4\.1 expands the local-first fallback/);
 	assert.match(releases[0].changelog, /future asset formats/);
 	assert.match(releases[0].changelog, /range requests support seeking/);
-	assert.match(releases[0].changelog, /enabled intent survives v0\.4\.0 add-on disable and reinstall/);
+	assert.match(releases[0].changelog, /enabled intent survives v0\.4\.1 add-on disable and reinstall/);
 	assert.match(releases[0].changelog, /older uninstaller runs first/);
 	assert.match(releases[0].changelog, /compiled server configuration/);
 	assert.match(releases[1].changelog, /Version 0\.3\.1 restores Media Proxy setup on running Apache sites/);
@@ -164,9 +164,9 @@ test('supplies packaged release notes for the native Release notes tab', async (
 	const [currentRelease] = payload.data.addon.releases;
 
 	assert.equal(payload.data.addon.releases.length, 5);
-	assert.equal(currentRelease.version, '0.4.0');
-	assert.equal(currentRelease.date, '2026-08-03T00:00:00.000Z');
-	assert.match(currentRelease.changelog, /Version 0\.4\.0 expands the local-first fallback/);
+	assert.equal(currentRelease.version, '0.4.1');
+	assert.equal(currentRelease.date, '2026-08-05T00:00:00.000Z');
+	assert.match(currentRelease.changelog, /Version 0\.4\.1 expands the local-first fallback/);
 });
 
 test('supports a single named target operation without operationName', async () => {

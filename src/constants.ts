@@ -5,7 +5,7 @@
 
 export const ADDON_ID = 'local-media-proxy';
 export const ADDON_NAME = 'Local Media Proxy';
-export const ADDON_VERSION = '0.4.0';
+export const ADDON_VERSION = '0.4.1';
 export const ORIGIN_REQUEST_USER_AGENT = `${ADDON_NAME}/${ADDON_VERSION}`;
 export const PROXIED_CONTENT_SECURITY_POLICY =
 	"sandbox; default-src 'none'; base-uri 'none'; form-action 'none'";
