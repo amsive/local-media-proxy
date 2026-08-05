@@ -106,12 +106,19 @@ test('builds complete Amsive detail and release metadata', () => {
 		releases.map(({ version }) => version),
 		['0.4.1', '0.3.1', '0.3.0', '0.2.4', '0.2.3'],
 	);
-	assert.match(releases[0].changelog, /Version 0\.4\.1 expands the local-first fallback/);
-	assert.match(releases[0].changelog, /future asset formats/);
-	assert.match(releases[0].changelog, /range requests support seeking/);
-	assert.match(releases[0].changelog, /enabled intent survives v0\.4\.1 add-on disable and reinstall/);
-	assert.match(releases[0].changelog, /older uninstaller runs first/);
-	assert.match(releases[0].changelog, /compiled server configuration/);
+	assert.match(releases[0].changelog, /Version 0\.4\.1 proxies more types of safe missing uploads/);
+	assert.match(releases[0].changelog, /other safe uploads while keeping existing local files first/);
+	assert.match(releases[0].changelog, /media seeking and partial downloads/);
+	assert.match(releases[0].changelog, /Preserve enabled status across disable or reinstall/);
+	assert.match(releases[0].changelog, /Repair confirmed configuration drift/);
+	assert.match(releases[0].changelog, /Recover verified stale Local web-server processes/);
+	assert.match(releases[0].changelog, /#31/);
+	assert.match(releases[0].changelog, /#32/);
+	assert.match(releases[0].changelog, /#33/);
+	assert.match(releases[0].changelog, /#34/);
+	assert.match(releases[0].changelog, /#38/);
+	assert.match(releases[0].changelog, /#39/);
+	assert.match(releases[0].changelog, /View the full changelog/);
 	assert.match(releases[1].changelog, /Version 0\.3\.1 restores Media Proxy setup on running Apache sites/);
 	assert.match(releases[1].changelog, /web-server preparation screen/);
 	assert.match(releases[1].changelog, /#29/);
@@ -166,7 +173,7 @@ test('supplies packaged release notes for the native Release notes tab', async (
 	assert.equal(payload.data.addon.releases.length, 5);
 	assert.equal(currentRelease.version, '0.4.1');
 	assert.equal(currentRelease.date, '2026-08-05T00:00:00.000Z');
-	assert.match(currentRelease.changelog, /Version 0\.4\.1 expands the local-first fallback/);
+	assert.match(currentRelease.changelog, /Version 0\.4\.1 proxies more types of safe missing uploads/);
 });
 
 test('supports a single named target operation without operationName', async () => {
