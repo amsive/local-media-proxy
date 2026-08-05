@@ -39,10 +39,10 @@ const {
 	withIpcDeadline,
 } = rendererModule;
 
-test('describes the Nginx allowlist and Apache fail-closed header gate accurately', () => {
+test('describes Nginx and Apache request-header handling accurately', () => {
 	assert.match(proxyPrivacySummary('nginx'), /incoming visitor headers.*are not forwarded/);
-	assert.match(proxyPrivacySummary('apache'), /standard browser, credential, nonce, CSRF, tracing, and client-IP headers are stripped/);
-	assert.match(proxyPrivacySummary('apache'), /unknown data-bearing headers fail closed/);
+	assert.match(proxyPrivacySummary('apache'), /known browser, credential, nonce, CSRF, tracing, and client-IP headers are stripped/);
+	assert.doesNotMatch(proxyPrivacySummary('apache'), /unknown data-bearing headers fail closed/);
 	assert.doesNotMatch(proxyPrivacySummary('apache'), /visitor headers.*are not forwarded/);
 });
 

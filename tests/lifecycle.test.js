@@ -12,6 +12,7 @@ const {
 	completeUnresolvedServiceCleanup,
 	isServerTransactionChangedError,
 	lifecycleUnavailableReason,
+	processOwnersBelongToCapturedTree,
 	runServerTransactionMutation,
 	ServerTransactionChangedError,
 	serverTransactionFingerprintsMatch,
@@ -27,7 +28,6 @@ function serverTransaction(overrides = {}) {
 		configPath: '/example/site/conf/nginx',
 		executablePath: '/example/services/nginx',
 		runPath: '/example/site/run/nginx',
-		serviceInputsDigest: 'compiler-inputs-a',
 		serverKind: 'nginx',
 		serviceName: 'nginx-1.26.1',
 		siteConfigTemplatePath: '/example/site/conf/nginx/site.conf.hbs',
@@ -38,6 +38,31 @@ function serverTransaction(overrides = {}) {
 	};
 }
 
+test('captured process trees accept the master and descendants but reject unrelated owners', () => {
+	const master = { parentPid: 4000, pid: 5000 };
+	const worker = { parentPid: master.pid, pid: 5001 };
+	const nestedWorker = { parentPid: worker.pid, pid: 5002 };
+
+	assert.equal(
+		processOwnersBelongToCapturedTree([master, worker, nestedWorker], master.pid),
+		true,
+	);
+	assert.equal(
+		processOwnersBelongToCapturedTree([worker], master.pid),
+		true,
+		'a direct worker remains provable when the captured master does not own the listener',
+	);
+	assert.equal(
+		processOwnersBelongToCapturedTree([
+			master,
+			worker,
+			{ parentPid: 7000, pid: 7001 },
+		], master.pid),
+		false,
+		'an unrelated same-binary owner must not be accepted as part of the captured router',
+	);
+});
+
 test('server transactions close when server identity, paths, or lifecycle status changes', () => {
 	const original = serverTransaction();
 	assert.equal(serverTransactionFingerprintsMatch(original, serverTransaction()), true);
@@ -46,7 +71,6 @@ test('server transactions close when server identity, paths, or lifecycle status
 		['configPath', '/example/site/conf/apache'],
 		['executablePath', '/example/services/httpd'],
 		['runPath', '/example/site/run/apache'],
-		['serviceInputsDigest', 'compiler-inputs-b'],
 		['serverKind', 'apache'],
 		['serviceName', 'apache-2.4.63+1'],
 		['siteConfigTemplatePath', '/example/site/conf/apache/site.conf.hbs'],
@@ -160,7 +184,7 @@ test('enabled reconciliation intent forces cleanup refresh when persistent files
 	assert.equal(cleanupRequiresRefresh(false, false), false);
 });
 
-test('runtime refresh requires both a running site and its targeted service', () => {
+test('Apache runtime refresh requires both a running site and its targeted service', () => {
 	assert.equal(shouldRefreshRuntime('running', false), false);
 	assert.equal(shouldRefreshRuntime('running', true), true);
 	assert.equal(shouldRefreshRuntime('provisioning', true), false);

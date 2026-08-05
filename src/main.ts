@@ -5,7 +5,7 @@
 
 import type * as Local from '@getflywheel/local';
 import * as LocalMain from '@getflywheel/local/main';
-import { createHash } from 'node:crypto';
+import { promises as fs } from 'node:fs';
 import {
 	apacheCompiledConfigMatches,
 	inspectApacheRuntimeCapabilities,
@@ -39,6 +39,7 @@ import {
 	completeUnresolvedServiceCleanup,
 	isServerTransactionChangedError,
 	lifecycleUnavailableReason,
+	processOwnersBelongToCapturedTree,
 	runServerTransactionMutation,
 	ServerTransactionChangedError,
 	serverTransactionFingerprintsMatch,
@@ -53,6 +54,12 @@ import {
 	probeOrigin,
 	trustedCertificateAuthoritiesPem,
 } from './origin';
+import {
+	classifyResourceOwners,
+	inspectExactResourceOwners,
+	recoverExactResourceOrphans,
+	type ExactLocalResource,
+} from './orphan-recovery';
 import {
 	allManagedArtifactsExist,
 	applyServerManagedFiles,
@@ -103,12 +110,13 @@ type SiteWithSettings = Local.Site & {
 
 interface ReconcileOptions {
 	configuredOnly?: boolean;
-	refreshMatchingEnabledRuntime?: boolean;
+	forceRuntimeRefresh?: boolean;
 	skipHaltedDisabledProfile?: boolean;
 }
 
 interface DeferredReconciliation {
 	attempts: number;
+	forceRuntimeRefresh: boolean;
 	options: ReconcileOptions;
 	revision: number;
 	stableSamples: number;
@@ -129,10 +137,15 @@ const siteOperationQueues = new Map<string, Promise<void>>();
 const LIFECYCLE_LISTENERS_KEY = Symbol.for('amsive.local-media-proxy.lifecycle-listeners');
 const DEFERRED_RECONCILIATION_INTERVAL_MS = 1_000;
 const DEFERRED_RECONCILIATION_MAX_ATTEMPTS = 900;
-const DEFERRED_RECONCILIATION_STABLE_SAMPLES = 2;
+const DEFERRED_RECONCILIATION_STABLE_SAMPLES = 3;
 const DEFERRED_GLOBAL_CLEANUP_INTERVAL_MS = 1_000;
 const DEFERRED_GLOBAL_CLEANUP_MAX_ATTEMPTS = 900;
 const DEFERRED_GLOBAL_CLEANUP_STABLE_SAMPLES = 2;
+const LOCAL_PROCESS_RECOVERY_CONFIRMATION_INTERVAL_MS = 100;
+const LOCAL_PROCESS_RESTART_TIMEOUT_MS = 5_000;
+const LOCAL_SITE_PROCESS_SETTLE_ATTEMPTS = 20;
+const LOCAL_ROUTER_LISTENER_CHECK_ATTEMPTS = 2;
+const LOCAL_ROUTER_SETTLEMENT_ATTEMPTS = 20;
 
 class ApacheCapabilityUnavailableError extends Error {}
 
@@ -209,51 +222,6 @@ async function withSiteLock<T>(siteId: string, operation: () => Promise<T>): Pro
 	}
 }
 
-function stableRuntimeInput(value: unknown, ancestors = new Set<object>()): string {
-	if (value === null) {
-		return 'null';
-	}
-	if (typeof value === 'string') {
-		return `string:${JSON.stringify(value)}`;
-	}
-	if (typeof value === 'number') {
-		return `number:${Number.isNaN(value) ? 'NaN' : String(value)}`;
-	}
-	if (typeof value === 'boolean' || typeof value === 'bigint' || typeof value === 'undefined') {
-		return `${typeof value}:${String(value)}`;
-	}
-	if (typeof value === 'function' || typeof value === 'symbol') {
-		throw new Error('Local returned unsupported web-server compiler inputs.');
-	}
-	if (ancestors.has(value)) {
-		throw new Error('Local returned circular web-server compiler inputs.');
-	}
-	ancestors.add(value);
-	try {
-		if (Array.isArray(value)) {
-			return `array:[${value.map((entry) => stableRuntimeInput(entry, ancestors)).join(',')}]`;
-		}
-		const entries = Object.keys(value).sort().map((key) => (
-			`${JSON.stringify(key)}:${stableRuntimeInput((value as Record<string, unknown>)[key], ancestors)}`
-		));
-		return `object:{${entries.join(',')}}`;
-	} finally {
-		ancestors.delete(value);
-	}
-}
-
-function serviceInputsDigest(service: ApacheRuntimeService | null): string | null {
-	if (!service) {
-		return null;
-	}
-	return createHash('sha256')
-		.update(stableRuntimeInput({
-			configVariables: service.configVariables,
-			env: service.env,
-		}))
-		.digest('hex');
-}
-
 export default function main(context: LocalMain.AddonMainContext): void {
 	const { ipcMain } = context.electron;
 	const {
@@ -262,6 +230,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		configTemplates,
 		lightningServices,
 		localLogger,
+		router,
 		siteData,
 		siteProcessManager,
 	} = LocalMain.getServiceContainer().cradle;
@@ -272,10 +241,45 @@ export default function main(context: LocalMain.AddonMainContext): void {
 	const deferredGlobalCleanups = new Map<string, DeferredGlobalCleanup>();
 	let globalLifecycleState: 'disabled' | 'uninstalling' | null = null;
 	let globalLifecycleGeneration = 0;
+	let routerRecoveryPromise: Promise<void> | null = null;
 
 	type RuntimeServer = SiteServerAdapter & {
 		service: ApacheRuntimeService | null;
 	};
+	type RestartableSiteProcess = {
+		binPath?: unknown;
+		childProcess?: {
+			exitCode?: number | null;
+			killed?: boolean;
+			pid?: number;
+			signalCode?: NodeJS.Signals | null;
+		};
+		errored?: boolean;
+		name?: unknown;
+		restart: () => Promise<void>;
+	};
+	type RuntimeSiteProcessManager = typeof siteProcessManager & {
+		_processGroups?: Record<string, {
+			processes?: unknown;
+		}>;
+	};
+	type RuntimeRouterProcess = {
+		binPath?: string;
+		childProcess?: {
+			exitCode?: number | null;
+			killed?: boolean;
+			pid?: number;
+			signalCode?: NodeJS.Signals | null;
+		};
+		errored?: boolean;
+		restarts?: number;
+		restart?: () => Promise<void>;
+	};
+	type RuntimeRouter = typeof router & {
+		_process?: RuntimeRouterProcess;
+	};
+	let verifiedRouterProcess: RuntimeRouterProcess | null = null;
+	let verifiedRouterChildProcess: RuntimeRouterProcess['childProcess'];
 
 	const resolveServer = (site: Local.Site): RuntimeServer => {
 		const adapter = detectSiteServer(site);
@@ -299,7 +303,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				? null
 				: server.service?.bin?.[executableName] ?? null,
 			runPath: server.service?.runPath ?? null,
-			serviceInputsDigest: serviceInputsDigest(server.service),
 			serverKind: server.kind,
 			serviceName: server.serviceName,
 			siteConfigTemplatePath: server.service?.siteConfigTemplatePath ?? null,
@@ -416,6 +419,622 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		return transaction;
 	};
 
+	const waitForRecoveryInterval = async (): Promise<void> => {
+		await new Promise<void>((resolve) => {
+			setTimeout(resolve, LOCAL_PROCESS_RECOVERY_CONFIRMATION_INTERVAL_MS);
+		});
+	};
+
+	const restartCapturedLocalProcess = async (
+		restart: () => Promise<void>,
+		description: string,
+	): Promise<void> => {
+		let timeout: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await Promise.race([
+				Promise.resolve().then(restart),
+				new Promise<void>((_resolve, reject) => {
+					timeout = setTimeout(() => {
+						reject(new Error(
+							`${description} restart did not finish within five seconds. Local may still be completing it.`,
+						));
+					}, LOCAL_PROCESS_RESTART_TIMEOUT_MS);
+				}),
+			]);
+		} finally {
+			if (timeout !== undefined) {
+				clearTimeout(timeout);
+			}
+		}
+	};
+
+	const exactRestartableSiteProcess = (
+		site: Local.Site,
+		processName: string,
+		expectedExecutablePath: string,
+	): RestartableSiteProcess | null => {
+		const processGroups = (siteProcessManager as RuntimeSiteProcessManager)._processGroups;
+		const processes = processGroups?.[site.id]?.processes;
+		if (!Array.isArray(processes)) {
+			return null;
+		}
+		const matching = processes.filter((candidate): candidate is RestartableSiteProcess => (
+			typeof candidate === 'object' &&
+			candidate !== null &&
+			(candidate as { name?: unknown }).name === processName
+		));
+		return matching.length === 1 &&
+			matching[0].binPath === expectedExecutablePath &&
+			typeof matching[0].restart === 'function'
+			? matching[0]
+			: null;
+	};
+
+	const siteProcessHasLiveChild = (siteProcess: RestartableSiteProcess): boolean => {
+		const childProcess = siteProcess.childProcess;
+		const pid = childProcess?.pid;
+		return childProcess?.exitCode == null &&
+			childProcess?.signalCode == null &&
+			childProcess?.killed !== true &&
+			typeof pid === 'number' &&
+			Number.isSafeInteger(pid) &&
+			pid > 1;
+	};
+
+	const waitForSiteProcessDisposition = async (
+		site: Local.Site,
+		processName: string,
+		serverName: string,
+		expectedExecutablePath: string,
+		siteProcess: RestartableSiteProcess,
+		assertCurrent: () => void,
+	): Promise<'healthy' | 'settled'> => {
+		let lastLivePid: number | undefined;
+		let stableLiveSamples = 0;
+		for (let attempt = 0; attempt < LOCAL_SITE_PROCESS_SETTLE_ATTEMPTS; attempt += 1) {
+			assertCurrent();
+			if (
+				exactRestartableSiteProcess(site, processName, expectedExecutablePath) !== siteProcess
+			) {
+				throw new Error(
+					`Local replaced this site's ${serverName} process while Media Proxy was waiting. Retry after Local finishes updating the site.`,
+				);
+			}
+			const live = siteProcessHasLiveChild(siteProcess);
+			if (live && siteProcessManager.hasRunningProcess(site, processName)) {
+				const livePid = siteProcess.childProcess?.pid;
+				stableLiveSamples = livePid === lastLivePid ? stableLiveSamples + 1 : 1;
+				lastLivePid = livePid;
+				if (stableLiveSamples >= 2) {
+					return 'healthy';
+				}
+			} else {
+				lastLivePid = undefined;
+				stableLiveSamples = 0;
+			}
+			if (!live && siteProcess.errored === true) {
+				return 'settled';
+			}
+			if (attempt === LOCAL_SITE_PROCESS_SETTLE_ATTEMPTS - 1) {
+				break;
+			}
+			await waitForRecoveryInterval();
+		}
+		throw new Error(
+			`Local's ${serverName} process is still restarting. Wait for Local to finish, then retry.`,
+		);
+	};
+
+	const recoverExactLocalResource = async (
+		resource: ExactLocalResource,
+		allowedExecutablePaths: readonly string[],
+		beforeSignal?: () => void,
+	): Promise<Awaited<ReturnType<typeof recoverExactResourceOrphans>> | null> => {
+		if (process.platform !== 'darwin') {
+			return null;
+		}
+		return recoverExactResourceOrphans(resource, allowedExecutablePaths, {
+			execFilePromise: LocalMain.execFilePromise,
+			realpath: (filePath) => fs.realpath(filePath),
+			signalProcess: (targetPid, signal) => {
+				beforeSignal?.();
+				process.kill(targetPid, signal);
+			},
+			wait: waitForRecoveryInterval,
+		});
+	};
+
+	const knownSiteWebServerExecutables = (
+		site: Local.Site,
+		server: RuntimeServer,
+	): string[] => {
+		const executablePaths = new Set<string>();
+		const addExecutable = (service: ApacheRuntimeService | null, binaryName: string): void => {
+			const executablePath = service?.bin?.[binaryName];
+			if (typeof executablePath === 'string' && executablePath) {
+				executablePaths.add(executablePath);
+			}
+		};
+
+		addExecutable(server.service, server.kind === 'apache' ? 'httpd' : 'nginx');
+		for (const [serviceName, binaryName] of [
+			['nginx', 'nginx'],
+			['apache', 'httpd'],
+		] as const) {
+			try {
+				addExecutable(
+					lightningServices.getLatestVersion(serviceName, site) as ApacheRuntimeService | null,
+					binaryName,
+				);
+			} catch {
+				// The selected service path above remains sufficient when a sibling is unavailable.
+			}
+		}
+		return [...executablePaths];
+	};
+
+	const recoverStaleSiteService = async (
+		site: Local.Site,
+		server: RuntimeServer,
+		processName: string,
+		serverName: string,
+		executablePath: string,
+		assertCurrent: () => void,
+	): Promise<void> => {
+		assertCurrent();
+		const restartableProcess = exactRestartableSiteProcess(
+			site,
+			processName,
+			executablePath,
+		);
+		if (!restartableProcess) {
+			throw new Error(
+				`Local has not initialized an exact restartable ${serverName} process for this site. Media Proxy did not stop any process.`,
+			);
+		}
+		const disposition = await waitForSiteProcessDisposition(
+			site,
+			processName,
+			serverName,
+			executablePath,
+			restartableProcess,
+			assertCurrent,
+		);
+
+		const frontendPort = site.frontendPort;
+		if (
+			disposition === 'settled' &&
+			process.platform === 'darwin' &&
+			typeof frontendPort === 'number'
+		) {
+			assertCurrent();
+			const recovery = await recoverExactLocalResource(
+				{ kind: 'tcp-listener', port: frontendPort },
+				knownSiteWebServerExecutables(site, server),
+			);
+			assertCurrent();
+			if (recovery?.status === 'occupied' || recovery?.status === 'active') {
+				throw new Error(
+					`This site's internal ${serverName} port is owned by a process that Media Proxy did not stop.`,
+				);
+			}
+			if (recovery?.status === 'recovered') {
+				logger.log(
+					'warn',
+					`Stopped ${recovery.pids.length} verified orphaned Local web-server process${recovery.pids.length === 1 ? '' : 'es'} for site ${site.id} after ${serverName} reported a stale master PID.`,
+				);
+			}
+		}
+
+		assertCurrent();
+		if (
+			exactRestartableSiteProcess(site, processName, executablePath) !== restartableProcess
+		) {
+			throw new Error(
+				`Local replaced this site's ${serverName} process before Media Proxy could restart it. Retry after Local finishes updating the site.`,
+			);
+		}
+		try {
+			await restartCapturedLocalProcess(
+				() => restartableProcess.restart(),
+				`This site's ${serverName} service`,
+			);
+		} catch (cause) {
+			throw new Error(
+				`Local could not restart this site's ${serverName} service after its stale master PID was detected.`,
+				{ cause },
+			);
+		}
+		assertCurrent();
+		const restartedDisposition = await waitForSiteProcessDisposition(
+			site,
+			processName,
+			serverName,
+			executablePath,
+			restartableProcess,
+			assertCurrent,
+		);
+		if (restartedDisposition !== 'healthy') {
+			throw new Error(
+				`Local could not verify the restarted ${serverName} service for this site.`,
+			);
+		}
+	};
+
+	const routerProcessHasLiveChild = (
+		routerProcess: RuntimeRouterProcess | undefined,
+	): boolean => {
+		const childProcess = routerProcess?.childProcess;
+		const pid = childProcess?.pid;
+		return childProcess?.exitCode == null &&
+			childProcess?.signalCode == null &&
+			childProcess?.killed !== true &&
+			typeof pid === 'number' &&
+			Number.isSafeInteger(pid) &&
+			pid > 1;
+	};
+
+	const routerProcessHasRunningChild = (
+		routerProcess: RuntimeRouterProcess | undefined,
+	): boolean => routerProcess?.errored !== true && routerProcessHasLiveChild(routerProcess);
+
+	const routerProcessWasVerified = (
+		routerProcess: RuntimeRouterProcess | undefined,
+	): boolean => Boolean(
+		routerProcess &&
+		routerProcess === verifiedRouterProcess &&
+		routerProcess.childProcess === verifiedRouterChildProcess,
+	);
+
+	const rememberVerifiedRouterProcess = (routerProcess: RuntimeRouterProcess): void => {
+		verifiedRouterProcess = routerProcess;
+		verifiedRouterChildProcess = routerProcess.childProcess;
+	};
+
+	const assertAllLocalSitesSettledForRouterRecovery = (): void => {
+		const siteStatuses = siteProcessManager.getSiteStatuses();
+		if (
+			Object.values(siteStatuses).some((status) => siteLifecycleAccess(status) !== 'ready')
+		) {
+			throw new Error(
+				'Local is changing one or more sites. Media Proxy left the domain router untouched. Wait until every site is running or stopped, then retry.',
+			);
+		}
+	};
+
+	const routerHasExpectedListeners = async (
+		expectedExecutablePath: string,
+		capturedRouterPid: number,
+		assertRecoveryAllowed: () => void,
+	): Promise<boolean> => {
+		const currentUid = process.getuid?.();
+		if (currentUid === undefined) {
+			throw new Error("Local's domain router user could not be verified.");
+		}
+		const expectedRealpath = await fs.realpath(expectedExecutablePath);
+		for (const port of [80, 443]) {
+			assertRecoveryAllowed();
+			const owners = await inspectExactResourceOwners(
+				{ kind: 'tcp-listener', port },
+				{
+					execFilePromise: LocalMain.execFilePromise,
+					realpath: (filePath) => fs.realpath(filePath),
+				},
+			);
+			const ownership = classifyResourceOwners(
+				owners,
+				[expectedRealpath],
+				currentUid,
+				process.pid,
+			);
+			if (
+				ownership.state !== 'active' ||
+				!processOwnersBelongToCapturedTree(owners, capturedRouterPid)
+			) {
+				return false;
+			}
+		}
+		return true;
+	};
+
+	const waitForRouterProcessSettlement = async (
+		routerProcess: RuntimeRouterProcess,
+		expectedExecutablePath: string,
+		assertCurrent: () => void,
+		assertRecoveryAllowed: () => void,
+	): Promise<'healthy' | 'restartable'> => {
+		let lastPid: number | undefined;
+		let listenerChecks = 0;
+		let stableSamples = 0;
+		for (
+			let attempt = 0;
+			attempt < LOCAL_ROUTER_SETTLEMENT_ATTEMPTS;
+			attempt += 1
+		) {
+			assertCurrent();
+			if ((router as RuntimeRouter | undefined)?._process !== routerProcess) {
+				throw new Error(
+					"Local replaced its domain router process while Media Proxy was checking it.",
+				);
+			}
+			if (
+				routerProcess.errored === true &&
+				!routerProcessHasLiveChild(routerProcess)
+			) {
+				return 'restartable';
+			}
+
+			if (routerProcessHasRunningChild(routerProcess)) {
+				const pid = routerProcess.childProcess?.pid;
+				stableSamples = pid === lastPid ? stableSamples + 1 : 1;
+				lastPid = pid;
+				if (
+					stableSamples >= 2 &&
+					listenerChecks < LOCAL_ROUTER_LISTENER_CHECK_ATTEMPTS
+				) {
+					listenerChecks += 1;
+					const listenersMatch = await routerHasExpectedListeners(
+						expectedExecutablePath,
+						pid as number,
+						assertRecoveryAllowed,
+					);
+					assertCurrent();
+					if ((router as RuntimeRouter | undefined)?._process !== routerProcess) {
+						throw new Error(
+							"Local replaced its domain router process while Media Proxy was checking it.",
+						);
+					}
+					if (
+						routerProcessHasRunningChild(routerProcess) &&
+						routerProcess.childProcess?.pid === pid &&
+						listenersMatch
+					) {
+						return 'healthy';
+					}
+					lastPid = undefined;
+					stableSamples = 0;
+				}
+			} else {
+				lastPid = undefined;
+				stableSamples = 0;
+			}
+			await waitForRecoveryInterval();
+		}
+		throw new Error(
+			"Local's domain router process did not settle before the bounded recovery deadline.",
+		);
+	};
+
+	const ensureRouterRuntimeReady = async (assertCurrent: () => void): Promise<void> => {
+		const localRoutingState = global as typeof globalThis & { localhostRouting?: boolean };
+		if (
+			process.platform !== 'darwin' ||
+			localRoutingState.localhostRouting !== false ||
+			!router ||
+			router['useLaunchd']
+		) {
+			return;
+		}
+		const currentRouterProcess = (router as RuntimeRouter)._process;
+		if (
+			routerProcessHasRunningChild(currentRouterProcess) &&
+			(
+				currentRouterProcess?.restarts === 0 ||
+				routerProcessWasVerified(currentRouterProcess)
+			)
+		) {
+			return;
+		}
+
+		assertCurrent();
+		if (!routerRecoveryPromise) {
+			const pending = (async (): Promise<void> => {
+				const routerProcess = (router as RuntimeRouter)._process;
+				if (
+					!routerProcess ||
+					typeof routerProcess.binPath !== 'string' ||
+					!routerProcess.binPath ||
+					typeof routerProcess.restart !== 'function'
+				) {
+					throw new Error(
+						"Local has not initialized a restartable domain router process. Media Proxy did not stop any process or rebuild Local's router configuration.",
+					);
+				}
+				const expectedExecutablePath = routerProcess.binPath;
+				assertAllLocalSitesSettledForRouterRecovery();
+				const settled = await waitForRouterProcessSettlement(
+					routerProcess,
+					expectedExecutablePath,
+					assertCurrent,
+					assertAllLocalSitesSettledForRouterRecovery,
+				);
+				if (settled === 'healthy') {
+					rememberVerifiedRouterProcess(routerProcess);
+					return;
+				}
+
+				let recoveredOrphan = false;
+				for (const port of [80, 443]) {
+					assertCurrent();
+					assertAllLocalSitesSettledForRouterRecovery();
+					if ((router as RuntimeRouter)._process !== routerProcess) {
+						throw new Error(
+							"Local replaced its domain router process before Media Proxy could recover it.",
+						);
+					}
+					const result = await recoverExactLocalResource(
+						{ kind: 'tcp-listener', port },
+						[expectedExecutablePath],
+						assertAllLocalSitesSettledForRouterRecovery,
+					);
+					if (!result) {
+						return;
+					}
+					if (result.status === 'occupied' || result.status === 'active') {
+						throw new Error(
+							`Local's domain router port ${port} is owned by a process that Media Proxy did not stop.`,
+						);
+					}
+					recoveredOrphan = recoveredOrphan || result.status === 'recovered';
+				}
+
+				assertCurrent();
+				assertAllLocalSitesSettledForRouterRecovery();
+				if ((router as RuntimeRouter)._process !== routerProcess) {
+					throw new Error(
+						"Local replaced its domain router process before Media Proxy could restart it.",
+					);
+				}
+				await restartCapturedLocalProcess(
+					() => routerProcess.restart!(),
+					"Local's domain router process",
+				);
+				if (
+					await waitForRouterProcessSettlement(
+						routerProcess,
+						expectedExecutablePath,
+						assertCurrent,
+						assertAllLocalSitesSettledForRouterRecovery,
+					) !== 'healthy'
+				) {
+					throw new Error(
+						"Local's domain router did not remain running after a process-only restart.",
+					);
+				}
+				rememberVerifiedRouterProcess(routerProcess);
+				router.clearRouterBanner();
+				logger.log(
+					'warn',
+					recoveredOrphan
+						? 'Recovered an orphaned Local domain router and verified its replacement.'
+						: 'Restarted Local\'s missing domain router and verified its replacement.',
+				);
+			})();
+			routerRecoveryPromise = pending;
+			const clearPending = (): void => {
+				if (routerRecoveryPromise === pending) {
+					routerRecoveryPromise = null;
+				}
+			};
+			void pending.then(clearPending, clearPending);
+		}
+		await routerRecoveryPromise;
+		assertCurrent();
+	};
+
+	const ensureServerRuntimeReady = async (
+		site: Local.Site,
+		server: RuntimeServer,
+		transaction: ServerTransactionFingerprint,
+	): Promise<void> => {
+		const processName = server.kind === 'apache' ? 'httpd' : 'nginx';
+		const serverName = server.kind === 'apache' ? 'Apache' : 'Nginx';
+		if (server.kind === 'unsupported' || !server.service) {
+			return;
+		}
+		const assertCurrent = (): void => assertServerTransactionCurrent(site.id, transaction);
+		const executableName = server.kind === 'apache' ? 'httpd' : 'nginx';
+		const executablePath = server.service.bin?.[executableName];
+		const frontendPort = site.frontendPort;
+		const serviceTracked = siteProcessManager.hasRunningProcess(site, processName);
+
+		if (
+			transaction.siteStatus === 'running' &&
+			!serviceTracked &&
+			process.platform === 'darwin' &&
+			typeof executablePath === 'string' &&
+			typeof frontendPort === 'number'
+		) {
+			assertCurrent();
+			const restartableProcess = exactRestartableSiteProcess(
+				site,
+				processName,
+				executablePath,
+			);
+			if (!restartableProcess) {
+				throw new Error(
+					`Local has not initialized an exact restartable ${serverName} process for this site. Media Proxy did not stop any process or change its settings.`,
+				);
+			}
+			const disposition = await waitForSiteProcessDisposition(
+				site,
+				processName,
+				serverName,
+				executablePath,
+				restartableProcess,
+				assertCurrent,
+			);
+			if (disposition === 'settled') {
+				assertCurrent();
+				const recovery = await recoverExactLocalResource(
+					{ kind: 'tcp-listener', port: frontendPort },
+					knownSiteWebServerExecutables(site, server),
+				);
+				assertCurrent();
+				if (recovery?.status === 'occupied' || recovery?.status === 'active') {
+					throw new Error(
+						`Local reports this site as ${transaction.siteStatus}, but its ${serverName} port is already owned by a process that Media Proxy did not stop. Media Proxy made no settings or configuration changes.`,
+					);
+				}
+				if (recovery?.status === 'recovered') {
+					logger.log(
+						'warn',
+						`Stopped ${recovery.pids.length} verified orphaned Local web-server process${recovery.pids.length === 1 ? '' : 'es'} for site ${site.id}.`,
+					);
+				}
+				assertCurrent();
+				if (
+					exactRestartableSiteProcess(site, processName, executablePath) !== restartableProcess
+				) {
+					throw new Error(
+						`Local replaced this site's ${serverName} process before Media Proxy could restart it. Media Proxy made no settings or configuration changes.`,
+					);
+				}
+				try {
+					await restartCapturedLocalProcess(
+						() => restartableProcess.restart(),
+						`This site's ${serverName} service`,
+					);
+				} catch (error) {
+					throw new Error(
+						`Local could not restart this site's ${serverName} service after its port was cleared. Media Proxy made no settings or configuration changes.`,
+						{ cause: error },
+					);
+				}
+				assertCurrent();
+				const restartedDisposition = await waitForSiteProcessDisposition(
+					site,
+					processName,
+					serverName,
+					executablePath,
+					restartableProcess,
+					assertCurrent,
+				);
+				if (restartedDisposition !== 'healthy') {
+					throw new Error(
+						`Local could not restart this site's ${serverName} service after its port was cleared. Media Proxy made no settings or configuration changes.`,
+					);
+				}
+				logger.log(
+					'warn',
+					`Verified Local's replacement ${serverName} service for site ${site.id}.`,
+				);
+			}
+		}
+
+		if (
+			transaction.siteStatus === 'running' &&
+			!siteProcessManager.hasRunningProcess(site, processName)
+		) {
+			throw new Error(
+				`Local reports this site as running, but its ${serverName} service did not start and no exact orphaned Local process could be recovered. Media Proxy made no settings or configuration changes. Stop and start the site in Local, then retry.`,
+			);
+		}
+		if (transaction.siteStatus === 'running') {
+			await ensureRouterRuntimeReady(assertCurrent);
+		}
+	};
+
 	const managedFileOptions = (server: RuntimeServer): {
 		apacheHttpdBinary?: string;
 		configPath?: string;
@@ -526,6 +1145,20 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		tlsHostname: settings.originTlsHostname,
 	});
 
+	const connectionProfileInputMatches = (
+		input: SettingsInput,
+		stored: StoredSettings,
+	): boolean => originPairMatches(input, stored) &&
+		(input.originSource ?? 'manual') === (stored.originSource ?? 'manual') &&
+		(input.resolvedAt ?? '') === (stored.resolvedAt ?? '');
+
+	const storedVerificationCanBeReused = (
+		settings: StoredSettings,
+		protocol: 'http:' | 'https:',
+	): boolean => Boolean(settings.lastVerifiedAt) &&
+		settings.lastOriginStatus !== undefined &&
+		(protocol === 'http:' || Boolean(settings.certificate));
+
 	const assertAuthoritativeWpEngineIdentity = async (
 		site: Local.Site,
 		settings: SettingsInput,
@@ -569,35 +1202,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		}
 
 		return authoritative;
-	};
-
-	const assertStoredWpEngineConnection = async (
-		site: Local.Site,
-		settings: StoredSettings,
-	): Promise<void> => {
-		if (settings.originSource !== 'wpengine') {
-			return;
-		}
-		if (!wpEngineStoredProvenanceMatches(
-			site,
-			settings.originWpEngineInstallId,
-			settings.originWpEngineSiteId,
-		)) {
-			throw new Error('The saved WP Engine origin no longer matches this Local site connection. Run auto-population again.');
-		}
-
-		const authoritative = await assertAuthoritativeWpEngineIdentity(site, settings);
-		if (
-			!authoritative ||
-			!wpEngineStoredProvenanceMatches(
-				site,
-				settings.originWpEngineInstallId,
-				settings.originWpEngineSiteId,
-				authoritative,
-			)
-		) {
-			throw new Error('The saved WP Engine install identity changed. Run auto-population again.');
-		}
 	};
 
 	const persistSettings = (siteId: string, envelope: StoredSettingsEnvelope): void => {
@@ -658,6 +1262,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		server: RuntimeServer,
 		expectManaged: boolean,
 		assertCurrent: () => void = (): void => undefined,
+		recoverStaleServerMaster = false,
 	): Promise<boolean> => {
 		assertCurrent();
 		if (!server.serviceName || server.kind === 'unsupported' || !server.service) {
@@ -678,9 +1283,9 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		) {
 			throw new Error(`The managed ${server.kind} include template is unavailable.`);
 		}
-		const serviceName = server.serviceName;
 		if (server.kind === 'apache') {
 			const processName = 'httpd';
+			const selectedApacheExecutable = server.service.bin?.httpd;
 			const targetServiceRunning = (): boolean => {
 				assertCurrent();
 				return siteProcessManager.hasRunningProcess(site, processName);
@@ -696,6 +1301,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				}
 				return shouldRefreshRuntime(siteStatus, targetWasRunning);
 			};
+			let restartedStaleApacheMaster = false;
 			const refreshed = await refreshApacheService(
 				site,
 				server.service,
@@ -708,9 +1314,31 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					assertCurrent,
 					expectedManagedInclude: expectedManagedInclude ?? undefined,
 					expectedManagedModules: expectedManagedModules ?? undefined,
+					restartService: recoverStaleServerMaster ? async () => {
+						if (typeof selectedApacheExecutable !== 'string' || !selectedApacheExecutable) {
+							throw new Error(
+								'Local did not provide the selected Apache executable for exact port recovery.',
+							);
+						}
+						await recoverStaleSiteService(
+							site,
+							server,
+							processName,
+							'Apache',
+							selectedApacheExecutable,
+							assertCurrent,
+						);
+						restartedStaleApacheMaster = true;
+					} : undefined,
 				},
 			);
 			assertCurrent();
+			if (restartedStaleApacheMaster) {
+				logger.log(
+					'warn',
+					`Verified the selected Apache service for site ${site.id} after requesting a targeted restart for a stale master PID.`,
+				);
+			}
 			return refreshed;
 		}
 
@@ -718,10 +1346,8 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			assertCurrent();
 			return siteProcessManager.getSiteStatus(site) === 'running';
 		};
-		const targetServiceRunning = (): boolean => {
-			assertCurrent();
-			return siteProcessManager.hasRunningProcess(site, serviceName);
-		};
+		const processName = 'nginx';
+		let restartedStaleNginxMaster = false;
 		const refreshed = await refreshNginxService(
 			site,
 			server.service,
@@ -729,10 +1355,34 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			LocalMain.execFilePromise,
 			expectedManagedInclude,
 			targetSiteRunning,
-			targetServiceRunning,
-			{ assertCurrent },
+			{
+				assertCurrent,
+				restartService: recoverStaleServerMaster ? async () => {
+					const selectedNginxExecutable = server.service?.bin?.nginx;
+					if (typeof selectedNginxExecutable !== 'string' || !selectedNginxExecutable) {
+						throw new Error(
+							"Local did not provide the selected Nginx executable for exact port recovery.",
+						);
+					}
+					await recoverStaleSiteService(
+						site,
+						server,
+						processName,
+						'Nginx',
+						selectedNginxExecutable,
+						assertCurrent,
+					);
+					restartedStaleNginxMaster = true;
+				} : undefined,
+			},
 		);
 		assertCurrent();
+		if (restartedStaleNginxMaster) {
+			logger.log(
+				'warn',
+				`Verified the selected Nginx service for site ${site.id} after requesting a targeted restart for a stale master PID.`,
+			);
+		}
 		return refreshed;
 	};
 
@@ -792,7 +1442,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			}
 			scheduleDeferredReconciliation(site.id, {
 				configuredOnly: false,
-				refreshMatchingEnabledRuntime: true,
 			});
 		};
 		const currentRollbackTarget = (): {
@@ -1262,40 +1911,72 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			if (server.kind === 'unsupported' || !server.service) {
 				throw new Error(server.reason || 'Local could not load the web-server service for this site.');
 			}
+			await ensureServerRuntimeReady(site, server, transaction);
 
 			const origin = validateAndNormalizeOrigin(normalizedInput, {
 				requiresOriginIp: server.requiresOriginIp,
 			});
 			await assertApacheOriginCapability(server, origin.protocol);
-			const authoritativeWpEngine = server.kind === 'nginx'
-				? await assertAuthoritativeWpEngineIdentity(site, normalizedInput)
-				: undefined;
-			const probe = await probeOrigin(origin, {
-				allowWpEngineTlsFallback: server.kind === 'nginx',
-			});
-			const verifiedOrigin = {
-				...origin,
-				tlsHostname: server.kind === 'nginx'
-					? probe.verifiedTlsHostname ?? origin.tlsHostname
-					: origin.hostname,
-			};
+			const profileInputMatches = connectionProfileInputMatches(
+				normalizedInput,
+				previousSettings,
+			);
+			if (
+				profileInputMatches &&
+				normalizedInput.originSource === 'wpengine' &&
+				!wpEngineStoredProvenanceMatches(
+					site,
+					previousSettings.originWpEngineInstallId,
+					previousSettings.originWpEngineSiteId,
+				)
+			) {
+				throw new Error('The saved WP Engine origin no longer matches this Local site connection. Run auto-population again.');
+			}
+			const reuseStoredVerification = profileInputMatches &&
+				storedVerificationCanBeReused(previousSettings, origin.protocol);
+			let verifiedOrigin = origin;
+			let trustBundle: string | undefined;
+			if (reuseStoredVerification) {
+				trustBundle = origin.protocol === 'https:'
+					? trustedCertificateAuthoritiesPem()
+					: undefined;
+				nextSettings = {
+					...previousSettings,
+					enabled: true,
+				};
+				logger.log('info', `Reused the previously verified unchanged origin for site ${siteId}.`);
+			} else {
+				const authoritativeWpEngine = server.kind === 'nginx'
+					? await assertAuthoritativeWpEngineIdentity(site, normalizedInput)
+					: undefined;
+				const probe = await probeOrigin(origin, {
+					allowWpEngineTlsFallback: server.kind === 'nginx',
+				});
+				verifiedOrigin = {
+					...origin,
+					tlsHostname: server.kind === 'nginx'
+						? probe.verifiedTlsHostname ?? origin.tlsHostname
+						: origin.hostname,
+				};
+				trustBundle = probe.trustedCertificateAuthoritiesPem;
+				nextSettings = {
+					certificate: probe.certificate,
+					enabled: true,
+					lastOriginStatus: probe.statusCode,
+					lastVerifiedAt: new Date().toISOString(),
+					originEnvironment: normalizedInput.originEnvironment,
+					originIp: server.requiresOriginIp ? verifiedOrigin.originIp : '',
+					originSource: normalizedInput.originSource ?? 'manual',
+					originTlsHostname: server.kind === 'apache' || verifiedOrigin.tlsHostname === verifiedOrigin.hostname
+						? undefined
+						: verifiedOrigin.tlsHostname,
+					originWpEngineInstallId: authoritativeWpEngine?.wpEngineInstallId,
+					originWpEngineSiteId: authoritativeWpEngine?.wpEngineSiteId,
+					resolvedAt: normalizedInput.resolvedAt,
+					siteUrl: verifiedOrigin.siteUrl,
+				};
+			}
 			assertServerTransactionCurrent(siteId, transaction);
-			nextSettings = {
-				certificate: probe.certificate,
-				enabled: true,
-				lastOriginStatus: probe.statusCode,
-				lastVerifiedAt: new Date().toISOString(),
-				originEnvironment: normalizedInput.originEnvironment,
-				originIp: server.requiresOriginIp ? verifiedOrigin.originIp : '',
-				originSource: normalizedInput.originSource ?? 'manual',
-				originTlsHostname: server.kind === 'apache' || verifiedOrigin.tlsHostname === verifiedOrigin.hostname
-					? undefined
-					: verifiedOrigin.tlsHostname,
-				originWpEngineInstallId: authoritativeWpEngine?.wpEngineInstallId,
-				originWpEngineSiteId: authoritativeWpEngine?.wpEngineSiteId,
-				resolvedAt: normalizedInput.resolvedAt,
-				siteUrl: verifiedOrigin.siteUrl,
-			};
 			nextEnvelope = replaceStoredSettingsForServer(
 				previousEnvelope,
 				expectedServerKind,
@@ -1315,7 +1996,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 						site,
 						verifiedOrigin,
 						managedFileOptions(server),
-						probe.trustedCertificateAuthoritiesPem,
+						trustBundle,
 						() => assertServerTransactionCurrent(siteId, transaction),
 					),
 				);
@@ -1324,6 +2005,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					server,
 					true,
 					() => assertServerTransactionCurrent(siteId, transaction),
+					true,
 				);
 				commitInteractiveSettings(siteId, transaction, nextEnvelope);
 				logger.log('info', `Enabled media proxy for site ${siteId}${restarted ? ` and refreshed ${server.kind}` : ''}.`);
@@ -1408,6 +2090,22 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				expectedServerKind,
 				nextSettings,
 			);
+			const compiledConfigIsClean = server.kind !== 'unsupported' && server.service
+				? await serverCompiledConfigMatches(
+					site,
+					server,
+					false,
+					() => assertServerTransactionCurrent(siteId, transaction),
+				)
+				: true;
+			const managedArtifactsPresent = await allManagedArtifactsExist(
+				site,
+				() => assertServerTransactionCurrent(siteId, transaction),
+				server.kind === 'unsupported' ? undefined : managedFileOptions(server),
+			);
+			if (managedArtifactsPresent || !compiledConfigIsClean) {
+				await ensureServerRuntimeReady(site, server, transaction);
+			}
 
 			let snapshots: Awaited<ReturnType<typeof captureAllManagedFiles>> | undefined;
 			try {
@@ -1416,14 +2114,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					() => assertServerTransactionCurrent(siteId, transaction),
 					managedFileOptions(server),
 				);
-				const compiledConfigIsClean = server.kind !== 'unsupported' && server.service
-					? await serverCompiledConfigMatches(
-						site,
-						server,
-						false,
-						() => assertServerTransactionCurrent(siteId, transaction),
-					)
-					: true;
 				const changed = await runServerTransactionMutation(
 					() => assertServerTransactionCurrent(siteId, transaction),
 					() => removeAllManagedFiles(
@@ -1442,6 +2132,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 						server,
 						false,
 						() => assertServerTransactionCurrent(siteId, transaction),
+						true,
 					);
 				}
 				commitInteractiveSettings(siteId, transaction, nextEnvelope);
@@ -1512,18 +2203,26 @@ export default function main(context: LocalMain.AddonMainContext): void {
 			throw new Error(runtimeCleanupUnavailableReason(server));
 		}
 		const disabledEnvelope = setStoredSettingsEnabled(envelope, false);
+		const compiledConfigIsClean = await serverCompiledConfigMatches(
+			site,
+			server,
+			false,
+			() => assertServerTransactionCurrent(siteId, transaction),
+		);
+		const managedArtifactsPresent = await allManagedArtifactsExist(
+			site,
+			() => assertServerTransactionCurrent(siteId, transaction),
+			managedFileOptions(server),
+		);
+		if (managedArtifactsPresent || !compiledConfigIsClean) {
+			await ensureServerRuntimeReady(site, server, transaction);
+		}
 		let snapshots: Awaited<ReturnType<typeof captureAllManagedFiles>> | undefined;
 		try {
 			snapshots = await captureAllManagedFiles(
 				site,
 				() => assertServerTransactionCurrent(siteId, transaction),
 				managedFileOptions(server),
-			);
-			const compiledConfigIsClean = await serverCompiledConfigMatches(
-				site,
-				server,
-				false,
-				() => assertServerTransactionCurrent(siteId, transaction),
 			);
 			const changed = await runServerTransactionMutation(
 				() => assertServerTransactionCurrent(siteId, transaction),
@@ -1539,6 +2238,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					server,
 					false,
 					() => assertServerTransactionCurrent(siteId, transaction),
+					true,
 				);
 			}
 			commitInteractiveSettings(siteId, transaction, disabledEnvelope);
@@ -1815,7 +2515,11 @@ export default function main(context: LocalMain.AddonMainContext): void {
 						false,
 						assertReconciliationTransactionCurrent,
 					);
-					if (!managedArtifactsPresent && compiledConfigMatches) {
+					if (
+						!managedArtifactsPresent &&
+						compiledConfigMatches &&
+						!options.forceRuntimeRefresh
+					) {
 						if (rawStoredSettings !== undefined) {
 							return persistReconciledEnvelope();
 						}
@@ -1823,8 +2527,16 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					}
 				} else {
 					try {
-						if (server.kind === 'nginx') {
-							await assertStoredWpEngineConnection(site, settings);
+						if (
+							server.kind === 'nginx' &&
+							settings.originSource === 'wpengine' &&
+							!wpEngineStoredProvenanceMatches(
+								site,
+								settings.originWpEngineInstallId,
+								settings.originWpEngineSiteId,
+							)
+						) {
+							throw new Error('The saved WP Engine origin no longer matches this Local site connection. Run auto-population again.');
 						}
 						normalizedOrigin = validateAndNormalizeOrigin(settings, {
 							requiresOriginIp: server.requiresOriginIp,
@@ -1930,6 +2642,9 @@ export default function main(context: LocalMain.AddonMainContext): void {
 						);
 						return true;
 					}
+					if (transaction.siteStatus === 'running') {
+						await ensureServerRuntimeReady(site, server, transaction);
+					}
 
 					const trustBundle = normalizedOrigin.protocol === 'https:'
 						? trustedCertificateAuthoritiesPem()
@@ -1949,10 +2664,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 							true,
 							assertReconciliationTransactionCurrent,
 						);
-						if (
-							compiledConfigMatches &&
-							!options.refreshMatchingEnabledRuntime
-						) {
+						if (compiledConfigMatches && !options.forceRuntimeRefresh) {
 							return persistReconciledEnvelope();
 						}
 					}
@@ -2001,7 +2713,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					if (
 						changed ||
 						!compiledConfigMatches ||
-						Boolean(settings.enabled && options.refreshMatchingEnabledRuntime)
+						Boolean(options.forceRuntimeRefresh)
 					) {
 						await compileAndReload(
 							site,
@@ -2090,10 +2802,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		if (existing) {
 			existing.options = {
 				configuredOnly: existing.options.configuredOnly && options.configuredOnly,
-				refreshMatchingEnabledRuntime: Boolean(
-					existing.options.refreshMatchingEnabledRuntime ||
-					options.refreshMatchingEnabledRuntime,
-				),
 				skipHaltedDisabledProfile: Boolean(
 					existing.options.skipHaltedDisabledProfile &&
 					options.skipHaltedDisabledProfile,
@@ -2105,6 +2813,7 @@ export default function main(context: LocalMain.AddonMainContext): void {
 
 		const pending: DeferredReconciliation = {
 			attempts: 0,
+			forceRuntimeRefresh: false,
 			options: { ...options },
 			revision: 0,
 			stableSamples: 0,
@@ -2207,20 +2916,22 @@ export default function main(context: LocalMain.AddonMainContext): void {
 					return;
 				}
 				if (pending.stableSamples >= DEFERRED_RECONCILIATION_STABLE_SAMPLES) {
-					const reconcileOptions = { ...pending.options };
+					const reconcileOptions = {
+						...pending.options,
+						forceRuntimeRefresh: pending.forceRuntimeRefresh,
+					};
+					pending.forceRuntimeRefresh = false;
 					const reconcileRevision = pending.revision;
 					pending.stableSamples = 0;
 					void reconcileSite(siteId, reconcileOptions).then((converged) => {
 						if (deferredReconciliations.get(siteId) !== pending) {
 							return;
 						}
-						if (!converged) {
-							pending.options.refreshMatchingEnabledRuntime = true;
+						if (pending.revision !== reconcileRevision) {
+							pending.forceRuntimeRefresh = !converged;
 							scheduleNextPoll();
-						} else if (pending.revision === reconcileRevision) {
-							cancelDeferredReconciliation(siteId);
 						} else {
-							scheduleNextPoll();
+							cancelDeferredReconciliation(siteId);
 						}
 					}).catch((error) => {
 						if (deferredReconciliations.get(siteId) !== pending) {
@@ -2234,8 +2945,12 @@ export default function main(context: LocalMain.AddonMainContext): void {
 						} else {
 							logger.log('warn', `Unable to reconcile site ${siteId}: ${errorMessage(error)}`);
 						}
-						pending.options.refreshMatchingEnabledRuntime = true;
-						scheduleNextPoll();
+						if (pending.revision !== reconcileRevision) {
+							pending.forceRuntimeRefresh = true;
+							scheduleNextPoll();
+						} else {
+							cancelDeferredReconciliation(siteId);
+						}
 					});
 					return;
 				}
@@ -2646,12 +3361,26 @@ export default function main(context: LocalMain.AddonMainContext): void {
 				}
 
 				if (pending.stableSamples >= DEFERRED_GLOBAL_CLEANUP_STABLE_SAMPLES) {
-					await cleanupSiteForGlobalChange(
-						siteId,
-						pending.mode,
-						pending.generation,
-						pending.forceRefresh,
-					);
+					try {
+						await cleanupSiteForGlobalChange(
+							siteId,
+							pending.mode,
+							pending.generation,
+							pending.forceRefresh,
+						);
+					} catch (error) {
+						if (isExpectedLifecycleInterruption(siteId, error)) {
+							pending.stableSamples = 0;
+							scheduleNext();
+							return;
+						}
+						cancelDeferredGlobalCleanup(siteId);
+						logger.log(
+							'error',
+							`Unable to complete deferred Media Proxy global ${mode === 'uninstalling' ? 'uninstall' : 'disable'} cleanup for site ${siteId}: ${errorMessage(error)}`,
+						);
+						return;
+					}
 					if (deferredGlobalCleanups.get(siteId) === pending) {
 						deferredGlobalCleanups.delete(siteId);
 					}
@@ -2740,7 +3469,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		for (const site of Object.values(siteData.getSites()) as Local.Site[]) {
 			scheduleDeferredReconciliation(site.id, {
 				configuredOnly: true,
-				refreshMatchingEnabledRuntime: true,
 				skipHaltedDisabledProfile: true,
 			});
 		}
@@ -2977,7 +3705,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		}
 		scheduleDeferredReconciliation(siteId, {
 			configuredOnly: true,
-			refreshMatchingEnabledRuntime: true,
 		});
 	});
 
@@ -2997,7 +3724,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 		}
 		scheduleDeferredReconciliation(siteId, {
 			configuredOnly: true,
-			refreshMatchingEnabledRuntime: true,
 		});
 	});
 
@@ -3015,7 +3741,6 @@ export default function main(context: LocalMain.AddonMainContext): void {
 	for (const site of Object.values(siteData.getSites()) as Local.Site[]) {
 		scheduleDeferredReconciliation(site.id, {
 			configuredOnly: true,
-			refreshMatchingEnabledRuntime: false,
 			skipHaltedDisabledProfile: true,
 		});
 	}

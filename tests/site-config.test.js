@@ -73,7 +73,7 @@ async function makeDualServerSite() {
 		fs.writeFile(path.join(apacheRoot, 'modules.conf.hbs'), apacheModules),
 		fs.writeFile(path.join(apacheRoot, 'site.conf.hbs'), apacheMain),
 		fs.writeFile(httpd, ''),
-		...['mod_proxy_http.so', 'mod_headers.so', 'mod_setenvif.so', 'mod_ssl.so'].map((filename) => (
+		...['mod_proxy_http.so', 'mod_headers.so', 'mod_ssl.so'].map((filename) => (
 			fs.writeFile(path.join(serviceRoot, 'modules', filename), '')
 		)),
 	]);

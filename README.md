@@ -68,6 +68,8 @@ Nginx can connect to a selected IP while preserving the Site URL as the HTTP `Ho
 
 The add-on supports images, video, audio, captions, PDFs, documents, fonts, archives, generated CSS, and future file formats without maintaining an extension allowlist. It rejects executable, browser-active, hidden, configuration, secret, database, and backup files; browser execution destinations fail closed, and upstream redirect targets are not exposed to the local browser. It never proxies themes, plugins, APIs, arbitrary missing URLs, or non-upload paths. Responses stream without a persistent media cache.
 
+On macOS, if Local loses track of a running site's Nginx or Apache listener, Media Proxy can recover a verified orphaned Local web-server process tree on that exact site port and restart only Local's existing selected-service process. The same bounded repair covers an untracked standard-domain router by restarting only its existing process, without rebuilding routes or changing hosts or routing mode. Stopped sites and unrelated port owners remain untouched.
+
 ## HTTPS and Cloudflare Origin CA
 
 HTTPS is verified against Node's standard certificate authorities plus Cloudflare's published RSA and ECC Origin CA roots. The two Cloudflare fingerprints and the bundled PEM hash are pinned by automated release checks.
@@ -86,7 +88,7 @@ npm run validate
 npm run package:addon
 ```
 
-The release installer uses npm's single `package/` root and contains exactly 28 reviewed runtime files. Source, tests, source maps, dependencies, and repository-only process documents are excluded.
+The release installer uses npm's single `package/` root and contains exactly 29 reviewed runtime files. Source, tests, source maps, dependencies, and repository-only process documents are excluded.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development and DCO requirements, [PUBLIC_RELEASE_SAFETY.md](PUBLIC_RELEASE_SAFETY.md) for the blocking public-content review, and [RELEASING.md](RELEASING.md) for the draft and promotion workflow.
 

@@ -221,7 +221,6 @@ test('official Apache +11 runtime preserves local files and safely proxies only 
 			['proxy_module', 'mod_proxy.so'],
 			['proxy_http_module', 'mod_proxy_http.so'],
 			['headers_module', 'mod_headers.so'],
-			['setenvif_module', 'mod_setenvif.so'],
 		].map(([identifier, filename]) => (
 			`LoadModule ${identifier} "${apachePath(apacheModulePath(runtimeHttpd, filename))}"`
 		));
@@ -270,18 +269,14 @@ test('official Apache +11 runtime preserves local files and safely proxies only 
 		assert.equal(local.headers['x-local-media-proxy'], undefined);
 		assert.equal(backendRequests.length, 0);
 
-		for (const [unknownHeader, value] of [
-			['Bespoke-Credential', 'private'],
-			['X-Future-Browser-Identity', 'private'],
-			['X-Random-Extension-Token', 'private'],
-		]) {
-			const beforeUnknown = backendRequests.length;
-			const rejected = await request(frontendPort, '/wp-content/uploads/unknown-header.futuremedia', {
-				headers: { [unknownHeader]: value },
-			});
-			assert.equal(rejected.statusCode, 400, unknownHeader);
-			assert.equal(backendRequests.length, beforeUnknown, unknownHeader);
-		}
+		const futureHeader = await request(frontendPort, '/wp-content/uploads/future-header.futuremedia', {
+			headers: { 'X-Future-Browser-Hint': 'supported' },
+		});
+		assert.equal(futureHeader.statusCode, 200);
+		assert.equal(futureHeader.headers['x-local-media-proxy'], 'origin');
+		assert.equal(backendRequests.length, 1);
+		assert.equal(backendRequests[0].headers['x-future-browser-hint'], 'supported');
+		backendRequests.length = 0;
 		const outsideRoute = await request(frontendPort, '/outside-upload-route.futuremedia', {
 			headers: { 'Bespoke-Credential': 'private' },
 		});
