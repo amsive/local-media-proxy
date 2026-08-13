@@ -84,7 +84,7 @@ Perform focused passes instead of one generic review:
 
 Review changed source-like files completely. Load supporting tests, documentation, configuration, and unchanged shared helpers only when needed to understand the changed behavior.
 
-For security-sensitive changes, invoke `codex-security:security-diff-scan` when it is available and follow that skill's required phase sequence. Keep its vulnerability disposition separate from ordinary engineering findings: a candidate can be a valid reliability defect without meeting the repository's security-reporting threshold.
+For security-sensitive changes, keep the focused engineering review and relevant deterministic regression coverage, but do not invoke a Codex Security scan automatically. Run `codex-security:security-diff-scan` only when the user explicitly requests a security scan or audit, and follow that skill's required phase sequence when requested. Keep its vulnerability disposition separate from ordinary engineering findings: a candidate can be a valid reliability defect without meeting the repository's security-reporting threshold.
 
 Follow `SECURITY.md`. Never publish suspected vulnerability details as a public GitHub issue. Prepare a private-report recommendation instead and stop before disclosure unless the user explicitly authorizes the repository's confidential process.
 

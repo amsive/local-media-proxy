@@ -24,7 +24,18 @@ Do not submit client information, credentials, private certificates, access toke
 
 Never commit directly to `main`. Create `feature/<slug>` for planned work or `issue/<id>-<slug>` for issue-backed work, then open a pull request to `main`. Every pull request requires human review before merge. Use a draft pull request while validation or release preparation is still in progress.
 
-## Before opening a pull request
+## Default feature validation
+
+For an ordinary feature or bug fix, keep the local loop scoped to the changed behavior:
+
+1. Install dependencies with `npm install` when the lockfile or local dependencies are not already available.
+2. Add or update the directly relevant regression, then run `npm run test:focused -- tests/<relevant>.test.js` with the smallest useful set of test files.
+3. Run `npm run verify:public-release` or `npm run verify:third-party` only when the change touches public content/assets, dependencies, trust material, package metadata, or related policy.
+4. Record the focused result and skipped full-suite or release checks in the pull request. The Validate workflow remains the authoritative full PR gate.
+
+Do not run the full local checklist for every feature. Use it when preparing a release, changing dependencies or the lockfile, package/release files, workflows, public-release safety, third-party provenance, DCO/identity behavior, or when a maintainer explicitly requests full validation. Codex Security scans are not part of this checklist; they require a separate explicit user request.
+
+## Full local validation checklist (conditional)
 
 1. Install dependencies with `npm install`.
 2. Run `npm run verify:public-release`, `npm run verify:third-party`, `npm run verify:dco`, and `npm run verify:git-identities`; review exact safety, provenance, identity, and asset-manifest changes; then run `npm run validate`.
