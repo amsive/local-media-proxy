@@ -2,6 +2,8 @@
 
 Releases are built by GitHub Actions from an exact `v<SemVer>` tag. A read-only build job clean-installs locked dependencies without lifecycle scripts, validates the add-on, builds and inspects the installable TGZ, and preserves the verified assets. A separate write-scoped job creates a GitHub draft, attaches `local-media-proxy-v<version>.tgz` and `local-media-proxy-v<version>.tgz.sha256`, uses each exact filename as both its visible GitHub label and downloadable name, and preselects **prerelease** while explicitly leaving **Latest** off. The installer is an npm package with exactly one top-level `package/` folder and an exact minimal manifest containing only the compiled runtime, package metadata, CSS, runtime artwork and trust material, `LICENSE`, `NOTICE`, and the packaged `README`.
 
+This is the intentional full release path. It is not the default feature-development loop in `AGENTS.md`; release checks remain mandatory when a release is actually being prepared.
+
 ## Prepare the release
 
 1. Use AI to review the commits and tree diff from the previous exact SemVer tag to the proposed release commit, then write only the complete release entry under the version-only heading `## [<version>]`. Do not include dates, status labels, an `Unreleased` placeholder, or an `Unreleased` comparison link in the changelog. Begin with one concise, version-neutral summary paragraph, followed by only populated, end-user-facing sections and bullets. Omit empty sections and `Validation`, do not use a generated commit or pull-request list as release copy, and use `New Features` only for actual Local application capabilities.

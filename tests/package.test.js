@@ -33,6 +33,20 @@ test('declares the installed add-on card metadata expected by Local', () => {
 	assert.equal(ADDON_VERSION, packageJson.version);
 	assert.equal(packageJson.scripts['package:addon'], 'node scripts/package-addon.js');
 	assert.equal(packageJson.scripts['package:check'], 'npm run package:addon');
+	assert.equal(packageJson.scripts.test, 'npm run test:all');
+	assert.equal(
+		packageJson.scripts['test:all'],
+		'npm run build && node --test --test-reporter=dot',
+	);
+	assert.equal(
+		packageJson.scripts['test:focused'],
+		'npm run build && node --test --test-reporter=dot',
+	);
+	assert.equal(
+		packageJson.scripts['test:verbose'],
+		'npm run build && node --test --test-reporter=spec',
+	);
+	assert.doesNotMatch(packageJson.scripts.validate, /npm run typecheck/);
 	assert.equal(packageJson.scripts['verify:third-party'], 'node scripts/verify-third-party.js');
 	assert.deepEqual(packageJson.files, [
 		'lib/apache.js',

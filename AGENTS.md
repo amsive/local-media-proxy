@@ -8,13 +8,25 @@ Runtime TypeScript lives in `src/`. `main.ts` owns Local IPC and lifecycle work;
 
 - `npm install`: install development dependencies.
 - `npm run build`: compile TypeScript into `lib/`.
-- `npm test`: build and run Node unit/integration tests.
+- `npm test` / `npm run test:all`: build and run the entire Node unit/integration suite with compact output.
+- `npm run test:focused -- tests/<relevant>.test.js`: build and run only the selected test file(s).
+- `npm run test:verbose -- tests/<relevant>.test.js`: rerun selected tests with per-test diagnostics after a compact run fails.
 - `npm run typecheck`: check TypeScript without output.
-- `npm run validate`: run public-release checks, type checks, tests, and an exact release-package build and verification.
+- `npm run validate`: run the full public-release, provenance, test, and exact release-package checks.
 - `npm run package:addon`: create the installable `local-media-proxy-v<version>.tgz` in `dist/`; release workflows attach its checksum.
 - `npm run watch`: recompile during development.
 
 Symlink the repository into Local’s add-ons directory for live development, then restart Local.
+
+## Default AI Work Scope
+
+For ordinary feature work, inspect the changed source, its direct dependents, the relevant test file(s), and necessary local configuration only. Do not perform a repository-wide review, history audit, or full test run by default.
+
+- Add the smallest regression that proves the changed behavior, then run `npm run test:focused -- tests/<relevant>.test.js` with one or more directly related files. For documentation-only changes, skip code tests.
+- Use `npm run test:verbose -- tests/<relevant>.test.js` only to diagnose a focused failure. Use `npm run test:all` or `npm run validate` for a full run only when the user requests it, a release is being prepared, or the change affects dependencies, package/release files, workflows, public-release policy/assets, third-party provenance, DCO/identity checks, or another cross-cutting gate.
+- Report the focused files and any skipped full-suite, package, runtime, or release checks; do not imply that a focused run is full validation.
+
+Codex Security scans are opt-in. Do not invoke `codex-security:*` skills, broad security scanners, or repository-wide security audits during normal feature work, tests, CI, pull-request preparation, or release preparation. Run them only when the user explicitly requests a security scan or audit. This does not remove relevant deterministic security regression tests, public-release checks, dependency/provenance checks, or the confidential reporting process in `SECURITY.md`.
 
 ## Release Audit Workflow
 
@@ -40,7 +52,7 @@ All future loading animations must use Local’s native two-dot `LoadingIndicato
 
 ## Testing Guidelines
 
-Use `node:test` and `node:assert/strict`; name files `*.test.js`. Add regressions for validation, generated Nginx, marker idempotency, rollback, and security headers. Release installers use the exact name `local-media-proxy-v<version>.tgz`, with a matching `.tgz.sha256`, and use npm's standard single top-level `package/` folder. The TGZ must contain only the compiled runtime, package metadata, CSS, runtime artwork and trust material, `LICENSE`, `NOTICE`, and the packaged `README`; source, tests, source maps, development configuration, and repository-only process documents are excluded. CI and promotion verification must enforce this contract. Before release, select the TGZ directly in Local without extracting it: existing uploads remain local, a safe missing asset returns `200` with `X-Local-Media-Proxy: origin`, a blocked asset stays local-only, and disabling restores the prior `404`.
+Use `node:test` and `node:assert/strict`; name files `*.test.js`. Add a focused regression for the behavior being changed; extend validation, generated Nginx, marker idempotency, rollback, or security-header coverage when that behavior is relevant. Release installers use the exact name `local-media-proxy-v<version>.tgz`, with a matching `.tgz.sha256`, and use npm's standard single top-level `package/` folder. The TGZ must contain only the compiled runtime, package metadata, CSS, runtime artwork and trust material, `LICENSE`, `NOTICE`, and the packaged `README`; source, tests, source maps, development configuration, and repository-only process documents are excluded. CI and promotion verification must enforce this contract. Before release, select the TGZ directly in Local without extracting it: existing uploads remain local, a safe missing asset returns `200` with `X-Local-Media-Proxy: origin`, a blocked asset stays local-only, and disabling restores the prior `404`.
 
 Every pull request and release must pass `npm run verify:public-release`. Do not commit client names, domains, infrastructure addresses, workstation paths, credentials, diagnostic configuration, individual email addresses, or unreviewed binary assets. This prohibition covers source and code comments, commit and tag metadata or messages, pull requests, issues, reviews, discussion comments, and release text. Individual contributors must use their GitHub-provided `noreply` identity; exact organization role addresses are allowed only through `public-release-policy.json`. Use only `example.com` hostnames and RFC documentation IPs in fixtures. Screenshots must use fictional data, show only the minimum useful sites, contain no automation overlays, pass local OCR review, and have an exact reviewed hash in `public-release-assets.json`. See `PUBLIC_RELEASE_SAFETY.md` for the complete process and its human-review limits.
 
