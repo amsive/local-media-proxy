@@ -82,7 +82,7 @@ async function writeCompiledNginxFixture(runtimeService, managed = true) {
 test('builds a local-first, read-only, privacy-preserving HTTPS proxy', () => {
 	const config = buildManagedNginxConfig(secureOrigin, '/tmp/local origin-ca.pem');
 
-	assert.match(config, /Managed route revision: upload-assets-v3/);
+	assert.match(config, /Managed route revision: upload-assets-v4/);
 	assert.match(config, /location ~\* "\^\(\?!/);
 	assert.match(config, /\/wp-content\/uploads\//);
 	assert.match(config, /if \(\$request_method !~ \^\(GET\|HEAD\)\$\) \{ return 405; \}/);
@@ -183,9 +183,13 @@ test('uses a default-allow upload route while blocking active and sensitive miss
 	assert.match(routeLine, /A-Za-z0-9/);
 	assert.doesNotMatch(routeLine, /avif|jpe|webp|pdf|mp4|futuremedia/i);
 	assert.equal(route.test('/wp-content/uploads/new.futuremedia'), true);
+	assert.equal(route.test('/wp-content/uploads/run-bash.mp4'), true);
+	assert.equal(route.test('/wp-content/uploads/rendered.php-image.jpg'), true);
 	assert.equal(route.test('/wp-content/uploads/shell.php'), false);
+	assert.equal(route.test('/wp-content/uploads/shell.php.jpg'), false);
 	assert.equal(route.test('/wp-content/uploads/shell.php/image.jpg'), false);
 	assert.equal(route.test('/wp-content/uploads/active.html.jpg'), false);
+	assert.equal(hardBlockedRoute.test('/wp-content/uploads/run-bash.mp4'), false);
 	assert.equal(hardBlockedRoute.test('/wp-content/uploads/local.php'), true);
 	assert.equal(hardBlockedRoute.test('/wp-content/uploads/nested/shell.php/image.jpg'), true);
 	assert.equal(hardBlockedRoute.test('/wp-content/uploads/.hidden/image.jpg'), true);

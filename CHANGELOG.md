@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2]
+
+This patch refines missing-upload filtering so ordinary media filename prefixes do not look like server-interpreter paths.
+
+### Fixed
+
+- Allowed safe final extensions after ordinary filename prefixes containing interpreter-like words, including `Screenshot-2026-07-23-at-2.30.27-PM.png`, while continuing to block interpreter extensions and path-info forms such as `shell.php.jpg`. ([#45](https://github.com/amsive/local-media-proxy/issues/45))
+
 ## [0.4.1]
 
 This release expands the local-first fallback to safe missing upload assets and makes saved site state converge reliably across add-on and web-server changes.
@@ -162,6 +170,7 @@ This release keeps Local Media Proxy out of Local's way during site creation, fi
 - Prevented slow or cancelled connection probes from hanging the UI and replaced low-level timeout errors with actionable messages.
 - Preserved correct TLS verification when switching between direct WP Engine origins and compatible proxy, CDN, or load-balancer endpoints.
 
+[0.4.2]: https://github.com/amsive/local-media-proxy/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/amsive/local-media-proxy/compare/v0.3.1...v0.4.1
 [0.3.1]: https://github.com/amsive/local-media-proxy/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/amsive/local-media-proxy/compare/v0.2.4...v0.3.0

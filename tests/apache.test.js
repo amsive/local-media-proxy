@@ -212,7 +212,7 @@ test('builds a fixed-host local-first Apache proxy with guarded methods, bodies,
 	assert.equal((config.match(/ProxyAddHeaders Off/g) ?? []).length, 1);
 	assert.equal((config.match(/ProxyErrorOverride Off/g) ?? []).length, 1);
 	assert.equal((config.match(/ProxyPreserveHost Off/g) ?? []).length, 1);
-	assert.match(config, /Managed route revision: upload-assets-v3/);
+	assert.match(config, /Managed route revision: upload-assets-v4/);
 	assert.match(config, /SSLProxyEngine On/);
 	assert.match(config, /SSLProxyVerify require/);
 	assert.match(config, /SSLProxyVerifyDepth 5/);

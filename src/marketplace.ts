@@ -117,6 +117,14 @@ ${ADDON_NAME} is maintained by Amsive LLC and developed by Mark Davoli and Boris
 }
 
 function createCurrentReleaseNotes(): string {
+	return `Version 0.4.2 refines missing-upload filtering so ordinary media filename prefixes do not look like server-interpreter paths.
+
+- Proxy safe final extensions after ordinary filename prefixes containing interpreter-like words, while continuing to block interpreter extensions and path-info forms such as \`shell.php.jpg\`. ([#45](https://github.com/amsive/local-media-proxy/issues/45))
+
+[View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
+}
+
+function createV041ReleaseNotes(): string {
 	return `Version 0.4.1 proxies more types of safe missing uploads and improves reliability across add-on and web-server changes.
 
 - Proxy missing video, audio, documents, fonts, and other safe uploads while keeping existing local files first. ([#32](https://github.com/amsive/local-media-proxy/issues/32))
@@ -158,24 +166,19 @@ function createV024ReleaseNotes(): string {
 [View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
 }
 
-function createV023ReleaseNotes(): string {
-	return `Version 0.2.3 prepares the project for public open-source collaboration without changing proxy or TLS behavior.
-
-- Added machine-readable third-party provenance and an offline release gate that pins both bundled Cloudflare Origin CA roots, their fingerprints, and the exact trust-file hash.
-- Added project-specific issue forms, security scope, contributor conduct and DCO guidance, and monthly npm dependency updates.
-- Simplified the installation and usage landing page while moving advanced proxy, TLS, and managed-file details into dedicated technical documentation.
-- Preserved standard public CA trust, both Cloudflare Origin CA roots, strict hostname and chain verification, and the exact minimal installer boundary.
-
-[View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
-}
-
 function createPackagedReleaseHistory(): PackagedRelease[] {
 	return [
 		{
 			changelog: createCurrentReleaseNotes(),
-			date: '2026-08-05T00:00:00.000Z',
+			date: '2026-08-18T00:00:00.000Z',
 			id: `${ADDON_ID}-${ADDON_VERSION}`,
 			version: ADDON_VERSION,
+		},
+		{
+			changelog: createV041ReleaseNotes(),
+			date: '2026-08-05T00:00:00.000Z',
+			id: `${ADDON_ID}-0.4.1`,
+			version: '0.4.1',
 		},
 		{
 			changelog: createV031ReleaseNotes(),
@@ -194,12 +197,6 @@ function createPackagedReleaseHistory(): PackagedRelease[] {
 			date: '2026-07-24T00:00:00.000Z',
 			id: `${ADDON_ID}-0.2.4`,
 			version: '0.2.4',
-		},
-		{
-			changelog: createV023ReleaseNotes(),
-			date: '2026-07-23T00:00:00.000Z',
-			id: `${ADDON_ID}-0.2.3`,
-			version: '0.2.3',
 		},
 	];
 }

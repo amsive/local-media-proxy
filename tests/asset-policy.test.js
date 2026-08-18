@@ -110,6 +110,8 @@ test('allows current media, documents, data, and unknown future upload formats',
 		'/wp-content/uploads/html-guide.pdf',
 		'/wp-content/uploads/node-js-handbook.pdf',
 		'/wp-content/uploads/wasm-talk.mp4',
+		'/wp-content/uploads/2026/07/Screenshot-2026-07-23-at-2.30.27-PM.png',
+		'/wp-content/uploads/2026/07/Screenshot-2026-07-23-at-2.30.27-PM-1024x802.png',
 		'/wp-content/uploads/app/image.jpg',
 		'/wp-content/uploads/config/image.jpg',
 		'/wp-content/uploads/js/image.jpg',
@@ -118,7 +120,7 @@ test('allows current media, documents, data, and unknown future upload formats',
 	for (const requestPath of allowedPaths) {
 		assert.equal(uploadAssetPathIsProxyEligible(requestPath), true, requestPath);
 	}
-	assert.equal(UPLOAD_ASSET_ROUTE_REVISION, 'upload-assets-v3');
+	assert.equal(UPLOAD_ASSET_ROUTE_REVISION, 'upload-assets-v4');
 });
 
 test('allows passive/core Fetch Metadata destinations and rejects browser execution destinations', () => {
@@ -167,7 +169,7 @@ test('allows passive/core Fetch Metadata destinations and rejects browser execut
 	assert.equal(blockedDestination.test('scripted'), false);
 });
 
-test('blocks interpreter tokens even when a safe-looking extension follows them', () => {
+test('blocks interpreter extensions and path-info even when a safe-looking extension follows them', () => {
 	for (const requestPath of [
 		'/wp-content/uploads/shell.php.jpg',
 		'/wp-content/uploads/shell.PHP82.webp',
@@ -182,14 +184,44 @@ test('blocks interpreter tokens even when a safe-looking extension follows them'
 		'/wp-content/uploads/script.py.svg',
 		'/wp-content/uploads/script.vbs.svg',
 		'/wp-content/uploads/script.wsf.svg',
-		'/wp-content/uploads/run-bash.mp4',
 		'/wp-content/uploads/handler.aspx.avif',
 		'/wp-content/uploads/template.cfm.jxl',
 		'/wp-content/uploads/shell.php123.jpg',
 		'/wp-content/uploads/shell.PHP12345/image.jpg',
 		'/wp-content/uploads/shell.php/image.jpg',
+		'/wp-content/uploads/folder-php/image.jpg',
 	]) {
 		assert.equal(uploadAssetPathIsProxyEligible(requestPath), false, requestPath);
+	}
+});
+
+test('allows interpreter words in ordinary filename prefixes with safe final extensions', () => {
+	const interpreterTokens = [
+		'php', 'php82', 'pht', 'phtm', 'phtml', 'phar', 'phps',
+		'cgi', 'fcgi', 'scgi', 'pl', 'pm', 'py', 'pyc', 'pyo', 'pyw',
+		'rb', 'erb', 'lua', 'tcl', 'sh', 'bash', 'zsh', 'csh', 'ksh',
+		'fish', 'command', 'bat', 'cmd', 'ps1', 'psd1', 'psm1', 'vb',
+		'vbe', 'vbs', 'wsf', 'wsh', 'asp', 'aspx', 'asa', 'asax', 'ascx',
+		'ashx', 'asmx', 'cshtml', 'vbhtml', 'jsp', 'jspx', 'jspf', 'cfm',
+		'cfml', 'cfc',
+	];
+	const safeMediaExtensions = ['png', 'jpg', 'webp', 'gif', 'mp4'];
+	for (const [index, token] of interpreterTokens.entries()) {
+		const extension = safeMediaExtensions[index % safeMediaExtensions.length];
+		const requestPath = `/wp-content/uploads/report-${token}-image.${extension}`;
+		assert.equal(uploadAssetPathIsProxyEligible(requestPath), true, requestPath);
+	}
+
+	for (const requestPath of [
+		'/wp-content/uploads/run-php.jpg',
+		'/wp-content/uploads/run-bash.mp4',
+		'/wp-content/uploads/php-photo.webp',
+		'/wp-content/uploads/rendered_php_image.gif',
+		'/wp-content/uploads/rendered.php-image.jpg',
+		'/wp-content/uploads/2026/07/Screenshot-2026-07-23-at-2.30.27-PM.png',
+		'/wp-content/uploads/2026/07/Screenshot-2026-07-23-at-2.30.27-PM-1024x802.png',
+	]) {
+		assert.equal(uploadAssetPathIsProxyEligible(requestPath), true, requestPath);
 	}
 });
 
@@ -285,6 +317,21 @@ test('exports compatible route and block patterns for both server generators', (
 	assert.equal(blocked.test('/wp-content/uploads/node-js-handbook.pdf'), false);
 	assert.equal(blocked.test('/wp-content/uploads/wasm-talk.mp4'), false);
 	for (const requestPath of [
+		'/wp-content/uploads/run-bash.mp4',
+		'/wp-content/uploads/rendered.php-image.jpg',
+	]) {
+		assert.equal(route.test(requestPath), true, requestPath);
+		assert.equal(blocked.test(requestPath), false, requestPath);
+	}
+	for (const requestPath of [
+		'/wp-content/uploads/2026/07/Screenshot-2026-07-23-at-2.30.27-PM.png',
+		'/wp-content/uploads/2026/07/Screenshot-2026-07-23-at-2.30.27-PM-1024x802.png',
+	]) {
+		assert.equal(route.test(requestPath), true, requestPath);
+		assert.equal(blocked.test(requestPath), false, requestPath);
+		assert.equal(uploadAssetPathIsProxyEligible(requestPath), true, requestPath);
+	}
+	for (const requestPath of [
 		'/wp-content/uploads/app/image.jpg',
 		'/wp-content/uploads/config/image.jpg',
 		'/wp-content/uploads/js/image.jpg',
@@ -295,11 +342,17 @@ test('exports compatible route and block patterns for both server generators', (
 	}
 	assert.equal(blocked.test('/wp-content/uploads/document.pdf'), false);
 	assert.equal(blocked.test('/wp-content/uploads/vector.svg'), false);
-	for (const delimiter of ['.', '-', '_', '~', '!', '$', '&', "'", '(', ')', '*', '+', ',', ';', '=', '@']) {
+	for (const delimiter of ['.', ';']) {
 		const requestPath = `/wp-content/uploads/shell${delimiter}php${delimiter}.jpg`;
 		assert.equal(route.test(requestPath), true, requestPath);
 		assert.equal(blocked.test(requestPath), true, requestPath);
 		assert.equal(uploadAssetPathIsProxyEligible(requestPath), false, requestPath);
+	}
+	for (const delimiter of ['-', '_', '~', '!', '$', '&', "'", '(', ')', '*', '+', ',', '=', '@']) {
+		const requestPath = `/wp-content/uploads/shell${delimiter}php${delimiter}.jpg`;
+		assert.equal(route.test(requestPath), true, requestPath);
+		assert.equal(blocked.test(requestPath), false, requestPath);
+		assert.equal(uploadAssetPathIsProxyEligible(requestPath), true, requestPath);
 	}
 	assert.equal(route.test('/wp-content/uploads/shell:php:.jpg'), false);
 	assert.equal(
