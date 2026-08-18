@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export const UPLOAD_ASSET_ROUTE_REVISION = 'upload-assets-v3';
+export const UPLOAD_ASSET_ROUTE_REVISION = 'upload-assets-v4';
 export const UPLOAD_ASSET_PATH_PREFIX = '/wp-content/uploads/';
 
 const PATH_CHARACTER_CLASS = "A-Za-z0-9._~!$&'()*+,;=@-";
@@ -30,6 +30,7 @@ export const UNSAFE_RAW_PERCENT_ENCODING_PATTERN =
 	'%(?:25|2f|5c|3f|23|0[0-9a-f]|1[0-9a-f]|7f)';
 
 const SERVER_INTERPRETER_TOKEN_PATTERN = [
+	// Keep this list to tokens that identify executable server-side handlers.
 	'php[0-9]*',
 	'pht',
 	'phtm',
@@ -209,11 +210,17 @@ const SENSITIVE_EXACT_BASENAME_PATTERN = [
 /**
  * This expression is applied to the complete upload path. Every segment is
  * checked so path-info routing cannot conceal an interpreter file behind a
- * safe final filename. Browser-active formats are treated as extensions,
- * while interpreter tokens remain blocked at every non-alphanumeric boundary.
+ * safe final filename. Browser-active formats are treated as extensions.
+ * Interpreter tokens remain blocked throughout directory segments and when a
+ * basename token occupies an extension or path-info position, while ordinary
+ * filename-prefix separators such as `-` and `_` remain usable.
  */
+const SERVER_INTERPRETER_DIRECTORY_PATH_PATTERN =
+	`(?:[^/]*[^A-Za-z0-9])?(?:${SERVER_INTERPRETER_TOKEN_PATTERN})(?=[^A-Za-z0-9]|$)[^/]*(?=/)`;
+const SERVER_INTERPRETER_EXTENSION_PATH_PATTERN =
+	`[^/]*[.;](?:${SERVER_INTERPRETER_TOKEN_PATTERN})(?=[.;/]|$)[^/]*`;
 export const BLOCKED_UPLOAD_ASSET_PATH_PATTERN =
-	`(?:^|/)(?:(?:[^/]*[^A-Za-z0-9])?(?:${SERVER_INTERPRETER_TOKEN_PATTERN})(?=[^A-Za-z0-9]|$)[^/]*|` +
+	`(?:^|/)(?:${SERVER_INTERPRETER_DIRECTORY_PATH_PATTERN}|${SERVER_INTERPRETER_EXTENSION_PATH_PATTERN}|` +
 	`[^/]*\\.(?:${BROWSER_ACTIVE_TOKEN_PATTERN})(?=\\.|$)[^/]*|` +
 	`[^/]*\\.(?:${BLOCKED_FINAL_EXTENSION_PATTERN})|` +
 	`(?:${SENSITIVE_EXACT_BASENAME_PATTERN}))(?=/|$)`;
@@ -226,7 +233,7 @@ export const BLOCKED_UPLOAD_ASSET_PATH_PATTERN =
 export const NGINX_UPLOAD_ASSET_URI_PATTERN =
 	`^(?!.*${BLOCKED_UPLOAD_ASSET_PATH_PATTERN})/wp-content/uploads/${UPLOAD_ASSET_RELATIVE_PATH_PATTERN}$`;
 const NGINX_HARD_BLOCKED_UPLOAD_ASSET_PATH_PATTERN =
-	`(?:^|/)(?:(?:[^/]*[^A-Za-z0-9])?(?:${SERVER_INTERPRETER_TOKEN_PATTERN})(?=[^A-Za-z0-9]|$)[^/]*|` +
+	`(?:^|/)(?:${SERVER_INTERPRETER_DIRECTORY_PATH_PATTERN}|${SERVER_INTERPRETER_EXTENSION_PATH_PATTERN}|` +
 	`\\.[^/]*|web\\.config)(?=/|$)`;
 export const NGINX_HARD_BLOCKED_UPLOAD_ASSET_URI_PATTERN =
 	`^/wp-content/uploads(?=/).*${NGINX_HARD_BLOCKED_UPLOAD_ASSET_PATH_PATTERN}`;
@@ -237,6 +244,10 @@ const SAFE_DECODED_SEGMENT = new RegExp(`^[${PATH_CHARACTER_CLASS}]+$`);
 const SAFE_EXTENSION = new RegExp(`^[A-Za-z0-9][${EXTENSION_CHARACTER_CLASS}]*$`);
 const SERVER_INTERPRETER_TOKEN = new RegExp(
 	`^(?:${SERVER_INTERPRETER_TOKEN_PATTERN})$`,
+	'i',
+);
+const SERVER_INTERPRETER_EXTENSION = new RegExp(
+	`[.;](?:${SERVER_INTERPRETER_TOKEN_PATTERN})(?=[.;]|$)`,
 	'i',
 );
 const BROWSER_ACTIVE_TOKEN = new RegExp(
@@ -275,7 +286,7 @@ export function uploadAssetFetchDestinationIsProxyEligible(
 		!BLOCKED_BROWSER_FETCH_DESTINATION.test(secFetchDestination);
 }
 
-function pathSegmentIsBlocked(segment: string): boolean {
+function pathSegmentIsBlocked(segment: string, isFinalSegment: boolean): boolean {
 	const normalized = segment.toLowerCase();
 	if (SENSITIVE_EXACT_BASENAMES.has(normalized)) {
 		return true;
@@ -289,9 +300,9 @@ function pathSegmentIsBlocked(segment: string): boolean {
 		return true;
 	}
 
-	if (normalized
-		.split(/[^a-z0-9]+/)
-		.some((token) => SERVER_INTERPRETER_TOKEN.test(token))) {
+	if (isFinalSegment
+		? SERVER_INTERPRETER_EXTENSION.test(normalized)
+		: normalized.split(/[^a-z0-9]+/).some((token) => SERVER_INTERPRETER_TOKEN.test(token))) {
 		return true;
 	}
 
@@ -349,5 +360,7 @@ export function uploadAssetPathIsProxyEligible(requestPath: string): boolean {
 		return false;
 	}
 
-	return !decodedSegments.some((segment) => pathSegmentIsBlocked(segment));
+	return !decodedSegments.some((segment, index) => (
+		pathSegmentIsBlocked(segment, index === decodedSegments.length - 1)
+	));
 }

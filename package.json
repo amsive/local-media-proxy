@@ -1,7 +1,7 @@
 {
   "name": "local-media-proxy",
   "productName": "Local Media Proxy",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "private": true,
   "description": "Load safe missing WordPress upload assets from a remote site while keeping existing files local.",
   "author": {
