@@ -166,17 +166,6 @@ function createV024ReleaseNotes(): string {
 [View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
 }
 
-function createV023ReleaseNotes(): string {
-	return `Version 0.2.3 prepares the project for public open-source collaboration without changing proxy or TLS behavior.
-
-- Added machine-readable third-party provenance and an offline release gate that pins both bundled Cloudflare Origin CA roots, their fingerprints, and the exact trust-file hash.
-- Added project-specific issue forms, security scope, contributor conduct and DCO guidance, and monthly npm dependency updates.
-- Simplified the installation and usage landing page while moving advanced proxy, TLS, and managed-file details into dedicated technical documentation.
-- Preserved standard public CA trust, both Cloudflare Origin CA roots, strict hostname and chain verification, and the exact minimal installer boundary.
-
-[View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
-}
-
 function createPackagedReleaseHistory(): PackagedRelease[] {
 	return [
 		{
