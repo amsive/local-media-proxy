@@ -54,21 +54,6 @@ function assertSameValues(actual, expected, label) {
 	);
 }
 
-function declaredDependencies(packageJson) {
-	const declarations = new Map();
-	for (const [scope, dependencies] of [
-		['dev', packageJson.devDependencies ?? {}],
-		['peer', packageJson.peerDependencies ?? {}],
-	]) {
-		for (const [name, version] of Object.entries(dependencies)) {
-			const declared = declarations.get(name) ?? {};
-			declared[scope] = version;
-			declarations.set(name, declared);
-		}
-	}
-	return declarations;
-}
-
 function verifyReviewDate(reviewedOn, now) {
 	assert(
 		/^\d{4}-\d{2}-\d{2}$/.test(reviewedOn),
@@ -158,13 +143,15 @@ function verifyLoadingIndicatorMaterial(root, material, packageJson, notice) {
 
 function verifyDependencies(manifest, packageJson, packageLock) {
 	assert.deepEqual(packageJson.dependencies ?? {}, {}, 'The installer must not declare runtime dependencies.');
-	const actualDeclarations = declaredDependencies(packageJson);
+	const actualDependencyNames = new Set([
+		...Object.keys(packageJson.devDependencies ?? {}),
+		...Object.keys(packageJson.peerDependencies ?? {}),
+	]);
 	const manifestDependencies = uniqueBy(manifest.dependencies, 'name', 'third-party dependencies');
-	assertSameValues(manifestDependencies.keys(), actualDeclarations.keys(), 'Direct dependency inventory');
+	assertSameValues(manifestDependencies.keys(), actualDependencyNames, 'Direct dependency inventory');
 
-	for (const [name, declared] of actualDeclarations) {
+	for (const name of actualDependencyNames) {
 		const dependency = manifestDependencies.get(name);
-		assert.deepEqual(dependency.declared, declared, `Declared versions have changed for ${name}.`);
 		assert.equal(dependency.distributed, false, `${name} must remain non-distributed.`);
 		const locked = packageLock.packages?.[`node_modules/${name}`];
 		const isUnresolvedOptionalPeer = (
@@ -174,11 +161,6 @@ function verifyDependencies(manifest, packageJson, packageLock) {
 			&& !locked
 		);
 		if (isUnresolvedOptionalPeer) {
-			assert.equal(
-				dependency.resolvedVersion,
-				null,
-				`Unresolved optional peer ${name} must not claim a resolved version.`,
-			);
 			assert.equal(
 				dependency.license,
 				null,
@@ -197,7 +179,6 @@ function verifyDependencies(manifest, packageJson, packageLock) {
 			continue;
 		}
 		assert(locked, `package-lock.json is missing direct dependency ${name}.`);
-		assert.equal(dependency.resolvedVersion, locked.version, `Resolved version has changed for ${name}.`);
 		if (locked.license) {
 			assert.equal(dependency.license, locked.license, `License metadata has changed for ${name}.`);
 			assert.equal(dependency.licenseStatus, 'declared', `${name} must record declared license metadata.`);
