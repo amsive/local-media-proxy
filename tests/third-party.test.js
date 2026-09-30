@@ -105,6 +105,29 @@ test('rejects an undeclared direct dependency', (context) => {
 	);
 });
 
+test('ignores stale dependency version snapshots in the provenance manifest', (context) => {
+	const root = createFixture(context);
+	const provenance = readJson(root, 'third-party-materials.json');
+	const nodeTypes = provenance.dependencies.find(({ name }) => name === '@types/node');
+	nodeTypes.declared = { dev: '^26.1.2' };
+	nodeTypes.resolvedVersion = '26.1.2';
+	writeJson(root, 'third-party-materials.json', provenance);
+
+	assert.doesNotThrow(() => verifyThirdParty({ now: REVIEW_DATE, root }));
+});
+
+test('rejects a changed direct dependency license', (context) => {
+	const root = createFixture(context);
+	const packageLock = readJson(root, 'package-lock.json');
+	packageLock.packages['node_modules/@types/node'].license = 'GPL-3.0-only';
+	writeJson(root, 'package-lock.json', packageLock);
+
+	assert.throws(
+		() => verifyThirdParty({ now: REVIEW_DATE, root }),
+		/License metadata has changed for @types\/node/,
+	);
+});
+
 test('allows an unresolved optional peer supplied by the host', (context) => {
 	const root = createFixture(context);
 	const packageLock = readJson(root, 'package-lock.json');
@@ -112,7 +135,6 @@ test('allows an unresolved optional peer supplied by the host', (context) => {
 	writeJson(root, 'package-lock.json', packageLock);
 	const provenance = readJson(root, 'third-party-materials.json');
 	const react = provenance.dependencies.find(({ name }) => name === 'react');
-	react.resolvedVersion = null;
 	react.license = null;
 	react.licenseStatus = 'host-provided-unresolved';
 	writeJson(root, 'third-party-materials.json', provenance);

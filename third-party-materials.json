@@ -61,11 +61,6 @@
   "dependencies": [
     {
       "name": "@getflywheel/local",
-      "declared": {
-        "dev": "10.1.1",
-        "peer": ">=10.1.1"
-      },
-      "resolvedVersion": "10.1.1",
       "license": null,
       "licenseStatus": "metadata-unavailable",
       "distributed": false,
@@ -73,10 +68,6 @@
     },
     {
       "name": "@types/node",
-      "declared": {
-        "dev": "^26.1.2"
-      },
-      "resolvedVersion": "26.1.2",
       "license": "MIT",
       "licenseStatus": "declared",
       "distributed": false,
@@ -84,10 +75,6 @@
     },
     {
       "name": "react",
-      "declared": {
-        "peer": ">=16.14.0 <17"
-      },
-      "resolvedVersion": "16.14.0",
       "license": "MIT",
       "licenseStatus": "declared",
       "distributed": false,
@@ -95,10 +82,6 @@
     },
     {
       "name": "react-dom",
-      "declared": {
-        "peer": ">=16.14.0 <17"
-      },
-      "resolvedVersion": null,
       "license": null,
       "licenseStatus": "host-provided-unresolved",
       "distributed": false,
@@ -106,10 +89,6 @@
     },
     {
       "name": "selfsigned",
-      "declared": {
-        "dev": "^5.5.0"
-      },
-      "resolvedVersion": "5.5.0",
       "license": "MIT",
       "licenseStatus": "declared",
       "distributed": false,
@@ -117,10 +96,6 @@
     },
     {
       "name": "typescript",
-      "declared": {
-        "dev": "^7.0.2"
-      },
-      "resolvedVersion": "7.0.2",
       "license": "Apache-2.0",
       "licenseStatus": "declared",
       "distributed": false,
