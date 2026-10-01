@@ -87,8 +87,8 @@
     "watch": "tsc --watch"
   },
   "devDependencies": {
-    "@getflywheel/local": "10.1.1",
-    "@types/node": "^26.4.0",
+    "@getflywheel/local": "10.1.2",
+    "@types/node": "^26.6.3",
     "selfsigned": "^5.5.0",
     "typescript": "^7.0.2"
   },
