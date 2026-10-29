@@ -121,5 +121,10 @@
     "type": "addon",
     "category": "developer-tools",
     "minimumLocalVersion": "10.1.1"
+  },
+  "overrides": {
+    "@getflywheel/local": {
+      "@graphql-tools/utils": "12.0.2"
+    }
   }
 }

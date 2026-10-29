@@ -8,7 +8,7 @@
 
 ## Open-source review
 
-- [ ] Every new human commit includes a matching Developer Certificate of Origin `Signed-off-by` line; any automated commit is the exact GitHub-authored Dependabot pattern.
+- [ ] Every new human commit includes a matching Developer Certificate of Origin `Signed-off-by` line; any automated commit uses an exact authorized GitHub Dependabot or Copilot coding-agent identity.
 - [ ] New code, assets, dependencies, and notices have compatible licensing and known provenance.
 - [ ] The change contains no credentials, client data, private certificates, access tokens, or proprietary material.
 - [ ] Files, commits, tags, PR fields, reviews, comments, and release text contain no individually assigned email addresses.
