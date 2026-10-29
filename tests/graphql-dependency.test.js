@@ -40,7 +40,9 @@ test('GraphQL mergeDeep merges safe data without traversing prototype keys', () 
 			mergeDeep([{ shared: { fieldA: 'local' } }, { shared: { fieldB: 'origin' } }]),
 			{ shared: { fieldA: 'local', fieldB: 'origin' } },
 		);
-		mergeDeep([{ shared: unsafe }, { shared: unsafe }]);
+		const merged = mergeDeep([{ shared: unsafe }, { shared: unsafe }]);
+		assert.deepEqual(merged, { shared: {} });
+		assert.equal(Object.getPrototypeOf(merged.shared), Object.prototype);
 		prototypes.forEach((prototype, index) => {
 			assert.deepEqual(Object.getOwnPropertyDescriptors(prototype), descriptors[index]);
 		});
