@@ -77,6 +77,9 @@ function isGitHubCopilotCommit(commit) {
 }
 
 function validateCommitSignoff(commit) {
+	if (commit.parents?.length > 1) {
+		return null;
+	}
 	const authorEmail = commit.authorEmail.trim().toLowerCase();
 	const emails = signoffEmails(commit.message);
 	if (emails.includes(authorEmail)) {
@@ -172,6 +175,7 @@ function commitsFromOutput(root, output) {
 		const authorEmail = git(root, ['show', '-s', '--format=%ae', hash]);
 		const committerName = git(root, ['show', '-s', '--format=%cn', hash]);
 		const committerEmail = git(root, ['show', '-s', '--format=%ce', hash]);
+		const parents = git(root, ['show', '-s', '--format=%P', hash]).split(/\s+/).filter(Boolean);
 		const message = git(root, ['show', '-s', '--format=%B', hash]);
 		return {
 			authorEmail,
@@ -180,6 +184,7 @@ function commitsFromOutput(root, output) {
 			committerName,
 			hash,
 			message,
+			parents,
 		};
 	});
 }
@@ -281,7 +286,6 @@ function verifyAllGitIdentities(options = {}) {
 		problems: [
 			...commits.flatMap((commit) => [
 				...validateCommitIdentity(commit, policy),
-				validateCommitSignoff(commit),
 			].filter(Boolean)),
 			...tags.flatMap((tag) => validateTagIdentity(tag, policy)),
 			...trackedText.problems,

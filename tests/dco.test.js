@@ -21,6 +21,8 @@ const {
 	validateCommitIdentity,
 	validateCommitSignoff,
 	validateTagIdentity,
+	verifyAllGitIdentities,
+	verifyDco,
 } = require('../scripts/verify-dco');
 
 test('accepts a DCO trailer matching the commit author email', () => {
@@ -52,6 +54,56 @@ test('rejects missing or mismatched DCO trailers', () => {
 		hash: 'def5678',
 		message: `fix: wrong signer\n\nSigned-off-by: Someone Else <${otherAddress}>`,
 	}), /none match author/);
+});
+
+test('does not require a DCO trailer for merge commits', () => {
+	assert.equal(validateCommitSignoff({
+		authorEmail: '12345+contributor@users.noreply.github.com',
+		hash: 'abc1234',
+		message: 'Merge branch main',
+		parents: ['first-parent', 'second-parent'],
+	}), null);
+});
+
+test('accepts a signed PR range containing an unsigned merge commit', (t) => {
+	const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'dco-pr-merge-'));
+	t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+	const address = '12345+contributor@users.noreply.github.com';
+	const runGit = (args) => execFileSync('git', args, {
+		cwd: fixture,
+		encoding: 'utf8',
+		stdio: ['ignore', 'pipe', 'pipe'],
+	}).trim();
+	runGit(['init', '--quiet', '--initial-branch=main']);
+	runGit(['config', 'user.name', 'Example Contributor']);
+	runGit(['config', 'user.email', address]);
+	fs.writeFileSync(path.join(fixture, 'fixture.txt'), 'base\n');
+	runGit(['add', 'fixture.txt']);
+	runGit(['commit', '--quiet', '--signoff', '-m', 'test: add base']);
+	const base = runGit(['rev-parse', 'HEAD']);
+
+	runGit(['switch', '--quiet', '-c', 'feature']);
+	fs.writeFileSync(path.join(fixture, 'fixture.txt'), 'feature\n');
+	runGit(['add', 'fixture.txt']);
+	runGit(['commit', '--quiet', '--signoff', '-m', 'test: add feature change']);
+
+	runGit(['switch', '--quiet', 'main']);
+	fs.writeFileSync(path.join(fixture, 'main.txt'), 'main\n');
+	runGit(['add', 'main.txt']);
+	runGit(['commit', '--quiet', '--signoff', '-m', 'test: add main change']);
+	runGit(['merge', '--quiet', '--no-ff', 'feature', '-m', 'Merge feature']);
+	const head = runGit(['rev-parse', 'HEAD']);
+
+	assert.deepEqual(verifyDco({
+		base,
+		head,
+		root: fixture,
+		policy: {
+			allowedEmailAddresses: [],
+			allowedNoreplyEmailDomains: ['users.noreply.github.com'],
+			allowedSyntheticEmailDomains: ['example.com'],
+		},
+	}).problems, []);
 });
 
 test('accepts only the exact GitHub Dependabot role-identity pattern', () => {
@@ -266,6 +318,31 @@ test('excludes GitHub synthetic pull-request merge refs from advertised history'
 		allReachableCommits(fixture).map(({ hash }) => hash),
 		[advertisedCommit],
 	);
+});
+
+test('does not retroactively require DCO trailers on all reachable commits', (t) => {
+	const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'dco-history-'));
+	t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+	const runGit = (args) => execFileSync('git', args, {
+		cwd: fixture,
+		encoding: 'utf8',
+		stdio: ['ignore', 'pipe', 'pipe'],
+	}).trim();
+	runGit(['init', '--quiet', '--initial-branch=main']);
+	runGit(['config', 'user.name', 'Example Contributor']);
+	runGit(['config', 'user.email', '12345+contributor@users.noreply.github.com']);
+	fs.writeFileSync(path.join(fixture, 'fixture.txt'), 'public\n');
+	runGit(['add', 'fixture.txt']);
+	runGit(['commit', '--quiet', '-m', 'test: add historical fixture']);
+
+	assert.deepEqual(verifyAllGitIdentities({
+		root: fixture,
+		policy: {
+			allowedEmailAddresses: [],
+			allowedNoreplyEmailDomains: ['users.noreply.github.com'],
+			allowedSyntheticEmailDomains: ['example.com'],
+		},
+	}).problems, []);
 });
 
 test('detects individual addresses in historical tracked text after removal from HEAD', (t) => {
