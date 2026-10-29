@@ -15,6 +15,7 @@ const { execFileSync } = require('node:child_process');
 const {
 	allReachableCommits,
 	historicalTrackedTextProblems,
+	isGitHubCopilotCommit,
 	isGitHubDependabotCommit,
 	signoffEmails,
 	validateCommitIdentity,
@@ -84,6 +85,40 @@ test('accepts only the exact GitHub Dependabot role-identity pattern', () => {
 		...commit,
 		message: `chore: update dependencies\n\nSigned-off-by: GitHub <${githubCommitterAddress}>`,
 	}), /none match author/);
+});
+
+test('accepts only the exact GitHub Copilot coding-agent identity', () => {
+	const commit = {
+		authorEmail: '198982749+Copilot@users.noreply.github.com',
+		authorName: 'copilot-swe-agent[bot]',
+		committerEmail: 'noreply@github.com',
+		committerName: 'GitHub',
+		hash: 'abc1234',
+		message: 'fix: address dependency vulnerability',
+	};
+
+	assert.equal(isGitHubCopilotCommit(commit), true);
+	assert.equal(validateCommitSignoff(commit), null);
+	assert.equal(isGitHubCopilotCommit({
+		...commit,
+		authorName: 'Copilot',
+	}), false);
+	assert.equal(isGitHubCopilotCommit({
+		...commit,
+		authorEmail: 'copilot@users.noreply.github.com',
+	}), false);
+	assert.equal(isGitHubCopilotCommit({
+		...commit,
+		committerName: 'copilot-swe-agent[bot]',
+	}), false);
+	assert.equal(isGitHubCopilotCommit({
+		...commit,
+		committerEmail: 'copilot@users.noreply.github.com',
+	}), false);
+	assert.match(validateCommitSignoff({
+		...commit,
+		authorName: 'Copilot',
+	}), /missing a Signed-off-by/);
 });
 
 test('accepts only coauthor-matched sign-offs on a GitHub Dependabot squash commit', () => {

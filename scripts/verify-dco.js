@@ -15,6 +15,7 @@ const {
 
 const REPOSITORY_ROOT = path.resolve(__dirname, '..');
 const DEPENDABOT_AUTHOR_EMAIL = '49699333+dependabot[bot]@users.noreply.github.com';
+const COPILOT_AUTHOR_EMAIL = '198982749+copilot@users.noreply.github.com';
 const GITHUB_COMMITTER_EMAIL = 'noreply@github.com';
 const GITHUB_SUPPORT_EMAIL = 'support@github.com';
 
@@ -68,6 +69,13 @@ function isGitHubDependabotCommit(commit) {
 	return signoffsAreExpected && coauthorsAreSigned;
 }
 
+function isGitHubCopilotCommit(commit) {
+	return commit.authorName === 'copilot-swe-agent[bot]'
+		&& commit.authorEmail.trim().toLowerCase() === COPILOT_AUTHOR_EMAIL
+		&& commit.committerName === 'GitHub'
+		&& commit.committerEmail.trim().toLowerCase() === GITHUB_COMMITTER_EMAIL;
+}
+
 function validateCommitSignoff(commit) {
 	const authorEmail = commit.authorEmail.trim().toLowerCase();
 	const emails = signoffEmails(commit.message);
@@ -75,6 +83,9 @@ function validateCommitSignoff(commit) {
 		return null;
 	}
 	if (isGitHubDependabotCommit(commit)) {
+		return null;
+	}
+	if (isGitHubCopilotCommit(commit)) {
 		return null;
 	}
 	if (emails.length === 0) {
@@ -329,6 +340,7 @@ module.exports = {
 	commitsInRange,
 	historicalTrackedTextProblems,
 	isGitHubDependabotCommit,
+	isGitHubCopilotCommit,
 	runCli,
 	signoffEmails,
 	validateCommitIdentity,
