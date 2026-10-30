@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3]
+
+This maintenance release applies upstream dependency security fixes to the development toolchain while preserving Media Proxy behavior.
+
+### Security
+
+- Pin the development-only Local SDK's GraphQL Tools utility to patched version 12.0.2 to address an upstream prototype-pollution issue. This dependency is not included in the release installer.
+
+### Changed
+
+- Update development tooling, including Local SDK 10.1.2, Node.js type declarations 26.6.3, Electron 42.11.18, `undici` 7.30.1, and `brace-expansion` 1.1.21.
+
 ## [0.4.2]
 
 This patch refines missing-upload filtering so ordinary media filename prefixes do not look like server-interpreter paths.
@@ -170,6 +182,7 @@ This release keeps Local Media Proxy out of Local's way during site creation, fi
 - Prevented slow or cancelled connection probes from hanging the UI and replaced low-level timeout errors with actionable messages.
 - Preserved correct TLS verification when switching between direct WP Engine origins and compatible proxy, CDN, or load-balancer endpoints.
 
+[0.4.3]: https://github.com/amsive/local-media-proxy/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/amsive/local-media-proxy/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/amsive/local-media-proxy/compare/v0.3.1...v0.4.1
 [0.3.1]: https://github.com/amsive/local-media-proxy/compare/v0.3.0...v0.3.1

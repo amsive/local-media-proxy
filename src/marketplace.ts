@@ -117,6 +117,15 @@ ${ADDON_NAME} is maintained by Amsive LLC and developed by Mark Davoli and Boris
 }
 
 function createCurrentReleaseNotes(): string {
+	return `Version 0.4.3 includes upstream security fixes for the development dependency tree without changing proxy behavior.
+
+- Update the development-only Local SDK toolchain with patched GraphQL Tools utilities.
+- Refresh Node.js type declarations and related build tooling.
+
+[View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
+}
+
+function createV042ReleaseNotes(): string {
 	return `Version 0.4.2 refines missing-upload filtering so ordinary media filename prefixes do not look like server-interpreter paths.
 
 - Proxy safe final extensions after ordinary filename prefixes containing interpreter-like words, while continuing to block interpreter extensions and path-info forms such as \`shell.php.jpg\`. ([#45](https://github.com/amsive/local-media-proxy/issues/45))
@@ -157,22 +166,19 @@ function createV030ReleaseNotes(): string {
 [View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
 }
 
-function createV024ReleaseNotes(): string {
-	return `Version 0.2.4 restores the README screenshot and adds link attribution without changing Local Media Proxy behavior.
-
-- Restored the reviewed origin-discovery screenshot in both the public and packaged README without linking to removed repository history.
-- Added consistent campaign attribution to Amsive links in the public README and installed add-on metadata.
-
-[View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
-}
-
 function createPackagedReleaseHistory(): PackagedRelease[] {
 	return [
 		{
 			changelog: createCurrentReleaseNotes(),
-			date: '2026-08-18T00:00:00.000Z',
+			date: '2026-10-30T00:00:00.000Z',
 			id: `${ADDON_ID}-${ADDON_VERSION}`,
 			version: ADDON_VERSION,
+		},
+		{
+			changelog: createV042ReleaseNotes(),
+			date: '2026-08-18T00:00:00.000Z',
+			id: `${ADDON_ID}-0.4.2`,
+			version: '0.4.2',
 		},
 		{
 			changelog: createV041ReleaseNotes(),
@@ -191,12 +197,6 @@ function createPackagedReleaseHistory(): PackagedRelease[] {
 			date: '2026-07-27T00:00:00.000Z',
 			id: `${ADDON_ID}-0.3.0`,
 			version: '0.3.0',
-		},
-		{
-			changelog: createV024ReleaseNotes(),
-			date: '2026-07-24T00:00:00.000Z',
-			id: `${ADDON_ID}-0.2.4`,
-			version: '0.2.4',
 		},
 	];
 }
