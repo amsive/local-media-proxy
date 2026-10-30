@@ -15,7 +15,6 @@ This maintenance release applies upstream dependency security fixes to the devel
 ### Changed
 
 - Update development tooling, including Local SDK 10.1.2, Node.js type declarations 26.6.3, Electron 42.11.18, `undici` 7.30.1, and `brace-expansion` 1.1.21.
-- Keep dependency versions and license data in the canonical package manifests instead of duplicating version snapshots in provenance records.
 
 ## [0.4.2]
 
