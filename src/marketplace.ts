@@ -166,15 +166,6 @@ function createV030ReleaseNotes(): string {
 [View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
 }
 
-function createV024ReleaseNotes(): string {
-	return `Version 0.2.4 restores the README screenshot and adds link attribution without changing Local Media Proxy behavior.
-
-- Restored the reviewed origin-discovery screenshot in both the public and packaged README without linking to removed repository history.
-- Added consistent campaign attribution to Amsive links in the public README and installed add-on metadata.
-
-[View the full changelog](https://github.com/amsive/local-media-proxy/blob/main/CHANGELOG.md).`;
-}
-
 function createPackagedReleaseHistory(): PackagedRelease[] {
 	return [
 		{
@@ -206,12 +197,6 @@ function createPackagedReleaseHistory(): PackagedRelease[] {
 			date: '2026-07-27T00:00:00.000Z',
 			id: `${ADDON_ID}-0.3.0`,
 			version: '0.3.0',
-		},
-		{
-			changelog: createV024ReleaseNotes(),
-			date: '2026-07-24T00:00:00.000Z',
-			id: `${ADDON_ID}-0.2.4`,
-			version: '0.2.4',
 		},
 	];
 }

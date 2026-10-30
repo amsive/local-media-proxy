@@ -101,10 +101,10 @@ test('builds complete Amsive detail and release metadata', () => {
 	assert.match(addon.details.overview, /trademark policy/);
 
 	const releases = createMarketplaceReleasesPayload().data.addon.releases;
-	assert.equal(releases.length, 6);
+	assert.equal(releases.length, 5);
 	assert.deepEqual(
 		releases.map(({ version }) => version),
-		['0.4.3', '0.4.2', '0.4.1', '0.3.1', '0.3.0', '0.2.4'],
+		['0.4.3', '0.4.2', '0.4.1', '0.3.1', '0.3.0'],
 	);
 	assert.match(releases[0].changelog, /Version 0\.4\.3 includes upstream security fixes/);
 	assert.match(releases[0].changelog, /development dependency tree/);
@@ -133,9 +133,6 @@ test('builds complete Amsive detail and release metadata', () => {
 	assert.match(releases[4].changelog, /first WP Engine pull/);
 	assert.match(releases[4].changelog, /Cancels deferred work when deletion starts/);
 	assert.match(releases[4].changelog, /required lifecycle smoke test/);
-	assert.match(releases[5].changelog, /Version 0\.2\.4 restores the README screenshot/);
-	assert.match(releases[5].changelog, /without linking to removed repository history/);
-	assert.match(releases[5].changelog, /campaign attribution/);
 });
 
 test('uses packaged detail metadata only when the marketplace has no listing', async () => {
@@ -172,7 +169,7 @@ test('supplies packaged release notes for the native Release notes tab', async (
 	const payload = await response.json();
 	const [currentRelease] = payload.data.addon.releases;
 
-	assert.equal(payload.data.addon.releases.length, 6);
+	assert.equal(payload.data.addon.releases.length, 5);
 	assert.equal(currentRelease.version, '0.4.3');
 	assert.equal(currentRelease.date, '2026-10-30T00:00:00.000Z');
 	assert.match(currentRelease.changelog, /Version 0\.4\.3 includes upstream security fixes/);
